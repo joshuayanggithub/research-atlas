@@ -33,6 +33,12 @@ ARTIFACTS_DIR = DATA_DIR / "artifacts"
 CACHE_DIR = REPO_ROOT / "pipeline" / ".cache"
 WEB_DATA_DIR = REPO_ROOT / "web" / "public" / "data"
 
+# The full corpus (s02 output) vs the ACTIVE corpus that s04..s11 consume. s03 derives
+# the active corpus from the full one (compacting it in "drop" mode), so re-running s03 is
+# idempotent — it always starts from the full corpus.
+CORPUS_FULL = INTERIM_DIR / "corpus.parquet"
+CORPUS_ACTIVE = INTERIM_DIR / "corpus_active.parquet"
+
 
 class OrgSpec(BaseModel):
     key: str
@@ -60,6 +66,7 @@ class EmbeddingCfg(BaseModel):
     dim: int = 768
     scincl_model: str = "malteos/scincl"
     s2_batch_size: int = 500
+    on_uncovered: Literal["drop", "fill_local"] = "drop"
     s2_min_coverage: float = 0.5
 
 

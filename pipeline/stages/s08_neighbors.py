@@ -18,10 +18,10 @@ import polars as pl
 from pipeline.common import log
 from pipeline.common.io import read_npy
 from pipeline.common.fused_similarity import build_reference_sets, fuse_neighbors
-from pipeline.config import INTERIM_DIR, Config, ensure_dirs, load_config
+from pipeline.config import CORPUS_ACTIVE, INTERIM_DIR, Config, ensure_dirs, load_config
 
 VEC_IN = INTERIM_DIR / "embeddings.npy"
-CORPUS_IN = INTERIM_DIR / "corpus.parquet"
+CORPUS_IN = CORPUS_ACTIVE
 EDGES_IN = INTERIM_DIR / "edges.npz"  # produced by s09; optional (fused falls back to text)
 OUT = INTERIM_DIR / "neighbors.npz"
 

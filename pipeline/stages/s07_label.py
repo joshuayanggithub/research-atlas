@@ -27,9 +27,9 @@ from sklearn.feature_extraction.text import CountVectorizer
 from pipeline.common import log
 from pipeline.common.io import read_json, write_json
 from pipeline.common.schema import Cluster, ClustersDoc, Label, LabelsDoc, LevelBand, TopicRef
-from pipeline.config import ARTIFACTS_DIR, INTERIM_DIR, Config, ensure_dirs, load_config
+from pipeline.config import ARTIFACTS_DIR, CORPUS_ACTIVE, INTERIM_DIR, Config, ensure_dirs, load_config
 
-CORPUS_IN = INTERIM_DIR / "corpus.parquet"
+CORPUS_IN = CORPUS_ACTIVE
 TILES_IN = INTERIM_DIR / "tiles.json"
 CLUSTERS_OUT = ARTIFACTS_DIR / "clusters.json"
 LABELS_OUT = ARTIFACTS_DIR / "labels.json"

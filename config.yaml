@@ -57,14 +57,20 @@ corpus:
 embedding:
   # backend: "specter2_s2" (fetch precomputed 768-dim from Semantic Scholar)
   #       or "scincl_local" (compute locally via sentence-transformers, MIT).
-  # s03 auto-falls-back to scincl_local if specter2_s2 fetching is blocked/rate-limited.
   backend: "specter2_s2"
   dim: 768
   scincl_model: "malteos/scincl"
   # Semantic Scholar batch size (max 500 ids/POST).
   s2_batch_size: 500
-  # Fraction of papers that must get an S2 embedding before we accept the fetch path;
-  # below this we fall back to local embedding for the whole corpus.
+  # How to handle papers S2 has no SPECTER2 vector for (specter2_s2 backend only):
+  #   "drop"       -> keep only papers with a real SPECTER2 vector (one clean space).
+  #   "fill_local" -> embed the rest with SciNCL (100% coverage, but mixes two spaces
+  #                   which shows as an artificial "island" on the map).
+  # NOTE future fix: a "specter2_local" backend can run the SPECTER2 *model* on the
+  # uncovered papers (same space, no island, 100% coverage).
+  on_uncovered: "drop"
+  # In fill_local mode, if S2 coverage is below this, re-embed the WHOLE corpus locally
+  # (avoids mixing spaces at scale). Ignored in drop mode.
   s2_min_coverage: 0.5
 
 projector:

@@ -23,30 +23,38 @@ RAW_IN = RAW_DIR / "works_raw.jsonl"
 OUT = INTERIM_DIR / "corpus.parquet"
 
 
+def _numeric_id(openalex_url: str | None) -> int:
+    """Extract the numeric part of an OpenAlex taxonomy id.
+
+    OpenAlex uses TWO id styles: topics are 'T13650' (letter-prefixed) while
+    domains/fields/subfields are 'domains/3', 'fields/17', 'subfields/1702'
+    (slash-separated). Handle both: take the last path segment, strip leading
+    non-digits, parse the rest.
+    """
+    if not openalex_url:
+        return -1
+    tail = openalex_url.rstrip("/").rsplit("/", 1)[-1]  # 'T13650' or '1702'
+    digits = "".join(c for c in tail if c.isdigit())
+    try:
+        return int(digits) if digits else -1
+    except ValueError:
+        return -1
+
+
 def _topic_lineage(topic: dict | None) -> dict:
     """Extract domain/field/subfield/topic numeric ids + names from a topic object."""
-    def num(obj, key):
+    def part(obj, key):
         v = (obj or {}).get(key) or {}
-        sid = short_id(v.get("id"))
-        # ids look like "domains/3", "fields/17", "subfields/1702", "topics/10091"
-        try:
-            return int(sid.split("/")[-1]) if sid else -1, v.get("display_name")
-        except (ValueError, AttributeError):
-            return -1, v.get("display_name")
+        return _numeric_id(v.get("id")), v.get("display_name")
 
     if not topic:
         return {"domain_id": -1, "field_id": -1, "subfield_id": -1, "topic_id": -1,
                 "domain_name": None, "field_name": None, "subfield_name": None,
                 "topic_name": None}
-    d_id, d_nm = num(topic, "domain")
-    f_id, f_nm = num(topic, "field")
-    s_id, s_nm = num(topic, "subfield")
-    # topic itself: id is on the topic object
-    t_sid = short_id(topic.get("id"))
-    try:
-        t_id = int(t_sid.split("/")[-1]) if t_sid else -1
-    except (ValueError, AttributeError):
-        t_id = -1
+    d_id, d_nm = part(topic, "domain")
+    f_id, f_nm = part(topic, "field")
+    s_id, s_nm = part(topic, "subfield")
+    t_id = _numeric_id(topic.get("id"))  # topic id is on the topic object itself
     return {"domain_id": d_id, "field_id": f_id, "subfield_id": s_id, "topic_id": t_id,
             "domain_name": d_nm, "field_name": f_nm, "subfield_name": s_nm,
             "topic_name": topic.get("display_name")}

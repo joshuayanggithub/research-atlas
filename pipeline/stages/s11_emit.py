@@ -20,10 +20,10 @@ from pipeline.common.io import (
 )
 from pipeline.common import schema as S
 from pipeline.config import (
-    ARTIFACTS_DIR, INTERIM_DIR, WEB_DATA_DIR, Config, ensure_dirs, load_config,
+    ARTIFACTS_DIR, CORPUS_ACTIVE, INTERIM_DIR, WEB_DATA_DIR, Config, ensure_dirs, load_config,
 )
 
-CORPUS_IN = INTERIM_DIR / "corpus.parquet"
+CORPUS_IN = CORPUS_ACTIVE
 COORDS_IN = INTERIM_DIR / "coords2d.npy"
 CLUSTER_IN = INTERIM_DIR / "cluster_assign.npy"
 NEIGHBORS_IN = INTERIM_DIR / "neighbors.npz"

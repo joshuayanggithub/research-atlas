@@ -21,9 +21,9 @@ from pipeline.common.io import read_json, write_arrow, write_json
 from pipeline.common.schema import (
     AUTHORS_SCHEMA, Institution, OrgsDoc, TopicNode, TopicsDoc,
 )
-from pipeline.config import ARTIFACTS_DIR, INTERIM_DIR, Config, ensure_dirs, load_config
+from pipeline.config import ARTIFACTS_DIR, CORPUS_ACTIVE, INTERIM_DIR, Config, ensure_dirs, load_config
 
-CORPUS_IN = INTERIM_DIR / "corpus.parquet"
+CORPUS_IN = CORPUS_ACTIVE
 ORGS_RESOLVED_IN = INTERIM_DIR / "orgs_resolved.json"
 ORGS_OUT = ARTIFACTS_DIR / "orgs.json"
 AUTHORS_OUT = ARTIFACTS_DIR / "authors.arrow"

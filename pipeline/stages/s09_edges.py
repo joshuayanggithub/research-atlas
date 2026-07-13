@@ -14,9 +14,9 @@ import numpy as np
 import polars as pl
 
 from pipeline.common import log
-from pipeline.config import INTERIM_DIR, Config, ensure_dirs, load_config
+from pipeline.config import CORPUS_ACTIVE, INTERIM_DIR, Config, ensure_dirs, load_config
 
-CORPUS_IN = INTERIM_DIR / "corpus.parquet"
+CORPUS_IN = CORPUS_ACTIVE
 OUT = INTERIM_DIR / "edges.npz"
 
 
