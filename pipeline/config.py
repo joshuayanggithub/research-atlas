@@ -88,10 +88,15 @@ class ClusterCfg(BaseModel):
 
 
 class HierarchyCfg(BaseModel):
-    max_depth: int = 4
+    method: Literal["kmeans", "quadtree"] = "kmeans"
+    max_depth: int = 6
+    root_clusters: int = 8
+    branching: int = 3
+    min_cluster_size: int = 30
+    min_tile_points: int = 12
+    max_labels_per_level: int = 200
+    # legacy quadtree knob (only used when method == "quadtree")
     start_depth: int = 2
-    min_tile_points: int = 25
-    max_labels_per_level: int = 60
 
 
 class FusedCfg(BaseModel):
@@ -101,7 +106,9 @@ class FusedCfg(BaseModel):
 
 class LabelsCfg(BaseModel):
     ctfidf_top_n: int = 3
-    ngram_max: int = 3
+    ngram_max: int = 4
+    ctfidf_min_gram: int = 2
+    use_abstract: bool = True
 
 
 class PaletteCfg(BaseModel):

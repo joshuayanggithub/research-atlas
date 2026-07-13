@@ -90,15 +90,22 @@ cluster:
   random_state: 42
 
 hierarchy:
+  # Semantic-zoom regions come from ADAPTIVE recursive k-means on the 2D layout (regions
+  # follow the data, unlike a fixed quadtree), giving finer topics as you zoom in.
+  # method: "kmeans" (adaptive, recommended) | "quadtree" (legacy fixed grid).
+  method: "kmeans"
   # Number of semantic-zoom bands (band 0 = coarsest "continents").
-  max_depth: 4
-  # Quadtree depth that band 0 samples (2 -> 16 cells, so >1 coarse label shows at once).
-  # Band b samples quadtree depth (start_depth + b): 16, 64, 256, 1024 cells for bands 0..3.
-  start_depth: 2
-  # Minimum points in a tile for it to earn a label at its band.
-  min_tile_points: 25
-  # Max labels emitted per band (decluttering budget; CollisionFilter does the rest).
-  max_labels_per_level: 60
+  max_depth: 6
+  # Band 0 splits the map into this many regions; each deeper band multiplies by `branching`.
+  root_clusters: 8
+  branching: 3
+  # A region only subdivides further if it has at least this many papers (keeps fine
+  # regions from fragmenting into noise).
+  min_cluster_size: 30
+  # Minimum papers for a region to earn a label at its band.
+  min_tile_points: 12
+  # Max labels emitted per band (frontend declutter trims further per viewport).
+  max_labels_per_level: 200
 
 fused:
   # related-works similarity = alpha * cosine(text) + (1 - alpha) * citation_score
@@ -107,7 +114,9 @@ fused:
 
 labels:
   ctfidf_top_n: 3             # top n-grams per tile for c-TF-IDF label
-  ngram_max: 3                # up to trigrams (e.g. "action-conditioned world models")
+  ngram_max: 4                # up to 4-grams (e.g. "action-conditioned world models")
+  ctfidf_min_gram: 2          # prefer multi-word phrases over bare words at fine bands
+  use_abstract: true          # mine label vocabulary from title+abstract, not title only
 
 palette:
   # deck.gl background + default point styling; per-field hues assigned in s07/colors.ts.

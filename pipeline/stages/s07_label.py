@@ -18,24 +18,64 @@ Emits:
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 import numpy as np
 import polars as pl
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import CountVectorizer, ENGLISH_STOP_WORDS
 
 from pipeline.common import log
 from pipeline.common.io import read_json, write_json
 from pipeline.common.schema import Cluster, ClustersDoc, Label, LabelsDoc, LevelBand, TopicRef
 from pipeline.config import ARTIFACTS_DIR, CORPUS_ACTIVE, INTERIM_DIR, Config, ensure_dirs, load_config
 
+# Boilerplate/noise words common in abstracts that make useless labels. Combined with
+# sklearn's English stopwords. (HTML entities like &gt; and URLs are stripped in _clean.)
+_EXTRA_STOP = {
+    "http", "https", "www", "com", "org", "doi", "arxiv", "abstract", "paper", "papers",
+    "propose", "proposed", "method", "methods", "approach", "approaches", "results",
+    "result", "using", "used", "use", "based", "novel", "present", "presented", "show",
+    "shows", "shown", "study", "studies", "problem", "problems", "model", "models",
+    "amp", "gt", "lt", "quot", "apos", "nbsp", "eg", "ie", "et", "al", "fig", "table",
+    "pp", "vol", "cc", "icci", "ieee", "acm", "pieceable",
+    "mml", "math", "mrow", "mi", "mo", "mn", "msub", "mfrac", "xmlns",
+}
+
+
+def _good_phrase(phrase: str) -> bool:
+    """Reject degenerate phrases: repeated adjacent words ("federated learning federated")
+    or a phrase that is just one word repeated."""
+    words = phrase.lower().split()
+    if len(words) != len(set(words)):
+        return False
+    return True
+_LABEL_STOP = frozenset(ENGLISH_STOP_WORDS) | _EXTRA_STOP
+
+_URL_RE = re.compile(r"https?://\S+|www\.\S+")
+_ENTITY_RE = re.compile(r"&[a-z]+;|&#\d+;")
+
+
+def _clean(text: str) -> str:
+    """Strip URLs and HTML entities that leak into OpenAlex abstracts."""
+    text = _URL_RE.sub(" ", text)
+    text = _ENTITY_RE.sub(" ", text)
+    return text
+
 CORPUS_IN = CORPUS_ACTIVE
 TILES_IN = INTERIM_DIR / "tiles.json"
 CLUSTERS_OUT = ARTIFACTS_DIR / "clusters.json"
 LABELS_OUT = ARTIFACTS_DIR / "labels.json"
 
-# Which taxonomy level names a band prefers. "ctfidf" means use the c-TF-IDF phrase.
-BAND_TAXONOMY = {0: "subfield", 1: "topic", 2: "topic", 3: "ctfidf"}
+# Which taxonomy level names a band prefers. "ctfidf" means use the c-TF-IDF phrase mined
+# from the region's papers. Coarse bands borrow OpenAlex's curated names (clean, legible);
+# deeper bands switch to c-TF-IDF phrases, which resolve finer than OpenAlex's ~4.5k topics.
+# Any band index beyond the last key falls back to "ctfidf".
+BAND_TAXONOMY = {0: "subfield", 1: "topic", 2: "topic"}
+
+
+def _band_level(band: int) -> str:
+    return BAND_TAXONOMY.get(band, "ctfidf")
 
 
 def _majority_topic(node_idx: list[int], names: list, band_level: str):
@@ -52,50 +92,64 @@ def _majority_topic(node_idx: list[int], names: list, band_level: str):
     return label, TopicRef(level=band_level, id=int(tid)) if tid >= 0 else None
 
 
-def _ctfidf_labels(tiles: list[dict], texts: list[str], top_n: int, ngram_max: int) -> dict:
-    """Compute a differentiating n-gram per tile via class-based TF-IDF.
+def _ctfidf_labels(tiles: list[dict], texts: list[str], min_gram: int, ngram_max: int,
+                   exclude: dict[int, set[str]] | None = None, top_k: int = 6) -> dict:
+    """Compute a differentiating phrase per tile via class-based TF-IDF.
 
     Returns {tile_id: phrase}. Each tile is one "class document" = concatenation of its
-    members' texts; c-TF-IDF finds the n-gram most specific to that tile vs the rest.
+    members' texts; c-TF-IDF finds the phrase most specific to that tile vs the rest.
+    We favor multi-word phrases (min_gram>=2) so labels read as topics ("world models",
+    "graph neural networks") rather than bare words ("model", "graph").
+
+    `exclude[tile_id]` is a set of phrases (typically the tile's ancestors' labels) to skip,
+    so a child region gets a MORE SPECIFIC phrase than its parent instead of repeating it.
     """
     if not tiles:
         return {}
-    docs = []
-    for t in tiles:
-        # Cap per-tile text to keep the vectorizer fast on big cells.
-        idx = t["node_idx"][:400]
-        docs.append(" ".join(texts[i] for i in idx))
+    exclude = exclude or {}
+    docs = [" ".join(texts[i] for i in t["node_idx"][:600]) for t in tiles]
 
-    vec = CountVectorizer(
-        ngram_range=(1, ngram_max),
-        stop_words="english",
-        min_df=1,
-        max_features=20000,
-        token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z\-]+\b",
-    )
-    try:
-        counts = vec.fit_transform(docs)  # [n_tiles, n_terms]
-    except ValueError:
-        return {}
-    vocab = np.array(vec.get_feature_names_out())
+    def _score(lo: int) -> dict:
+        vec = CountVectorizer(
+            ngram_range=(lo, ngram_max),
+            stop_words=list(_LABEL_STOP),
+            min_df=1,
+            max_features=40000,
+            token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z][a-zA-Z\-]+\b",  # words >= 3 chars
+        )
+        try:
+            counts = vec.fit_transform(docs)
+        except ValueError:
+            return {}
+        vocab = np.array(vec.get_feature_names_out())
+        tf = counts.toarray().astype(np.float64)
+        tf_sum = tf.sum(axis=1, keepdims=True)
+        tf_sum[tf_sum == 0] = 1.0
+        tf_norm = tf / tf_sum
+        n_classes = tf.shape[0]
+        class_freq = (tf > 0).sum(axis=0)
+        idf = np.log(1.0 + n_classes / np.maximum(class_freq, 1))
+        ctfidf = tf_norm * idf
+        out = {}
+        for row, t in enumerate(tiles):
+            banned = exclude.get(t["id"], set())
+            # Walk the top candidates; take the best phrase not banned by an ancestor.
+            order = np.argsort(-ctfidf[row])[:top_k]
+            for j in order:
+                if ctfidf[row, j] <= 0:
+                    break
+                phrase = str(vocab[j])
+                if not _good_phrase(phrase):
+                    continue
+                if phrase.title() not in banned:
+                    out[t["id"]] = phrase
+                    break
+        return out
 
-    tf = counts.toarray().astype(np.float64)
-    tf_sum = tf.sum(axis=1, keepdims=True)
-    tf_sum[tf_sum == 0] = 1.0
-    tf_norm = tf / tf_sum
-    # class-based IDF: log(1 + avg_count_across_classes / count_in_class)
-    n_classes = tf.shape[0]
-    class_freq = (tf > 0).sum(axis=0)  # in how many tiles each term appears
-    idf = np.log(1.0 + n_classes / np.maximum(class_freq, 1))
-    ctfidf = tf_norm * idf
-
-    out = {}
-    for row, t in enumerate(tiles):
-        top = np.argsort(-ctfidf[row])[:top_n]
-        phrases = [vocab[j] for j in top if ctfidf[row, j] > 0]
-        if phrases:
-            out[t["id"]] = phrases[0]
-    return out
+    phrases = _score(max(min_gram, 2)) if ngram_max >= 2 else {}
+    unigrams = _score(1)
+    return {t["id"]: phrases.get(t["id"]) or unigrams.get(t["id"]) for t in tiles
+            if phrases.get(t["id"]) or unigrams.get(t["id"])}
 
 
 # A small palette (RGB) cycled per subfield for point/cluster coloring.
@@ -115,7 +169,13 @@ def run(cfg: Config | None = None) -> tuple[str, str]:
     tiles_doc = read_json(TILES_IN)
     cells = tiles_doc["cells"]
 
-    texts = corpus["title"].to_list()  # titles are enough for label vocabulary + fast
+    # Label vocabulary source: title (+ abstract if enabled) gives richer, finer phrases.
+    if cfg.labels.use_abstract and "abstract" in corpus.columns:
+        titles = corpus["title"].to_list()
+        abstracts = corpus["abstract"].to_list()
+        texts = [f"{t or ''}. {a or ''}" for t, a in zip(titles, abstracts)]
+    else:
+        texts = corpus["title"].to_list()
     names = {
         "subfield_name": corpus["subfield_name"].to_list(),
         "subfield_id": corpus["subfield_id"].to_list(),
@@ -130,37 +190,55 @@ def run(cfg: Config | None = None) -> tuple[str, str]:
 
     clusters: list[Cluster] = []
     labels: list[Label] = []
+    cell_label: dict[int, str] = {}   # cell id -> assigned label (for child exclusion)
+    cell_parent: dict[int, int | None] = {c["id"]: c.get("parent") for c in cells}
 
-    for band in range(cfg.hierarchy.max_depth):
+    def _ancestor_labels(cell_id: int) -> set[str]:
+        """Labels of this cell's ancestors, so a child avoids repeating them."""
+        out: set[str] = set()
+        p = cell_parent.get(cell_id)
+        while p is not None:
+            if p in cell_label:
+                out.add(cell_label[p])
+            p = cell_parent.get(p)
+        return out
+
+    n_bands = max((c["level"] for c in cells), default=-1) + 1
+    for band in range(n_bands):  # top-down so ancestor labels exist before children
         band_cells = [c for c in cells if c["level"] == band]
-        band_level = BAND_TAXONOMY.get(band, "ctfidf")
+        if not band_cells:
+            continue
+        band_level = _band_level(band)
 
-        # Precompute c-TF-IDF for this band if any tile needs it.
+        # Precompute c-TF-IDF for this band if any tile needs it. Pass ancestor labels so
+        # children get a MORE SPECIFIC phrase than their parent (avoids "Graph Neural" at
+        # every zoom depth).
         need_ctfidf = band_level == "ctfidf" or band >= 2
-        ctfidf_map = (_ctfidf_labels(band_cells, texts, cfg.labels.ctfidf_top_n,
-                                     cfg.labels.ngram_max) if need_ctfidf else {})
+        exclude = {c["id"]: _ancestor_labels(c["id"]) for c in band_cells}
+        ctfidf_map = (_ctfidf_labels(band_cells, texts, cfg.labels.ctfidf_min_gram,
+                                     cfg.labels.ngram_max, exclude=exclude)
+                      if need_ctfidf else {})
 
-        # Rank cells by count; keep the top max_labels_per_level as label candidates.
         band_cells_sorted = sorted(band_cells, key=lambda c: -c["count"])
         keep = set(c["id"] for c in band_cells_sorted[:cfg.hierarchy.max_labels_per_level])
-
         max_count = max((c["count"] for c in band_cells), default=1)
 
         for c in band_cells:
-            # Determine label text.
             topic_ref = None
             if band_level == "ctfidf":
                 text = ctfidf_map.get(c["id"])
             else:
                 text, topic_ref = _majority_topic(c["node_idx"], names, band_level)
                 if band >= 2:
-                    # Refine with the c-TF-IDF phrase when available (more specific).
                     text = ctfidf_map.get(c["id"], text)
             if not text:
                 continue
-            text = text.strip().title() if len(text) < 40 else text.strip()
+            text = _clean(text).strip()
+            text = text.title() if len(text) < 40 else text
+            if not text:
+                continue
+            cell_label[c["id"]] = text
 
-            # Color: majority subfield color of the tile.
             tile_subs = [subfield_ids[i] for i in c["node_idx"]]
             maj_sub = Counter(tile_subs).most_common(1)[0][0] if tile_subs else -1
             color = sub_color.get(maj_sub, [160, 160, 160])
@@ -172,8 +250,7 @@ def run(cfg: Config | None = None) -> tuple[str, str]:
             ))
 
             if c["id"] in keep:
-                # priority: coarser bands + larger tiles win scarce screen space.
-                priority = (cfg.hierarchy.max_depth - band) * 1000.0 + \
+                priority = (n_bands - band) * 1000.0 + \
                     (c["count"] / max_count) * 100.0
                 labels.append(Label(
                     id=c["id"], x=c["cx"], y=c["cy"], text=text,
@@ -191,12 +268,12 @@ def run(cfg: Config | None = None) -> tuple[str, str]:
     # size + coordinate bounds and adds these offsets, so bands are correct at any window
     # size. Band 0 starts slightly before fit; each deeper band is +1.5 zoom (2.8x closer),
     # with a 0.5 overlap so bands cross-fade.
-    STEP = 1.5
+    STEP = 1.2
     bands = []
-    for band in range(cfg.hierarchy.max_depth):
+    for band in range(n_bands):
         bands.append(LevelBand(level=band,
                                zoom_min=-0.5 + band * STEP,
-                               zoom_max=-0.5 + (band + 1) * STEP + 0.5))
+                               zoom_max=-0.5 + (band + 1) * STEP + 0.6))
 
     write_json(ClustersDoc(levels=bands, clusters=clusters), CLUSTERS_OUT)
     write_json(LabelsDoc(labels=labels), LABELS_OUT)
