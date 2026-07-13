@@ -1,0 +1,108 @@
+# Research Visualizer — single source of truth for the offline pipeline.
+# Every stage (s00..s11) reads from here. See pipeline/config.py for the typed loader.
+
+schema_version: 1
+
+corpus:
+  # OpenAlex field id for Computer Science is fields/17. Works are filtered to this field.
+  field_id: "fields/17"
+  date_from: "2020-01-01"
+  date_to: "2026-12-31"
+  # Hard cap on number of works pulled (keeps the MVP fast + within API metering).
+  max_works: 40000
+  # Per-request page size for OpenAlex cursor pagination (max 200).
+  per_page: 200
+  # Starter organizations (a few named orgs). Each maps to one or more OpenAlex
+  # institution ids (companies fragment into regional entities; universities are single).
+  # `ids` are pinned + verified against the live API — s00 fetches their display metadata.
+  # If `ids` is empty, s00 falls back to resolving `search` (top relevance hit).
+  # `name` is the human label shown in the UI's org filter.
+  orgs:
+    - key: "deepmind"
+      name: "Google DeepMind"
+      kind: "industry"
+      search: "Google DeepMind"
+      ids: ["I4210090411"]
+    - key: "meta_fair"
+      name: "Meta AI (FAIR)"
+      kind: "industry"
+      search: "Meta"
+      ids: ["I4210114444", "I2252078561"]        # Meta US + Meta IL
+    - key: "msr"
+      name: "Microsoft Research"
+      kind: "industry"
+      search: "Microsoft Research"
+      ids: ["I4210164937", "I4210113369", "I4210124949", "I4400600948", "I4401726785"]
+    - key: "berkeley"
+      name: "UC Berkeley"
+      kind: "university"
+      search: "University of California, Berkeley"
+      ids: ["I95457486"]
+    - key: "cmu"
+      name: "Carnegie Mellon University"
+      kind: "university"
+      search: "Carnegie Mellon University"
+      ids: ["I74973139"]
+    - key: "stanford"
+      name: "Stanford University"
+      kind: "university"
+      search: "Stanford University"
+      ids: ["I97018004"]
+    - key: "mit"
+      name: "MIT"
+      kind: "university"
+      search: "Massachusetts Institute of Technology"
+      ids: ["I63966007"]
+
+embedding:
+  # backend: "specter2_s2" (fetch precomputed 768-dim from Semantic Scholar)
+  #       or "scincl_local" (compute locally via sentence-transformers, MIT).
+  # s03 auto-falls-back to scincl_local if specter2_s2 fetching is blocked/rate-limited.
+  backend: "specter2_s2"
+  dim: 768
+  scincl_model: "malteos/scincl"
+  # Semantic Scholar batch size (max 500 ids/POST).
+  s2_batch_size: 500
+  # Fraction of papers that must get an S2 embedding before we accept the fetch path;
+  # below this we fall back to local embedding for the whole corpus.
+  s2_min_coverage: 0.5
+
+projector:
+  method: "opentsne"          # "opentsne" | "umap"
+  n_neighbors: 10             # uniform-affinity kNN (PubMed-landscape recipe)
+  # learning rate uses n/12 when null; exaggeration annealing handled in s04.
+  learning_rate: null
+  random_state: 42
+
+cluster:
+  method: "hdbscan"           # "hdbscan" | "hkmeans"
+  umap_components: 10         # clustering substrate dimensionality (NOT the 2D layout)
+  umap_n_neighbors: 30
+  umap_min_dist: 0.0
+  hdbscan_min_cluster_size: 40
+  hdbscan_min_samples: 10
+  random_state: 42
+
+hierarchy:
+  # Number of semantic-zoom bands (band 0 = coarsest "continents").
+  max_depth: 4
+  # Quadtree depth that band 0 samples (2 -> 16 cells, so >1 coarse label shows at once).
+  # Band b samples quadtree depth (start_depth + b): 16, 64, 256, 1024 cells for bands 0..3.
+  start_depth: 2
+  # Minimum points in a tile for it to earn a label at its band.
+  min_tile_points: 25
+  # Max labels emitted per band (decluttering budget; CollisionFilter does the rest).
+  max_labels_per_level: 60
+
+fused:
+  # related-works similarity = alpha * cosine(text) + (1 - alpha) * citation_score
+  alpha: 0.6
+  knn_k: 15
+
+labels:
+  ctfidf_top_n: 3             # top n-grams per tile for c-TF-IDF label
+  ngram_max: 3                # up to trigrams (e.g. "action-conditioned world models")
+
+palette:
+  # deck.gl background + default point styling; per-field hues assigned in s07/colors.ts.
+  background: [12, 14, 20]

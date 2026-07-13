@@ -1,0 +1,21 @@
+# Core pipeline deps (no torch). For the local SciNCL embedding fallback also install the
+# optional extra:  uv pip install "sentence-transformers>=3.0" "torch>=2.2"
+#
+# Preferred install (uv): uv pip install -r pipeline/requirements.txt
+httpx>=0.27
+tenacity>=8.3
+polars>=1.0
+pyarrow>=16.0
+numpy>=1.26,<2.2
+scikit-learn>=1.4
+opentsne>=1.0
+umap-learn>=0.5.6
+hdbscan>=0.8.36
+hnswlib>=0.8.0
+tqdm>=4.66
+pydantic>=2.7
+pydantic-settings>=2.3
+typer>=0.12
+python-dotenv>=1.0
+pyyaml>=6.0
+pytest>=8.2
