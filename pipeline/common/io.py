@@ -18,8 +18,11 @@ import pyarrow.feather as feather
 
 def write_arrow(table: pa.Table, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    # compression="zstd" keeps files small while staying browser-decodable via arrow-js.
-    feather.write_feather(table, path, compression="zstd")
+    # IMPORTANT: no compression. apache-arrow (JS) cannot decode compressed record
+    # batches ("Record batch compression not implemented"), so we write uncompressed
+    # Arrow IPC. Files stay small enough at MVP scale; gzip/brotli at the HTTP layer
+    # (CDN) recovers most of the size benefit for the wire.
+    feather.write_feather(table, path, compression="uncompressed")
 
 
 def read_arrow(path: Path) -> pa.Table:

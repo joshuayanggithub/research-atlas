@@ -29,3 +29,6 @@ web/.vite/
 .DS_Store
 *.log
 build.log
+playwright-responses/
+.playwright-mcp/
+*.png

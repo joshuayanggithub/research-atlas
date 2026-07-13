@@ -3,7 +3,11 @@
 // to the store.
 
 import DeckGL from "@deck.gl/react";
-import { OrthographicView, type OrthographicViewState } from "@deck.gl/core";
+import {
+  OrthographicView,
+  OrthographicViewport,
+  type OrthographicViewState,
+} from "@deck.gl/core";
 import { useCallback, useMemo, useState } from "react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
@@ -11,16 +15,23 @@ import { useFilterMask } from "../filters/useFilterMask";
 import { usePointsLayer } from "./layers/usePointsLayer";
 import { useLabelLayers } from "./layers/useLabelLayers";
 import { useEdgeLayer } from "./layers/useEdgeLayer";
-
-const INITIAL_VIEW_STATE: OrthographicViewState = {
-  target: [0, 0, 0],
-  zoom: -3,
-  minZoom: -6,
-  maxZoom: 6,
-};
+import { coordsCenter, fitZoom } from "./zoom";
 
 export function MapView({ ds }: { ds: Dataset }) {
-  const [viewState, setViewState] = useState<OrthographicViewState>(INITIAL_VIEW_STATE);
+  // Calibrate the initial view to the data + viewport once (the "fit" zoom is the base
+  // that pipeline band offsets are measured from).
+  const base = useMemo(() => {
+    const w = window.innerWidth || 1200;
+    const h = window.innerHeight || 700;
+    return { zoom: fitZoom(ds.points, w, h), center: coordsCenter(ds.points) };
+  }, [ds]);
+
+  const [viewState, setViewState] = useState<OrthographicViewState>(() => ({
+    target: [base.center[0], base.center[1], 0],
+    zoom: base.zoom,
+    minZoom: base.zoom - 2,
+    maxZoom: base.zoom + 8,
+  }));
 
   const colorMode = useStore((s) => s.colorMode);
   const orgDisplayMode = useStore((s) => s.orgDisplayMode);
@@ -42,7 +53,19 @@ export function MapView({ ds }: { ds: Dataset }) {
     [setZoom],
   );
 
-  const zoom = typeof viewState.zoom === "number" ? viewState.zoom : -3;
+  const zoom = typeof viewState.zoom === "number" ? viewState.zoom : base.zoom;
+
+  // Build a viewport from the live view state so labels can declutter in screen space.
+  const viewport = useMemo(() => {
+    const w = window.innerWidth || 1200;
+    const h = window.innerHeight || 700;
+    return new OrthographicViewport({
+      width: w,
+      height: h,
+      target: viewState.target as [number, number, number],
+      zoom: viewState.zoom as number,
+    });
+  }, [viewState.target, viewState.zoom]);
 
   const pointsLayer = usePointsLayer({
     ds,
@@ -57,7 +80,13 @@ export function MapView({ ds }: { ds: Dataset }) {
     onHover: setHover,
   });
 
-  const labelLayers = useLabelLayers({ labels: ds.labels.labels, levels: ds.manifest.levels, zoom });
+  const labelLayers = useLabelLayers({
+    labels: ds.labels.labels,
+    levels: ds.manifest.levels,
+    zoom,
+    base: base.zoom,
+    viewport,
+  });
   const edgeLayer = useEdgeLayer(ds, selectedNode, edgeMode);
 
   const layers = useMemo(

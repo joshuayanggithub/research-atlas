@@ -1,10 +1,14 @@
-// Semantic-zoom labels. One TextLayer per band, all sharing a single CollisionFilter
-// group so labels declutter against each other on the GPU every frame. Coarse/important
-// labels get higher collision priority, so they win scarce screen space when zoomed out;
-// as you zoom in, finer labels stop colliding and appear (Google-Maps behavior).
+// Semantic-zoom labels. We declutter on the CPU with a greedy screen-space algorithm:
+// project each candidate label to pixels, place them highest-priority-first, and skip any
+// whose box overlaps an already-placed label. This is deterministic, works in an
+// OrthographicView (deck.gl's GPU CollisionFilterExtension is unreliable in non-geo
+// views — it culls all instances), and is cheap at our label count (~200).
+//
+// Coarse/high-count labels have higher priority, so they win when zoomed out; as you zoom
+// in, fine labels' screen positions spread apart, stop overlapping, and appear.
 
 import { TextLayer } from "@deck.gl/layers";
-import { CollisionFilterExtension } from "@deck.gl/extensions";
+import type { Viewport } from "@deck.gl/core";
 import type { Label, LevelBand } from "../../data/types";
 import { bandForZoom, labelSizeForBand, visibleLabelLevels } from "../zoom";
 
@@ -12,52 +16,84 @@ interface Args {
   labels: Label[];
   levels: LevelBand[];
   zoom: number;
+  base: number; // fit zoom; pipeline band offsets are measured from this
+  viewport: Viewport | null;
 }
 
-export function useLabelLayers({ labels, levels, zoom }: Args) {
-  const visible = visibleLabelLevels(zoom, levels);
-  const currentBand = bandForZoom(zoom, levels);
+interface PlacedLabel extends Label {
+  size: number;
+}
 
-  // Group labels by band so each layer can size independently, but all share one
-  // collision group ("labels") so cross-band overlaps are resolved together.
-  const byBand = new Map<number, Label[]>();
-  for (const lb of labels) {
-    if (!visible.has(lb.level)) continue;
-    (byBand.get(lb.level) ?? byBand.set(lb.level, []).get(lb.level)!).push(lb);
-  }
+// Rough px width of a label at a given font size (avg glyph ~0.55em).
+function labelWidth(text: string, size: number): number {
+  return text.length * size * 0.55;
+}
 
-  const layers = [];
-  for (const [band, group] of byBand) {
-    const size = labelSizeForBand(band, currentBand);
-    layers.push(
-      new TextLayer({
-        id: `labels-${band}`,
-        data: group,
-        getPosition: (d: Label) => [d.x, d.y] as [number, number],
-        getText: (d: Label) => d.text,
-        getSize: size,
-        sizeUnits: "pixels",
-        getColor: [235, 238, 245, 255],
-        outlineColor: [8, 10, 16, 255],
-        outlineWidth: 3,
-        fontSettings: { sdf: true },
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-        fontWeight: band <= 1 ? 700 : 500,
-        getTextAnchor: "middle",
-        getAlignmentBaseline: "center",
-        billboard: true,
-        characterSet: "auto",
-        // Collision: higher priority wins. priority already encodes coarseness + size.
-        extensions: [new CollisionFilterExtension()],
-        collisionEnabled: true,
-        collisionGroup: "labels",
-        getCollisionPriority: (d: Label) => d.priority,
-        collisionTestProps: { sizeScale: 2 },
-        updateTriggers: {
-          getSize: [size],
-        },
-      }),
+export function useLabelLayers({ labels, levels, zoom, base, viewport }: Args) {
+  if (!viewport) return [];
+
+  const visible = visibleLabelLevels(zoom, levels, base);
+  const currentBand = bandForZoom(zoom, levels, base);
+
+  // Candidate labels = those in visible bands, sorted by priority (desc).
+  const candidates = labels
+    .filter((l) => visible.has(l.level))
+    .sort((a, b) => b.priority - a.priority);
+
+  // Greedy screen-space placement.
+  const placedBoxes: [number, number, number, number][] = []; // x0,y0,x1,y1 in px
+  const placed: PlacedLabel[] = [];
+  const seenText = new Set<string>(); // avoid repeating the same label (e.g. many "AI" tiles)
+  const PAD = 6;
+
+  for (const lb of candidates) {
+    // Skip a text we've already placed at this or a coarser band (dedupe repeats).
+    if (seenText.has(lb.text)) continue;
+
+    const size = labelSizeForBand(lb.level, currentBand);
+    const [px, py] = viewport.project([lb.x, lb.y]) as [number, number];
+    const w = labelWidth(lb.text, size) / 2 + PAD;
+    const h = size / 2 + PAD;
+    const box: [number, number, number, number] = [px - w, py - h, px + w, py + h];
+
+    // Skip labels projected outside the viewport.
+    if (px < 0 || py < 0 || px > viewport.width || py > viewport.height) continue;
+
+    const overlaps = placedBoxes.some(
+      (b) => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1],
     );
+    if (overlaps) continue;
+
+    placedBoxes.push(box);
+    placed.push({ ...lb, size });
+    seenText.add(lb.text);
   }
-  return layers;
+
+  // One TextLayer for all placed labels (sizes vary per-datum via getSize accessor).
+  return [
+    new TextLayer<PlacedLabel>({
+      id: "labels",
+      data: placed,
+      getPosition: (d) => [d.x, d.y] as [number, number],
+      getText: (d) => d.text,
+      getSize: (d) => d.size,
+      sizeUnits: "pixels",
+      getColor: [237, 240, 247, 255],
+      outlineColor: [8, 10, 16, 255],
+      outlineWidth: 3,
+      fontSettings: { sdf: true },
+      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+      getTextAnchor: "middle",
+      getAlignmentBaseline: "center",
+      billboard: true,
+      background: true,
+      getBackgroundColor: [10, 12, 18, 190],
+      backgroundPadding: [6, 3],
+      updateTriggers: {
+        // Re-place whenever the set of placed labels changes.
+        getText: [placed.map((p) => p.id).join(","), currentBand],
+        getSize: [currentBand],
+      },
+    }),
+  ];
 }

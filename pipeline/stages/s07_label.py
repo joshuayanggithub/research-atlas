@@ -186,13 +186,17 @@ def run(cfg: Config | None = None) -> tuple[str, str]:
         if c.parent is not None and c.parent in by_id:
             by_id[c.parent].children.append(c.id)
 
-    # Zoom bands: assign each band a viewport-zoom window (frontend maps live zoom -> band).
-    # Orthographic zoom in deck.gl is log2 scale; we hand out evenly spaced windows.
+    # Zoom bands as OFFSETS from the frontend's runtime "fit" zoom (the zoom at which the
+    # whole map fills the viewport). The frontend computes fitZoom from the actual viewport
+    # size + coordinate bounds and adds these offsets, so bands are correct at any window
+    # size. Band 0 starts slightly before fit; each deeper band is +1.5 zoom (2.8x closer),
+    # with a 0.5 overlap so bands cross-fade.
+    STEP = 1.5
     bands = []
     for band in range(cfg.hierarchy.max_depth):
         bands.append(LevelBand(level=band,
-                               zoom_min=-4.0 + band * 2.0,
-                               zoom_max=-4.0 + (band + 1) * 2.0 + 0.5))
+                               zoom_min=-0.5 + band * STEP,
+                               zoom_max=-0.5 + (band + 1) * STEP + 0.5))
 
     write_json(ClustersDoc(levels=bands, clusters=clusters), CLUSTERS_OUT)
     write_json(LabelsDoc(labels=labels), LABELS_OUT)
