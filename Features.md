@@ -4,9 +4,10 @@ What the Research Visualizer does today (MVP). See `Design.md` for how and why.
 
 ## The map
 
-- **Semantic map of ~39k CS papers** (OpenAlex field 17, 2020–2026) from 7 seed
-  organizations. Each paper is a point; **nearby points are semantically similar**
-  (position from SPECTER2 embeddings projected to 2D with openTSNE).
+- **Semantic map of ~28k CS papers** (OpenAlex field 17, 2020–2026) from 7 seed
+  organizations — the papers with precomputed SPECTER2 embeddings, out of ~39k fetched
+  (see Design.md for the SPECTER2-only policy). Each paper is a point; **nearby points are
+  semantically similar** (position from SPECTER2 embeddings projected to 2D with openTSNE).
 - **GPU rendering** via deck.gl handles the full corpus at interactive framerates on an
   orthographic (map-style) canvas with smooth pan/zoom.
 - **Point color** encodes CS **subfield** by default; switchable to **organization** or

@@ -60,13 +60,28 @@ nodes) with **no department/lab granularity**. So each org in `config.yaml` pins
 explicit **list** of verified institution ids that we OR into the filter. University→dept→
 lab granularity is deferred to a later phase (needs affiliation-string parsing).
 
-### 3. Embeddings: swappable backend, SPECTER2 first with a local fallback
+### 3. Embeddings: swappable backend + one consistent space
 
 `embedding/base.py` defines an `EmbeddingBackend` protocol. `specter2_s2` fetches
-precomputed vectors; `scincl_local` runs `malteos/scincl` locally (MPS on Mac). `s03`
-**auto-falls-back**: if S2 coverage is below a threshold (rate limits, papers not in S2,
-or per-batch API errors), the uncovered rows are embedded locally so coverage reaches
-100%. Vectors are L2-normalized centrally so all downstream cosine math is uniform.
+precomputed vectors from Semantic Scholar (batches of 500, DOI/arXiv-addressed, on-disk
+cached, backoff + per-batch skip on non-retryable errors); `scincl_local` runs
+`malteos/scincl` locally (MPS on Mac). Vectors are L2-normalized centrally so all
+downstream cosine math is uniform.
+
+**Handling uncovered papers (`embedding.on_uncovered`).** SPECTER2 (fetched) and SciNCL
+(local) occupy *different* embedding spaces, so mixing them at scale creates a visible
+artificial "island" on the map (papers cluster by *model*, not topic). Two policies:
+- `drop` (current default): keep only papers with a real SPECTER2 vector → one clean
+  space. This drops rows, so `s03` **compacts the corpus** (`corpus_active.parquet`) with
+  fresh dense `node_id`s; s04–s11 read the active corpus.
+- `fill_local`: fill uncovered rows with SciNCL, but if S2 coverage is below
+  `s2_min_coverage`, re-embed the *whole* corpus locally (never mix at scale).
+
+The MVP run: S2 covered 71.5% of 39,231 papers; with `drop`, the map is **28,043 papers**
+in a single SPECTER2 space. **Future fix** (the user's question — "can SPECTER2 generalize
+to other papers?"): yes — SPECTER2 is an open *model* (allenai/specter2, Apache-2.0), not
+just S2's lookup table. A planned `specter2_local` backend runs the model on the uncovered
+papers, giving one SPECTER2 space at 100% coverage with no island and no dropped rows.
 
 ### 4. Layout vs clustering: two independent reductions
 
@@ -94,10 +109,15 @@ approach is *not* strictly nested.)
   tiles at that band; the top phrase is the tile's differentiating vocabulary (e.g.
   "world models"). Used for the finest band and to refine mid bands.
 
-Each label carries `{x, y, text, level, priority}`. The frontend renders one `TextLayer`
-per band sharing a single **`CollisionFilterExtension`** group; `getCollisionPriority`
-(coarse + high-count wins) declutters on the GPU every frame, so coarse labels win when
-zoomed out and finer labels appear as you zoom in.
+Each label carries `{x, y, text, level, priority}`. Zoom bands are emitted as **offsets
+from a runtime "fit" zoom** the frontend computes from the coordinate bounds + viewport,
+so the map is calibrated at any window size. The frontend declutters labels with a **CPU
+greedy screen-space algorithm** (`useLabelLayers`): project candidates to pixels, place
+highest-priority first, skip any overlapping an already-placed box, dedupe repeated texts.
+Coarse/high-count labels win when zoomed out; finer labels' screen positions spread apart
+and appear as you zoom in. (We do *not* use deck.gl's `CollisionFilterExtension` — it culls
+all instances in a non-geospatial `OrthographicView`; the CPU approach is deterministic and
+cheap at ~200 labels.)
 
 ### 6. Related works: fused text + citation similarity (Connected-Papers idea)
 
@@ -111,10 +131,14 @@ neighbors; the citation term boosts community relatedness. This realizes the spe
 ### 7. Rendering: deck.gl, edges on-select only
 
 deck.gl (`OrthographicView`) draws the scatter (`ScatterplotLayer`), zoom labels
-(`TextLayer` + collision), and citation arcs (`ArcLayer`). The **global citation graph is
-never drawn** (hairball + slow) — arcs appear only for the selected node. Date filtering
-runs on the GPU via `DataFilterExtension` (smooth slider drags); org/author filtering
-dims (default) or hides non-matches, preserving spatial context.
+(`TextLayer`, CPU-decluttered), and citation arcs (`ArcLayer`). The **global citation
+graph is never drawn** (hairball + slow) — arcs appear only for the selected node. Date
+filtering runs on the GPU via `DataFilterExtension` (smooth slider drags); org/author
+filtering dims (default) or hides non-matches, preserving spatial context.
+
+Arrow files are written **uncompressed** — the browser's `apache-arrow` cannot decode
+compressed record batches ("compression not implemented"); gzip/brotli at the HTTP/CDN
+layer recovers the wire size.
 
 ## Artifact contract (the seam)
 
