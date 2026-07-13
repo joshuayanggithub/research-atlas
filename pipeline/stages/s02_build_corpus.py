@@ -89,7 +89,7 @@ def _parse_work(w: dict) -> dict | None:
         "publication_date": w.get("publication_date") or "",
         "year": int(w.get("publication_year") or 0),
         "cited_by_count": int(w.get("cited_by_count") or 0),
-        "doi": short_id(ids.get("doi")) if ids.get("doi") else None,
+        "doi": _clean_doi(ids.get("doi")),
         "arxiv_id": _arxiv_from_ids(ids),
         "venue": source.get("display_name"),
         "author_ids": author_ids,
@@ -100,8 +100,24 @@ def _parse_work(w: dict) -> dict | None:
     }
 
 
+def _clean_doi(doi_url: str | None) -> str | None:
+    """Strip the URL prefix but KEEP the full DOI (e.g. '10.1145/3641289').
+
+    NOTE: do NOT use short_id() on DOIs — it strips everything before the last '/',
+    mangling '10.1145/3641289' into '3641289' and breaking Semantic Scholar lookups.
+    """
+    if not doi_url:
+        return None
+    d = doi_url.strip()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi.org/"):
+        if d.lower().startswith(prefix):
+            d = d[len(prefix):]
+            break
+    return d or None
+
+
 def _arxiv_from_ids(ids: dict) -> str | None:
-    # OpenAlex sometimes carries arxiv in ids.mag/pmid; arXiv usually via DOI 10.48550/arXiv.X
+    # arXiv works usually carry DOI 10.48550/arXiv.<id>; extract the bare arXiv id.
     doi = ids.get("doi") or ""
     if "arxiv" in doi.lower():
         return doi.lower().split("arxiv.")[-1].strip("/")

@@ -64,20 +64,30 @@ def run(cfg: Config | None = None) -> str:
 
         cov = float(covered.mean()) if n else 0.0
         if cov < cfg.embedding.s2_min_coverage:
+            # Too few S2 hits. SPECTER2 and SciNCL occupy DIFFERENT embedding spaces, so
+            # we must NOT mix them for a large fraction (it would create a fake island on
+            # the map). Re-embed the WHOLE corpus locally for one consistent space.
             log.warn(f"S2 coverage {cov:.1%} < {cfg.embedding.s2_min_coverage:.0%} "
-                     f"threshold — embedding uncovered rows locally")
+                     f"threshold — re-embedding entire corpus locally (consistent space)")
+            local = _local_backend(cfg)
+            res = local.embed(corpus)
+            vectors, covered, model_used = res.vectors, res.covered, res.model
+            backend_name = local.name
+        else:
+            # Accept S2 space, but a small remainder is still uncovered (no DOI/arXiv, or
+            # not in S2). Fill those locally — mixing is tolerable at small fraction and is
+            # far better than leaving zero vectors that collapse to the origin.
+            log.info(f"S2 coverage {cov:.1%} accepted")
             missing_idx = np.where(~covered)[0]
             if len(missing_idx):
+                log.info(f"filling {len(missing_idx)} uncovered rows locally")
                 local = _local_backend(cfg)
                 sub = corpus[missing_idx.tolist()]
                 sub_res = local.embed(sub)
                 vectors[missing_idx] = sub_res.vectors
                 covered[missing_idx] = True
-                # Mixed backends: record both.
-                backend_name = f"specter2_s2+scincl_local"
+                backend_name = "specter2_s2+scincl_local"
                 model_used = f"{model_used or 'specter_v2'}+{local.model}"
-        else:
-            log.info(f"S2 coverage {cov:.1%} accepted")
 
     else:  # scincl_local
         local = _local_backend(cfg)
