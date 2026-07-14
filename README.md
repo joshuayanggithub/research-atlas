@@ -8,6 +8,9 @@ paper's **citations** and **related works**.
 
 See **`Design.md`** (why) and **`Features.md`** (what).
 
+**Continuing this project / handing off?** Start with **`HANDOFF.md`**, then
+**`docs/ARCHITECTURE.md`** (code map) and **`docs/ROADMAP.md`** (prioritized next work).
+
 ## How it works
 
 An offline **Python pipeline** (`pipeline/`) turns OpenAlex works + Semantic Scholar
