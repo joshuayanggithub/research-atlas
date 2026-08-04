@@ -6,10 +6,17 @@ schema_version: 1
 corpus:
   # OpenAlex field id for Computer Science is fields/17. Works are filtered to this field.
   field_id: "fields/17"
-  date_from: "2020-01-01"
+  # 2015 (was 2020). The 2020 cutoff excluded 125,747 CS works from the configured orgs —
+  # the entire foundational deep-learning era (ResNet, Transformers, BERT, GANs, ViT,
+  # GPT-3). That also silently degraded the papers we DID show: intra-corpus citation edges
+  # can only connect papers inside the corpus, so every 2020+ paper citing those landmarks
+  # lost the edge. 2015 captures the modern era; 2012 (+~17k works) would add AlexNet.
+  date_from: "2015-01-01"
   date_to: "2026-12-31"
-  # Hard cap on number of works pulled (keeps the MVP fast + within API metering).
-  max_works: 40000
+  # Hard cap on number of works pulled. Raised with the window: the proposed org+date
+  # filter matches ~89k works, so the old 40k cap would silently truncate ~55% of the
+  # corpus in OpenAlex API order (i.e. arbitrarily, not by relevance).
+  max_works: 120000
   # Per-request page size for OpenAlex cursor pagination (max 200).
   per_page: 200
   # Starter organizations (a few named orgs). Each maps to one or more OpenAlex
@@ -17,12 +24,49 @@ corpus:
   # `ids` are pinned + verified against the live API — s00 fetches their display metadata.
   # If `ids` is empty, s00 falls back to resolving `search` (top relevance hit).
   # `name` is the human label shown in the UI's org filter.
+  # NOTE on industry labs: OpenAlex indexes them unevenly, because their papers often go to
+  # arXiv with no consistent institutional affiliation. Verified CS-2015+ counts at the time
+  # of writing: Google US 13,723 | Amazon US 3,998 | Nvidia US 1,805 | AI2 683 | OpenAI 235.
+  # Anthropic exists in OpenAlex (I4387930290) with **0 works**, so pinning it adds nothing;
+  # likewise there is no distinct "Meta AI"/FAIR entity — FAIR work sits under Meta. Deepseek
+  # /Kimi/Minimax/Redwood have no usable OpenAlex institution. Covering those labs properly
+  # needs an arXiv-first ingest path, not another id here (see docs/ROADMAP.md).
   orgs:
+    - key: "google"
+      name: "Google"
+      kind: "industry"
+      search: "Google"
+      # Google's PARENT entity was previously missing entirely, which is why "Attention Is
+      # All You Need" (W2626778328, Google US) could not appear at all. Regional entities
+      # are separate institutions in OpenAlex and must each be listed.
+      ids: ["I1291425158", "I4210113297", "I4210100430", "I4210117425", "I4210148186"]
     - key: "deepmind"
       name: "Google DeepMind"
       kind: "industry"
       search: "Google DeepMind"
       ids: ["I4210090411"]
+    - key: "amazon"
+      name: "Amazon"
+      kind: "industry"
+      search: "Amazon"
+      # Amazon US + DE + UK. Excludes same-named unrelated orgs (University of the Amazon,
+      # Amazon Research Foundation BR) that a `search` fallback would wrongly resolve.
+      ids: ["I1311688040", "I4210089985", "I4210123934"]
+    - key: "openai"
+      name: "OpenAI"
+      kind: "industry"
+      search: "OpenAI"
+      ids: ["I4210161460"]
+    - key: "nvidia"
+      name: "NVIDIA"
+      kind: "industry"
+      search: "NVIDIA"
+      ids: ["I4210127875", "I1304085615"]
+    - key: "ai2"
+      name: "Allen Institute for AI"
+      kind: "industry"
+      search: "Allen Institute for Artificial Intelligence"
+      ids: ["I4210156221"]
     - key: "meta"
       name: "Meta"
       kind: "industry"

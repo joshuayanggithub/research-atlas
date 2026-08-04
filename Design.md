@@ -26,12 +26,13 @@ architecture described by the product goal:
   filter "any organization" without editing config and rebuilding the entire map.
 - OpenAlex institutions do not provide department/lab granularity. The current org index
   is a flat aggregate, not a university -> department -> lab hierarchy.
-- Semantic-zoom regions now come from a **fused embedding/citation graph**, not the 2D
-  display projection. This removes projection distortion from topic membership, but the
-  hierarchy and names still need evaluation against a human-reviewed topic benchmark.
-- SPECTER2 lookup coverage is 71.5%; drop mode removes 28.5% of fetched papers. This keeps
-  one coherent embedding space, but biases the visible corpus toward papers indexed by
-  Semantic Scholar and carrying resolvable external IDs.
+- Semantic-zoom regions come from Leiden over a **planar substrate** (2D-layout kNN
+  adjacency, 768-D cosine weights), so a region is one contiguous area of the map rather
+  than being scattered across it. See §5 for the measured before/after. The hierarchy and
+  names still need evaluation against a human-reviewed topic benchmark.
+- Semantic Scholar is queried by arXiv → DOI → MAG id (see §3); drop mode still removes the
+  remainder to keep one coherent SPECTER2 space, which biases the visible corpus toward
+  papers S2 indexes under a resolvable external id.
 - The frozen projector previously omitted the display normalization. `projector.pkl` now
   stores the reducer together with its fit-time center and scale so transformed points land
   in the same map coordinate system.
@@ -145,20 +146,29 @@ cached, backoff + per-batch skip on non-retryable errors); `scincl_local` runs
 `malteos/scincl` locally (MPS on Mac). Vectors are L2-normalized centrally so all
 downstream cosine math is uniform.
 
-**Handling uncovered papers (`embedding.on_uncovered`).** SPECTER2 (fetched) and SciNCL
-(local) occupy *different* embedding spaces, so mixing them at scale creates a visible
-artificial "island" on the map (papers cluster by *model*, not topic). Two policies:
+**Addressing papers in Semantic Scholar (three routes).** S2's batch endpoint is keyed by
+external id, and no single id resolves everything: `s03` tries **arXiv → DOI → MAG** per
+paper, and each pass retries only the rows still uncovered. This matters because OpenAlex
+sometimes records a landmark paper under a DOI S2 does not index. "Attention Is All You
+Need" is the canonical case — OpenAlex gives it only `doi:10.65215/2q58a426` (unknown to
+S2) plus `mag:2626778328`, which S2 *does* resolve and has a SPECTER2 vector for. Measured
+on the previous build's dropped rows, 23.5% carried a MAG id and 57% of those came back
+with a real vector, so the MAG pass alone recovers thousands of papers with zero change to
+the vector space.
+
+**Handling still-uncovered papers (`embedding.on_uncovered`).** SPECTER2 (fetched) and
+SciNCL (local) occupy *different* embedding spaces, so mixing them at scale creates a
+visible artificial "island" on the map (papers cluster by *model*, not topic). Two policies:
 - `drop` (current default): keep only papers with a real SPECTER2 vector → one clean
   space. This drops rows, so `s03` **compacts the corpus** (`corpus_active.parquet`) with
   fresh dense `node_id`s; s04–s11 read the active corpus.
 - `fill_local`: fill uncovered rows with SciNCL, but if S2 coverage is below
   `s2_min_coverage`, re-embed the *whole* corpus locally (never mix at scale).
 
-The MVP run: S2 covered 71.5% of 39,231 papers; with `drop`, the map is **28,043 papers**
-in a single SPECTER2 space. **Future fix** (the user's question — "can SPECTER2 generalize
-to other papers?"): yes — SPECTER2 is an open *model* (allenai/specter2, Apache-2.0), not
-just S2's lookup table. A planned `specter2_local` backend runs the model on the uncovered
-papers, giving one SPECTER2 space at 100% coverage with no island and no dropped rows.
+**Future fix** (the user's question — "can SPECTER2 generalize to other papers?"): yes —
+SPECTER2 is an open *model* (allenai/specter2, Apache-2.0), not just S2's lookup table. A
+planned `specter2_local` backend runs the model on whatever the arXiv/DOI/MAG passes still
+miss, giving one SPECTER2 space at 100% coverage with no island and no dropped rows.
 
 ### 4. Layout vs clustering: two independent reductions
 
@@ -217,7 +227,7 @@ comparison (`hierarchy.method: "leiden" | "louvain" | "kmeans" | "quadtree"`). S
 `docs/RESEARCH_PRIOR_WORK.md` §1.4 for the evidence.
 
 Child memberships are strict subsets of their parents, and a split's children exactly
-partition that parent. The current build has **11 bands and ~9,700 regions** (see §5's
+partition that parent. The current build has **11 bands and 24,215 regions** (see §5's
 micro-cluster note for why the hierarchy was deepened). Small terminal communities stop
 splitting, so coarse labels persist where no defensible finer partition exists. The frozen
 2D coordinates only determine each community label's centroid and bounding box.

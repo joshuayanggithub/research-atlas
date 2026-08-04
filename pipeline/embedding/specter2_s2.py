@@ -41,12 +41,25 @@ class Specter2S2Backend:
         self._cache.mkdir(parents=True, exist_ok=True)
         self._n_failed_batches = 0
 
-    def _paper_id_for(self, doi: str | None, arxiv_id: str | None) -> str | None:
+    def _paper_ids_for(
+        self, doi: str | None, arxiv_id: str | None, mag_id: str | None
+    ) -> list[str]:
+        """S2 ids to try for one paper, best-addressing-route first.
+
+        Returns several candidates because no single id resolves everything: arXiv is the
+        most reliable when present, DOI covers most published work, and MAG recovers papers
+        whose OpenAlex DOI is not in S2's index at all. "Attention Is All You Need" is the
+        motivating case — OpenAlex gives it only an unusual DOI (unknown to S2) plus a MAG
+        id that S2 resolves *with* a SPECTER2 vector, so a DOI-only lookup dropped it.
+        """
+        candidates = []
         if arxiv_id:
-            return f"ARXIV:{arxiv_id}"
+            candidates.append(f"ARXIV:{arxiv_id}")
         if doi:
-            return f"DOI:{doi}"
-        return None
+            candidates.append(f"DOI:{doi}")
+        if mag_id:
+            candidates.append(f"MAG:{mag_id}")
+        return candidates
 
     def _cache_path(self, ids: list[str]):
         key = hashlib.sha256("\n".join(ids).encode()).hexdigest()[:24]
@@ -71,55 +84,92 @@ class Specter2S2Backend:
         r.raise_for_status()
         return r.json()
 
+    def _fetch_pass(
+        self,
+        client: httpx.Client,
+        requests: list[tuple[int, str]],
+        vectors: np.ndarray,
+        covered: np.ndarray,
+        desc: str,
+    ) -> None:
+        """Resolve one (row_index, s2_id) list, filling ``vectors``/``covered`` in place."""
+        for start in tqdm(
+            range(0, len(requests), self.batch_size), desc=desc, unit="batch"
+        ):
+            chunk = requests[start:start + self.batch_size]
+            idx = [i for i, _ in chunk]
+            ids = [s for _, s in chunk]
+
+            cache_path = self._cache_path(ids)
+            if cache_path.exists():
+                data = json.loads(cache_path.read_text())
+            else:
+                try:
+                    data = self._post_batch(client, ids)
+                except Exception as e:  # noqa: BLE001
+                    # A non-retryable error (e.g. 400 from a malformed id) must not abort
+                    # the whole fetch — skip this batch; uncovered rows fall back to the
+                    # next addressing pass, then to s03's configured policy.
+                    self._n_failed_batches += 1
+                    log.warn(f"S2 batch {start // self.batch_size} failed ({e}); "
+                             f"skipping {len(ids)} rows")
+                    continue
+                cache_path.write_text(json.dumps(data))
+                time.sleep(1.0)  # be polite to the shared pool
+
+            for row_i, rec in zip(idx, data):
+                if not rec:
+                    continue
+                emb = rec.get("embedding") or {}
+                vec = emb.get("vector")
+                if vec and len(vec) == self.dim:
+                    vectors[row_i] = np.asarray(vec, dtype=np.float32)
+                    covered[row_i] = True
+
     def embed(self, corpus: pl.DataFrame) -> EmbeddingResult:
         n = corpus.height
         vectors = np.zeros((n, self.dim), dtype=np.float32)
         covered = np.zeros(n, dtype=bool)
 
-        # Build (row_index -> s2 id) for rows that have an addressable id.
-        rows = corpus.select(["node_id", "doi", "arxiv_id"]).to_dicts()
-        addressable: list[tuple[int, str]] = []
-        for i, row in enumerate(rows):
-            sid = self._paper_id_for(row["doi"], row["arxiv_id"])
-            if sid:
-                addressable.append((i, sid))
+        # Per row, the ordered list of S2 ids worth trying (arXiv, then DOI, then MAG).
+        columns = ["node_id", "doi", "arxiv_id"]
+        has_mag = "mag_id" in corpus.columns
+        if has_mag:
+            columns.append("mag_id")
+        rows = corpus.select(columns).to_dicts()
+        candidates: list[list[str]] = [
+            self._paper_ids_for(
+                row["doi"], row["arxiv_id"], row.get("mag_id") if has_mag else None
+            )
+            for row in rows
+        ]
 
-        log.info(f"S2 SPECTER2: {len(addressable)}/{n} rows have DOI/arXiv id")
-        if not addressable:
+        n_addressable = sum(1 for c in candidates if c)
+        max_routes = max((len(c) for c in candidates), default=0)
+        log.info(f"S2 SPECTER2: {n_addressable}/{n} rows have an addressable id "
+                 f"(arXiv/DOI{'/MAG' if has_mag else ''})")
+        if not n_addressable:
             return EmbeddingResult(vectors, covered, self.name, self.model)
 
+        # Successive passes: each pass tries the next-choice id, but ONLY for rows still
+        # uncovered. A row with a DOI S2 does not index therefore still gets its MAG
+        # attempt, instead of being written off as having no SPECTER2 vector.
         with httpx.Client() as client:
-            for start in tqdm(range(0, len(addressable), self.batch_size),
-                              desc="  s2 batch", unit="batch"):
-                chunk = addressable[start:start + self.batch_size]
-                idx = [i for i, _ in chunk]
-                ids = [s for _, s in chunk]
-
-                cache_path = self._cache_path(ids)
-                if cache_path.exists():
-                    data = json.loads(cache_path.read_text())
-                else:
-                    try:
-                        data = self._post_batch(client, ids)
-                    except Exception as e:  # noqa: BLE001
-                        # A non-retryable error (e.g. 400 from a malformed id) must not
-                        # abort the whole fetch — skip this batch; uncovered rows fall
-                        # back to local embedding in s03.
-                        self._n_failed_batches += 1
-                        log.warn(f"S2 batch {start // self.batch_size} failed ({e}); "
-                                 f"skipping {len(ids)} rows")
-                        continue
-                    cache_path.write_text(json.dumps(data))
-                    time.sleep(1.0)  # be polite to the shared pool
-
-                for row_i, rec in zip(idx, data):
-                    if not rec:
-                        continue
-                    emb = rec.get("embedding") or {}
-                    vec = emb.get("vector")
-                    if vec and len(vec) == self.dim:
-                        vectors[row_i] = np.asarray(vec, dtype=np.float32)
-                        covered[row_i] = True
+            for route in range(max_routes):
+                requests = [
+                    (i, candidates[i][route])
+                    for i in range(n)
+                    if not covered[i] and len(candidates[i]) > route
+                ]
+                if not requests:
+                    continue
+                before = int(covered.sum())
+                self._fetch_pass(
+                    client, requests, vectors, covered, f"  s2 pass{route + 1}"
+                )
+                gained = int(covered.sum()) - before
+                log.info(f"  pass {route + 1}: {len(requests)} lookups -> "
+                         f"+{gained} vectors (coverage {covered.mean():.1%})")
 
         res = EmbeddingResult(vectors, covered, self.name, self.model)
         log.info(f"S2 SPECTER2 coverage: {res.coverage:.1%}")

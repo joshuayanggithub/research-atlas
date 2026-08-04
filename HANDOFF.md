@@ -2,7 +2,8 @@
 
 You are taking over a **working MVP**. This doc gets you productive fast. Read
 `Design.md` for *why* decisions were made, `Features.md` for *what* the app does,
-`docs/ARCHITECTURE.md` for the code map, and `docs/ROADMAP.md` for what to build next.
+`docs/ARCHITECTURE.md` for the code map, `docs/ORGANIZATION_DIRECTORY.md` for the directory
+design, and `docs/ROADMAP.md` for what to build next.
 
 ---
 
@@ -10,12 +11,16 @@ You are taking over a **working MVP**. This doc gets you productive fast. Read
 
 An interactive 2D "map of CS/AI research": ~28k papers as points, semantically similar
 papers near each other, Google-Maps-style semantic zoom (fields → topics → subtopics),
-plus organization / author / date filters, on-select citation arcs, and related works.
+plus a drill-down organization filter (org → dept/lab → researchers), author and
+month-granularity date filters (with a publication histogram + presets), default-visible
+directed citation edges, a selected-paper citation explorer and arXiv preview, and related
+works.
 
 - **Offline Python pipeline** (`pipeline/`, 12 stages `s00`–`s11`) turns OpenAlex + Semantic
   Scholar data into a **static artifact bundle**.
 - **React + deck.gl frontend** (`web/`) renders that bundle. **No backend.**
-- Everything below is **committed and verified end-to-end in a browser**. Working tree clean.
+- The generated bundle is present in this working copy. Check `git status` before editing;
+  local instructions and dependency lock state may be untracked.
 
 ---
 
@@ -57,12 +62,13 @@ cd web && npm install
 ```bash
 cd web && npm run dev        # http://localhost:5173
 ```
-You should see ~28,043 colored points filling the viewport, semantic-zoom labels, and a
+You should see ~71,831 colored points filling the viewport, semantic-zoom labels, and a
 Filters sidebar. If you instead see "Failed to load data", the bundle is missing → rebuild.
 
 **Verified working** (headless browser, screenshots): map render, semantic zoom
-(fields→topics→subtopics), title search, node select (details + citation toggle),
-fused related-works ranking, org-filter dimming, GPU date slider.
+(fields→topics→subtopics), default directional edges, title search, node select (directed
+citation graph/lists plus paper preview), fused related-works ranking, org-filter dimming,
+GPU date slider.
 
 ---
 
@@ -81,24 +87,24 @@ pool rate-limits hard (HTTP 429 with long backoffs). On this machine the fetch i
 (`pipeline/.cache/s2_specter2/`, 74 batches) so a rebuild is fast; on a fresh clone the
 first `s03` run takes several minutes. A `429`/`400` on a batch is skipped, not fatal.
 
-Stage order (note **s09 runs before s08** — neighbors need the edge list):
+Stage order (edges and neighbors run before the hierarchy because `s06` consumes both):
 `s00 resolve orgs → s01 fetch → s02 corpus → s03 embed → s04 project → s05 cluster →
-s06 hierarchy → s07 label → s09 edges → s08 neighbors → s10 indexes → s11 emit`.
+s09 edges → s08 neighbors → s06 hierarchy → s07 label → s10 indexes → s11 emit`.
 
 ---
 
-## Current build (as of the last commit `fad8e7d`)
+## Current generated bundle
 
 | | |
 |---|---|
-| Corpus | **28,043** CS papers (OpenAlex field 17), 2020–2026 |
-| Orgs | DeepMind, Meta/FAIR, Microsoft Research, Berkeley, CMU, Stanford, MIT |
-| Embeddings | **SPECTER2** (768-d) fetched from Semantic Scholar; `on_uncovered: drop` keeps only papers with a real SPECTER2 vector (39,231 fetched → 28,043 kept) for one clean space |
-| Layout | openTSNE 768→2D, frozen `projector.pkl` |
-| Clusters | UMAP→10D + HDBSCAN (103 clusters) — used for `cluster_leaf` |
-| Semantic zoom | **adaptive recursive k-means** on 2D coords: 6 bands, ~1,976 regions (8→24→72→216→624→1032) |
-| Labels | OpenAlex subfield/topic names at coarse bands; c-TF-IDF phrases (title+abstract, ancestor-excluded) at fine bands |
-| Bundle | 9 files, ~17 MB uncompressed Arrow/JSON in `web/public/data/` |
+| Corpus | **71,831** CS papers (OpenAlex field 17), 2015–2026 |
+| Orgs | **12 curated roots** (Google, Google DeepMind, Amazon, OpenAI, NVIDIA, Allen Institute for AI, Meta, Microsoft Research, UC Berkeley, CMU, Stanford, MIT) + **30 evidence-backed dept/lab sub-units** (CMU→Robotics Institute/LTI/MLD; Meta→FAIR/Reality Labs/Meta AI; MIT→CSAIL/RLE) + **~3,575 non-curated corpus institutions** (`curated:false`, ≥3 papers) so *any* university/company is searchable+filterable. `orgs.json` (~2.1 MB) is a 2-level hierarchy (`parent`/`children`, rollup + direct counts, `curated` flag). Curated roots drive the browse tree + color-by-org; directory entries are search+filter only. |
+| Embeddings | **SPECTER2** (768-d) from Semantic Scholar, addressed by arXiv→DOI→MAG (MAG pass recovers papers whose OpenAlex DOI S2 can't resolve, e.g. "Attention Is All You Need"); `on_uncovered: drop` keeps only papers with a real vector (89,140 fetched → 80.6% covered → **71,831 kept**) for one clean space |
+| Layout | openTSNE 768→2D; reducer and map normalization frozen in `projector.pkl` |
+| Clusters | UMAP→10D + HDBSCAN (235 clusters) — used for `cluster_leaf` |
+| Semantic zoom | **nested Leiden communities on the planar substrate** (2D-layout kNN adjacency, 768-D cosine weights) so each region is one contiguous area of the map: **11 bands, 24,215 regions**; resolution bisected to the target child count. Deepest band resolves ~3-paper micro-clusters. (Prior fused-graph `leiden`/`louvain` and 2D `kmeans`/`quadtree` stay selectable via `hierarchy.method`. See Design.md §5 + `docs/RESEARCH_PRIOR_WORK.md` §1.4.) |
+| Labels | discriminative OpenAlex topics + representative title/abstract c-TF-IDF phrases (MathML stripped structurally), ancestor/sibling-deduped; **small leaf communities named from their shared title n-gram** (~11,700 labels) |
+| Bundle | 9 files, ~51 MB uncompressed Arrow/JSON in `web/public/data/` |
 
 ---
 
@@ -112,8 +118,15 @@ artifact references papers by `node_id`.
 
 Artifacts: `points.arrow` (x,y,year,cites,cluster,topic ids,color) · `papers.arrow`
 (title/authors/doi/…) · `neighbors.arrow` (fused kNN) · `edges.arrow` (citations) ·
-`authors.arrow` · `clusters.json` · `labels.json` · `orgs.json` · `topics.json` ·
-`manifest.json`.
+`authors.arrow` · `clusters.json` · `labels.json` · `orgs.json` (hierarchical) · `topics.json` ·
+`manifest.json`. The frontend derives a per-point `monthIndex` at load from
+`papers.publication_date` for month-granularity date filtering (not shipped in Arrow).
+
+Org sub-units come from a *separate* offline artifact: `s02` writes
+`data/interim/affiliations.parquet` (paper-id keyed raw-affiliation evidence, so it never
+touches the frozen `node_id` order), and `pipeline/directory/units.py` matches it into the
+`orgs.json` hierarchy in `s10`. Regenerating org data is cheap: `uv run python -m
+pipeline.run_all --only s10,s11` — no re-embed/re-project.
 
 ---
 
@@ -135,18 +148,37 @@ Artifacts: `points.arrow` (x,y,year,cites,cluster,topic ids,color) · `papers.ar
 6. **SPECTER2 (fetched) and SciNCL (local) are different embedding spaces** — mixing them
    at scale creates a visible "island". Hence `on_uncovered: drop`. See ROADMAP for the
    `specter2_local` fix.
+7. **The zoom hierarchy is graph-derived but not validated ground truth.** `s06` recursively
+   partitions the fused semantic/citation graph and uses 2D only for placement. Do not claim
+   topic correctness until the human-reviewed benchmark in the ROADMAP exists.
+8. **Organization config defines the corpus.** The seven *root* org filters still double as
+   corpus-fetch predicates, so they are not yet an arbitrary organization catalog —
+   supporting "any organization" requires decoupling broad corpus ingestion from the
+   membership index. Dept/lab sub-units, however, are now real: they come from
+   `pipeline/directory/units.py` matching retained raw affiliation strings, and FAIR is a
+   narrow affiliation-evidenced child (425 papers) beneath the broad `Meta` parent — not the
+   whole parent. Sub-unit matching is confidence-95 exact-name only; a parent match never
+   implies a child. Follow `docs/ORGANIZATION_DIRECTORY.md` for the full target model.
+9. **Org sub-units regenerate without a full rebuild.** Because affiliation evidence is a
+   separate paper-id-keyed artifact, editing `pipeline/directory/units.py` only needs
+   `--only s02,s10,s11` (or just `s10,s11` if `affiliations.parquet` already exists). The
+   frozen embedding/projection is untouched — verify `points.arrow` row count is unchanged.
 
 ---
 
 ## Verifying changes
 
-- Pipeline unit tests: `uv run pytest` (9 tests: abstract reconstruction, DOI handling).
+- Pipeline unit tests: `uv run pytest` (30 tests: abstract, DOI, projector-coordinate,
+  fused-similarity, hierarchy, label, and **org sub-unit attribution** invariants).
 - Frontend typecheck / build: `cd web && npx tsc -b && npm run build`.
-- Visual: `cd web && npm run dev`, then drive it. The previous agent used the
-  Playwright MCP (`playwright-proxy-mcp`) — navigate to `localhost:5173`, screenshot,
-  dispatch wheel events on the canvas to test zoom. Check the browser console for errors
-  (a favicon 404 is the only expected one).
+- Automated e2e: `cd web && npm run test:e2e` (Playwright, desktop + mobile — load, search,
+  org drill-down, org-scoped researchers, date presets, route-mocked load failure). On a
+  fresh machine run `npx playwright install chromium` once.
+- Visual (still required for UI changes per `AGENTS.md`): `cd web && npm run dev`, then
+  drive it via the Playwright MCP — navigate, screenshot at a desktop and a mobile
+  viewport, exercise the changed workflow, and check the browser console for errors (a
+  favicon 404 is the only expected one).
 - After a pipeline change, re-run the affected stages and eyeball
-  `web/public/data/labels.json` / `manifest.json`.
+  `web/public/data/labels.json` / `orgs.json` / `manifest.json`.
 
 See `docs/ROADMAP.md` for prioritized next work and known rough edges.

@@ -1,100 +1,153 @@
 # Roadmap — next work, prioritized
 
-Ordered by value-per-effort for the next agent. Each item says *why*, *where*, and gives a
-concrete starting point. The MVP is done and verified; these are improvements and scale-ups.
+Ordered by architectural value after the 2026-07 re-evaluation in `Design.md`. The current
+MVP is useful, but presentation polish should not outrank corpus and topic correctness.
 
----
+Prior-work survey backing several items below (embedding/layout/semantic-zoom and
+org/lab/author attribution, with primary sources and adopt-now recommendations):
+[`docs/RESEARCH_PRIOR_WORK.md`](RESEARCH_PRIOR_WORK.md).
 
-## Known rough edges (quick wins)
+## P0: organization, corpus, and semantic correctness
 
-### 1. Band 0 is dominated by "Artificial Intelligence"
-AI is ~67% of the corpus, so most top-level k-means regions are AI-majority and get the
-same coarse label. **Fix options** (in `pipeline/stages/s07_label.py` / `config.yaml`):
-- Bump `hierarchy.root_clusters` (8 → ~14) so band 0 has more, smaller regions.
-- When a band-0 region is overwhelmingly one subfield, label it by its **majority
-  band-1/topic** name instead of the subfield (more informative than "Artificial
-  Intelligence" ×5).
+### 1. Preserve organization evidence — DONE (partial)
 
-### 2. A few fine labels are still generic ("Local Data", "Sonar Web")
-c-TF-IDF top-1 phrases are occasionally weak. **Fix**: a one-time **LLM naming pass** over
-each region's top keywords + a few representative titles → clean topic names. Cheap because
-it runs once per region (~2k regions), not per paper. Add as an optional `s07` step gated by
-a config flag; cache results keyed by region membership hash so reruns are free.
+`s02` now retains the raw affiliation strings per authorship (scoped to the resolved org
+institution) in `affiliations.parquet`, and `pipeline/directory/units.py` matches them into
+evidence-backed dept/lab sub-units emitted as a two-level hierarchy in `orgs.json`. The
+broad Meta seed is named `Meta`; FAIR is a narrow child (425 papers). **Still to do:**
+retain author/ORCID IDs and institution IDs as structured columns (only affiliation strings
+are kept today), and add normalization fixtures for messier affiliation variants.
 
-### 3. Citation arcs are hard to see in the dense cloud
-`useEdgeLayer` draws them but they're lost among 28k points. **Fix**: on select, fade
-non-neighbor points harder, or auto-zoom to the selected node's neighborhood.
+Prior-work confirms this manual-curation approach is *correct*, not a shortcut: **ROR (and
+therefore OpenAlex) deliberately excludes departments/labs** — only ~0.06% of ROR records are
+university-child departments, so dept/lab granularity is unsourceable from registries and
+must be built. Two verified upgrades to consider (see `docs/RESEARCH_PRIOR_WORK.md` §2):
+- **Benchmark affiliation→institution matching against AffRo** (OpenAIRE, arXiv:2505.07577):
+  it beats OpenAlex's built-in matcher (F1 ~0.937 vs 0.921) on the CC0 **AffRoDB** set and is
+  production-proven — and it catches the documented "OpenAlex parser not retrained since April
+  2023" gap for newer institutions.
+- **Auto-propose sub-units via co-authorship community detection** (communities cluster around
+  PIs ≈ research groups) for human confirmation, to scale curation past hand-listing.
 
----
+### 2. Build the canonical organization directory
 
-## Medium: the SPECTER2 coverage fix (removes the dropped 28%)
+Implement the provider-neutral model in
+[`ORGANIZATION_DIRECTORY.md`](ORGANIZATION_DIRECTORY.md): stable local identities, typed
+and date-valid `part_of` relationships, aliases, researcher affiliations, evidence, and
+authorship-backed direct paper attributions.
 
-**Problem**: `on_uncovered: drop` discards ~11k papers Semantic Scholar has no SPECTER2
-vector for. The user asked "can SPECTER2 generalize?" — **yes**: SPECTER2 is an open model
-(`allenai/specter2`, Apache-2.0), not just S2's lookup table.
+- Add `pipeline/directory/` provider, canonicalization, attribution, and validation
+  boundaries.
+- Seed the current seven roots and evidence-backed Meta/academic child units.
+- Emit artifact schema v2 (`organizations.json`, `paper_organizations.arrow`,
+  `researchers.arrow`, and `researcher_organizations.arrow`) alongside legacy artifacts.
+- Add golden tests for Meta/FAIR separation, researcher moves, multiple parents,
+  multi-organization papers, and unresolved aliases.
+- Implement CSRankings as a disabled-by-default academic provider with synthetic fixtures.
+  Do not redistribute transformed data until its CC BY-NC-ND licensing question is
+  resolved. (Verified: the CSRankings project as a whole is CC BY-NC-ND 4.0 — NonCommercial
+  **and** NoDerivatives — while its underlying DBLP data is separately ODC-BY; its
+  faculty→institution map is manually curated, not algorithmic. See
+  `docs/RESEARCH_PRIOR_WORK.md` §2A.)
 
-**Fix**: add a **`specter2_local` embedding backend** that runs the SPECTER2 model locally
-(via the `adapters` library: base `allenai/specter2_base` + the proximity adapter
-`allenai/specter2`) on papers S2 didn't cover. Then the pipeline gets **one SPECTER2 space
-at 100% coverage, no dropped rows, no island**.
-- Where: new `pipeline/embedding/specter2_local.py` implementing `EmbeddingBackend`; wire
-  into `s03_embed.run` so `on_uncovered: "fill_local"` uses it instead of SciNCL (or add a
-  third `on_uncovered: "fill_specter2"`).
-- Note: `adapters` is a different API than sentence-transformers (see `scincl_local.py` for
-  the device-handling pattern to mirror).
-- Then flip `config.yaml` `on_uncovered` and rerun `s03`→`s11`.
+### 3. Decouple corpus discovery from organizations
 
----
+Today, configured institutions are both fetch predicates and UI filters. Replace that with
+a broad field/date corpus from the OpenAlex snapshot and a separate paper-to-organization
+membership artifact. This is required before "any organization" is a truthful capability.
 
-## Medium: get a Semantic Scholar API key
-The S2 shared pool rate-limits hard (429s, minutes of backoff). A free key (set `S2_API_KEY`
-in `.env`, already plumbed through `config.secrets` → `Specter2S2Backend`) raises limits and
-makes `s03` fast + coverage higher. Request at semanticscholar.org/product/api (approval can
-take days). No code change needed — just the env var.
+### 4. Complete one-space embeddings
 
----
+`s03` now addresses Semantic Scholar by arXiv → DOI → MAG id, which recovers papers whose
+OpenAlex DOI S2 does not index (measured: +57% of MAG-bearing dropped rows, including the
+canonical "Attention Is All You Need"). `on_uncovered: drop` still removes whatever remains
+unresolved. Close the rest with a `specter2_local` backend using the same SPECTER2
+model/adapter as the fetched vectors, then embed missing papers locally. Validate with a
+sample of papers available through both paths before assuming the two sources are
+numerically compatible. If compatibility cannot be shown, embed the entire corpus locally.
 
-## Larger: Phase 2 — university → department → lab granularity
-Currently org = OpenAlex institution level (OpenAlex has no dept/lab nodes). The spec wants
-university→dept→lab (e.g. Berkeley → BAIR). **Approach** (from `Design.md`): parse
-`authorships[].raw_affiliation_strings` (already fetched in `s01`'s `SELECT`) for
-"Department of …" / lab names, and/or seed from the CSRankings faculty roster (CC BY-NC-ND —
-use as a *reference to regenerate*, don't ship their CSVs). Build a nested org tree artifact;
-make `OrgFilterPanel` a collapsible tree. This is real work — scope it as its own phase.
+### 5. Validate the planar hierarchy
 
----
+Semantic-zoom regions now come from Leiden over the planar substrate (2D-layout kNN
+adjacency, 768-D cosine weights); the fused semantic/citation graph remains selectable for
+comparison. Regions are contiguous on screen and topic purity is measured against OpenAlex
+labels, but OpenAlex topics are weak ground truth. Do not mistake this for topic
+correctness. Build a versioned human-reviewed benchmark and track:
 
-## Larger: Phase 1 — scale toward ~1M papers
-The MVP ships everything statically (~17 MB). That breaks past ~100k points. When scaling:
-- **Fetch**: switch `s01` from the metered API to the free OpenAlex S3 snapshot
-  (`s3://openalex`, ~330 GB, `--no-sign-request`); join SPECTER2 from S2's bulk
-  `embeddings-specter_v2` dataset instead of per-paper batches.
-- **Projection/clustering**: openTSNE time/RAM grows; HDBSCAN blows up past ~200k. Fit on a
-  subsample + `projector.transform()` the rest; swap HDBSCAN → hierarchical k-means (already
-  behind `cluster.method`).
-- **Frontend**: `papers`/`neighbors`/`edges` shipped whole become hundreds of MB. Move to
-  **tiled** point/label streaming (deck.gl `TileLayer` + quadtree Arrow tiles) and serve
-  metadata/neighbors on demand; push filtering to GPU bitmasks or DuckDB-WASM.
-The stage boundaries + artifact contract are designed to stay the same — only stage
-*internals* and the frontend *data-loading layer* change.
+- neighborhood precision against human-reviewed related-paper sets;
+- community coherence and coverage at each zoom band;
+- hierarchy stability across rebuilds;
+- label specificity, duplication, and human ratings.
 
----
+**Switch Louvain → Leiden — DONE (2026-07).** `s06` now defaults to Leiden
+(`leidenalg`/`igraph`); Louvain stays selectable. On the live 28k corpus, internally
+disconnected zoom cells dropped 14.5% → 10.5% and the hierarchy resolves more/finer
+communities (6,732 → 7,359 regions) with strict nesting intact. **Remaining:** the residual
+10.5% comes from this stage's *semantic* post-processing (coarsen/merge/fill + embedding
+fallback) re-merging graph-disjoint groups — the raw Leiden split itself is 0% disconnected.
+A **connectivity-aware post-processing pass** (split any cell whose induced subgraph is
+disconnected, or prefer graph-adjacent merges) would drive this toward 0, but trades against
+the branch-target and strict-nesting invariants, so it needs its own design. See
+`docs/RESEARCH_PRIOR_WORK.md` §1.4 and recommendation #1.
 
-## Smaller ideas
-- **Recency/venue color modes** exist (`colors.ts`); add a "citation count" heat mode.
-- **Deep links / saved views** — encode viewState + filters + selection in the URL.
-- **Local citation subgraph panel** (sigma.js / cosmos.gl) for a Connected-Papers-style
-  drill-down on the selected node (currently only the related-works list + arcs).
-- **KDE "topography" contours** under the points (deck.gl `ContourLayer` or precomputed
-  paths) for a map-like feel.
-- **Incremental updates**: nightly OpenAlex delta → embed new papers →
-  `projector.transform()` (existing points don't move) → append to clusters/labels/neighbors.
+**Cross-check labels with a content-only signal.** A WizMap-style tile t-TF-IDF or
+hierarchical BERTopic pass (both need no citation data) gives an independent second opinion to
+validate the citation-community labels against. See `docs/RESEARCH_PRIOR_WORK.md` §1.3.
+
+## P1: reproducibility and quality gates
+
+- Hierarchical organization search, direct/rollup counts, and organization-scoped
+  researcher browsing are now implemented (from affiliation evidence, without schema-v2).
+  Still to add on top: breadcrumbs, confidence disclosure, and the confidence-tiered
+  inclusive mode once the v2 artifacts exist.
+- Add official-page adapters incrementally for reviewed departments, labs, and corporate
+  research units; every source row must be mapped, ignored with a reason, or unresolved.
+- Commit a Python lockfile intentionally and choose one dependency declaration instead of
+  maintaining both `pyproject.toml` and `pipeline/requirements.txt` by hand.
+- Add a redistributable sample bundle or release download. A fresh clone currently cannot
+  render without API access and a full pipeline run.
+- Add artifact-contract tests covering dense IDs, row alignment, edge bounds, hierarchy
+  parentage/coverage, finite normalized vectors, and manifest metadata. (Org sub-unit
+  attribution now has golden tests in `pipeline/tests/test_directory.py`; the frontend
+  loader still validates dense IDs, row alignment, and edge bounds at load.)
+- Frontend e2e tests exist (`web/e2e/`, Playwright desktop+mobile): load failure, search +
+  selection, org drill-down, org-scoped researchers, and date presets. Still to add:
+  selection-focus assertions, citation-mode toggles, and keyboard-only navigation.
+- Add CI for Python tests, frontend build/typecheck, and the Playwright e2e suite. Add an
+  open-source license before presenting the repository as distributable open source.
+
+## P2: scale beyond the in-memory bundle
+
+The ~17 MB static bundle is appropriate now. Past roughly 100k papers:
+
+- ingest the OpenAlex snapshot and bulk embedding datasets instead of per-paper APIs;
+- fit projection/layout on stable landmarks and transform/aligned-update the remainder;
+- emit spatial point/label tiles and lazy paper/neighbor/edge partitions;
+- serve immutable, content-addressed versions so a client never mixes artifacts from two
+  builds;
+- add a query service only where static partitions cannot answer the workflow.
+
+## UX follow-ups
+
+- **Ultra-fine "micro-cluster" labels** — DONE (option 1, design in `Design.md` §5). The
+  hierarchy now recurses to 11 bands (`min_cluster_size: 8`, `min_tile_points: 3`) and `s07`
+  names small leaf communities from their shared title n-gram. Follow-up: a human-reviewed
+  spot check of leaf-label quality (some 3-paper groups will still get weak names), and
+  tuning `_LEAF_MAX_GROUP` / band step if the deep bands feel too sparse or too dense.
+- Evaluate an optional cached LLM naming pass against the deterministic topic+c-TF-IDF
+  baseline; key it by a community membership hash and retain reproducible fallback labels.
+  This is now the **highest-value upgrade for the leaf bands** — deterministic shared-phrase
+  names ship today; an LLM pass would sharpen them ("Sim-to-Real RL for Legged Locomotion").
+- Add deep links for view state, filters, and selection.
+- Consider surfacing the remaining verified UI/UX findings from the 2026-07 audit not yet
+  addressed (details-panel tab keyboard semantics, arXiv iframe fallback, zero-results map
+  overlay, bundle-load spinner, retryable error screen).
 
 ---
 
 ## Testing expectations for any change
-- `uv run pytest` stays green (add tests for new pipeline logic — see
-  `pipeline/tests/test_abstract.py`, `test_corpus.py` for the style).
+- `uv run pytest` stays green (add tests for new pipeline logic; existing tests cover
+  abstract reconstruction, corpus identifiers, and projector normalization).
 - `cd web && npx tsc -b && npm run build` stays clean.
 - After pipeline changes, rerun affected stages and **look at the map in a browser** — the
   previous agent caught 4 real bugs (DOI mangling, topic-id parsing, zstd Arrow, label

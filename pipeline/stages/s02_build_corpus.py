@@ -11,16 +11,25 @@ Also logs abstract coverage % (risk #4 monitoring).
 
 from __future__ import annotations
 
+import json
+
 import polars as pl
 
 from pipeline.common import log
 from pipeline.common.abstract import embed_text, reconstruct_abstract
-from pipeline.common.io import read_jsonl
+from pipeline.common.io import read_jsonl, read_json, write_json
 from pipeline.common.openalex_client import short_id
 from pipeline.config import INTERIM_DIR, RAW_DIR, Config, ensure_dirs, load_config
 
 RAW_IN = RAW_DIR / "works_raw.jsonl"
+ORGS_RESOLVED_IN = INTERIM_DIR / "orgs_resolved.json"
 OUT = INTERIM_DIR / "corpus.parquet"
+# Per-paper organization affiliation evidence (keyed by paper_id, survives the s03 drop
+# compaction). Kept SEPARATE from corpus.parquet so it never affects node ordering.
+AFFIL_OUT = INTERIM_DIR / "affiliations.parquet"
+# OpenAlex institution id -> {display_name, type, country_code} for every institution seen
+# in the corpus. s10 turns this into the full searchable org directory.
+INSTITUTIONS_OUT = INTERIM_DIR / "institutions.json"
 
 
 def _numeric_id(openalex_url: str | None) -> int:
@@ -60,7 +69,11 @@ def _topic_lineage(topic: dict | None) -> dict:
             "topic_name": topic.get("display_name")}
 
 
-def _parse_work(w: dict) -> dict | None:
+def _parse_work(
+    w: dict,
+    inst_to_org: dict[str, str] | None = None,
+    inst_registry: dict[str, dict] | None = None,
+) -> dict | None:
     wid = short_id(w.get("id"))
     title = (w.get("title") or "").strip()
     if not wid or not title:
@@ -71,16 +84,35 @@ def _parse_work(w: dict) -> dict | None:
     authors: list[str] = []
     author_ids: list[str] = []
     inst_ids: list[str] = []
+    # org_key -> raw affiliation strings on authorships resolved to that org's institution.
+    # This is the evidence the directory layer mines for department/lab sub-units. We only
+    # keep strings for authorships OpenAlex already tied to a configured org institution,
+    # so a co-author's unrelated affiliation can never leak into an org's evidence.
+    org_affils: dict[str, list[str]] = {}
     for a in w.get("authorships", []) or []:
         au = a.get("author") or {}
         aid = short_id(au.get("id"))
         if aid:
             author_ids.append(aid)
             authors.append(au.get("display_name") or aid)
+        raws = [r for r in (a.get("raw_affiliation_strings") or []) if r]
+        author_org_keys: set[str] = set()
         for inst in a.get("institutions", []) or []:
             iid = short_id(inst.get("id"))
             if iid:
                 inst_ids.append(iid)
+                # Record institution display metadata into the shared registry (first-seen
+                # name/type wins; OpenAlex is consistent per id).
+                if inst_registry is not None and iid not in inst_registry:
+                    inst_registry[iid] = {
+                        "display_name": inst.get("display_name") or iid,
+                        "type": inst.get("type") or "education",
+                        "country_code": inst.get("country_code"),
+                    }
+                if inst_to_org and iid in inst_to_org:
+                    author_org_keys.add(inst_to_org[iid])
+        for org_key in author_org_keys:
+            org_affils.setdefault(org_key, []).extend(raws)
 
     refs = [short_id(r) for r in (w.get("referenced_works") or [])]
     ids = w.get("ids") or {}
@@ -99,11 +131,20 @@ def _parse_work(w: dict) -> dict | None:
         "cited_by_count": int(w.get("cited_by_count") or 0),
         "doi": _clean_doi(ids.get("doi")),
         "arxiv_id": _arxiv_from_ids(ids),
+        # Third addressing route for Semantic Scholar. Some works — including landmark
+        # papers — carry a DOI that S2 does not index, but S2 does resolve their MAG id.
+        # "Attention Is All You Need" is exactly this case: OpenAlex gives it only
+        # doi:10.65215/2q58a426 (unknown to S2) plus mag:2626778328 (which S2 resolves,
+        # with a SPECTER2 vector). Measured on the dropped rows of the previous build,
+        # 23.5% had a MAG id and 57% of those came back with a real vector.
+        "mag_id": str(ids["mag"]) if ids.get("mag") else None,
         "venue": source.get("display_name"),
         "author_ids": author_ids,
         "author_names": authors,
         "institution_ids": list(dict.fromkeys(inst_ids)),  # de-dup, keep order
         "referenced_works": refs,
+        # {org_key: [raw affiliation strings]} — dedup per org, preserve order.
+        "org_affiliations": {k: list(dict.fromkeys(v)) for k, v in org_affils.items()},
         **prim,
     }
 
@@ -132,17 +173,37 @@ def _arxiv_from_ids(ids: dict) -> str | None:
     return None
 
 
+def _load_inst_to_org() -> dict[str, str]:
+    """Build {openalex_institution_id: org_key} from the resolved orgs (s00 output).
+
+    Empty if s00 has not run yet; s02 then simply records no org affiliation evidence and
+    the directory layer degrades to parent-only attribution.
+    """
+    if not ORGS_RESOLVED_IN.exists():
+        return {}
+    resolved = read_json(ORGS_RESOLVED_IN)
+    inst_to_org: dict[str, str] = {}
+    for org_key, org in resolved.items():
+        for inst in org.get("institutions", []):
+            iid = inst.get("id")
+            if iid:
+                inst_to_org[iid] = org_key
+    return inst_to_org
+
+
 def run(cfg: Config | None = None) -> int:
     cfg = cfg or load_config()
     ensure_dirs()
     log.stage("s02_build_corpus")
 
+    inst_to_org = _load_inst_to_org()
+    inst_registry: dict[str, dict] = {}
     rows: list[dict] = []
     seen: set[str] = set()
     n_raw = 0
     for w in read_jsonl(RAW_IN):
         n_raw += 1
-        rec = _parse_work(w)
+        rec = _parse_work(w, inst_to_org, inst_registry)
         if rec is None:
             continue
         if rec["paper_id"] in seen:
@@ -155,13 +216,31 @@ def run(cfg: Config | None = None) -> int:
     for i, r in enumerate(rows):
         r["node_id"] = i
 
+    # Split the org-affiliation evidence into its own paper_id-keyed artifact. Keeping it
+    # out of corpus.parquet means s03's drop/compaction never has to carry a nested map,
+    # and s10 can rebuild org sub-units without touching the frozen node ordering. The
+    # evidence is a {org_key: [strings]} map with varying keys, so we serialize it to a
+    # JSON string column (only the Python directory layer in s10 reads it).
+    affil_rows = [
+        {"paper_id": r["paper_id"],
+         "org_affiliations_json": json.dumps(r.pop("org_affiliations"), ensure_ascii=False)}
+        for r in rows
+    ]
+    pl.DataFrame(affil_rows).write_parquet(AFFIL_OUT)
+
     df = pl.DataFrame(rows)
     df.write_parquet(OUT)
 
+    # Institution registry (every institution seen in the corpus), for the full org directory.
+    write_json(inst_registry, INSTITUTIONS_OUT)
+
     n = len(rows)
     cov = df["has_abstract"].sum() / n if n else 0.0
+    n_with_org = sum(1 for r in affil_rows if r["org_affiliations_json"] != "{}")
     log.info(f"raw={n_raw} | corpus={n} (deduped) | abstract coverage={cov:.1%}")
     log.info(f"year range: {df['year'].min()}..{df['year'].max()}")
+    log.info(f"org-affiliation evidence: {n_with_org}/{n} papers -> {AFFIL_OUT}")
+    log.info(f"institutions seen: {len(inst_registry)} -> {INSTITUTIONS_OUT}")
     log.info(f"wrote -> {OUT}")
     return n
 
