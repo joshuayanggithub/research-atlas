@@ -88,13 +88,18 @@ class ClusterCfg(BaseModel):
 
 
 class HierarchyCfg(BaseModel):
-    method: Literal["kmeans", "quadtree"] = "kmeans"
-    max_depth: int = 6
+    method: Literal["planar", "leiden", "louvain", "kmeans", "quadtree"] = "planar"
+    max_depth: int = 11
     root_clusters: int = 8
     branching: int = 3
-    min_cluster_size: int = 30
-    min_tile_points: int = 12
-    max_labels_per_level: int = 200
+    min_cluster_size: int = 8
+    min_tile_points: int = 3
+    max_labels_per_level: int = 320
+    direct_citation_weight: float = 0.45
+    max_child_fraction: float = 0.68
+    # Spatial degree of the planar substrate. Higher = smoother, larger regions; lower =
+    # more fragmented. 15 matches the projector's n_neighbors scale.
+    planar_k: int = 15
     # legacy quadtree knob (only used when method == "quadtree")
     start_depth: int = 2
 
@@ -102,10 +107,12 @@ class HierarchyCfg(BaseModel):
 class FusedCfg(BaseModel):
     alpha: float = 0.6
     knn_k: int = 15
+    text_candidate_multiplier: int = 4
+    citation_candidate_multiplier: int = 4
 
 
 class LabelsCfg(BaseModel):
-    ctfidf_top_n: int = 3
+    ctfidf_candidates: int = 12
     ngram_max: int = 4
     ctfidf_min_gram: int = 2
     use_abstract: bool = True

@@ -23,8 +23,8 @@ corpus:
       kind: "industry"
       search: "Google DeepMind"
       ids: ["I4210090411"]
-    - key: "meta_fair"
-      name: "Meta AI (FAIR)"
+    - key: "meta"
+      name: "Meta"
       kind: "industry"
       search: "Meta"
       ids: ["I4210114444", "I2252078561"]        # Meta US + Meta IL
@@ -90,34 +90,55 @@ cluster:
   random_state: 42
 
 hierarchy:
-  # Semantic-zoom regions come from ADAPTIVE recursive k-means on the 2D layout (regions
-  # follow the data, unlike a fixed quadtree), giving finer topics as you zoom in.
-  # method: "kmeans" (adaptive, recommended) | "quadtree" (legacy fixed grid).
-  method: "kmeans"
-  # Number of semantic-zoom bands (band 0 = coarsest "continents").
-  max_depth: 6
+  # Semantic-zoom regions are nested Leiden communities over the PLANAR substrate: the
+  # adjacency is the 2D layout's kNN graph, the edge weights are 768-D embedding cosine.
+  # Regions are therefore contiguous on screen by construction (~1-2 fragments each)
+  # instead of scattered across the map (~122 fragments/region under the previous fused
+  # 768-D + citation graph), and topic purity is HIGHER, not lower (band 0: 0.19 -> 0.31).
+  # Resolution is bisected to hit the requested child count. See s06's docstring.
+  # Comparison methods: "leiden"/"louvain" (fused 768-D + citation graph) |
+  # "kmeans" (2D spatial) | "quadtree" (fixed 2D grid).
+  method: "planar"
+  # Spatial degree of the planar graph (2D kNN). Higher = smoother, larger regions.
+  planar_k: 15
+  # Number of semantic-zoom bands (band 0 = coarsest "continents"). Deep bands name
+  # micro-clusters of a handful of papers at maximum zoom (see s07 leaf naming).
+  max_depth: 11
   # Band 0 splits the map into this many regions; each deeper band multiplies by `branching`.
   root_clusters: 8
   branching: 3
-  # A region only subdivides further if it has at least this many papers (keeps fine
-  # regions from fragmenting into noise).
-  min_cluster_size: 30
-  # Minimum papers for a region to earn a label at its band.
-  min_tile_points: 12
-  # Max labels emitted per band (frontend declutter trims further per viewport).
-  max_labels_per_level: 200
+  # A region only subdivides further if it has at least this many papers. Kept low so the
+  # deepest bands can resolve micro-clusters; leaf naming (s07) handles tiny groups.
+  min_cluster_size: 8
+  # Minimum papers for a region to earn a label at its band (leaf micro-clusters).
+  min_tile_points: 3
+  # Max labels emitted per band (frontend declutter trims further per viewport). Deeper
+  # bands have many small regions, so allow more candidates before the CPU declutter.
+  # Raised from 320: bands 4-10 each had MORE regions than that, so ~1250 of band 7's
+  # 1574 regions were silently unlabeled — deep zoom showed points with no topic name.
+  max_labels_per_level: 2000
+  # Minimum weight assigned to an intra-corpus direct citation in the community graph.
+  direct_citation_weight: 0.45
+  # A highly lopsided graph partition cannot provide useful finer zoom. In that case,
+  # split the parent in embedding space while preserving strict parent membership.
+  max_child_fraction: 0.68
 
 fused:
-  # related-works similarity = alpha * cosine(text) + (1 - alpha) * citation_score
+  # related-works similarity = alpha * cosine(text) + (1 - alpha) * citation score.
+  # Candidates are the union of semantic kNN, direct citations, shared references, and
+  # co-citations; the multipliers cap the two broad candidate pools before final ranking.
   alpha: 0.6
   knn_k: 15
+  text_candidate_multiplier: 4
+  citation_candidate_multiplier: 4
 
 labels:
-  ctfidf_top_n: 3             # top n-grams per tile for c-TF-IDF label
+  ctfidf_candidates: 12       # ranked phrases scanned before falling back to a unigram
   ngram_max: 4                # up to 4-grams (e.g. "action-conditioned world models")
   ctfidf_min_gram: 2          # prefer multi-word phrases over bare words at fine bands
   use_abstract: true          # mine label vocabulary from title+abstract, not title only
 
 palette:
   # deck.gl background + default point styling; per-field hues assigned in s07/colors.ts.
-  background: [12, 14, 20]
+  # Matches the "void" chart backdrop (#07090d) so the canvas and chrome share one night.
+  background: [7, 9, 13]
