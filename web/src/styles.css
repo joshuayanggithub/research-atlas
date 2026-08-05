@@ -330,6 +330,14 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
   border-radius: var(--radius); box-shadow: var(--shadow);
   padding: 18px 20px; backdrop-filter: blur(12px);
 }
+/* Left-edge resize handle for the details panel (desktop). A thin hit area that widens on
+   hover; the panel itself is anchored right, so dragging left grows it. */
+.details-resize { position: absolute; top: 0; left: -3px; width: 8px; height: 100%;
+  cursor: ew-resize; z-index: 11; touch-action: none; }
+.details-resize::after { content: ""; position: absolute; top: 0; left: 3px; width: 2px;
+  height: 100%; background: transparent; transition: background 120ms; }
+.details-resize:hover::after { background: var(--accent); }
+
 .panel .close { position: absolute; top: 8px; right: 9px; width: 32px; height: 32px;
   display: grid; place-items: center; background: none; border: none; border-radius: 6px;
   color: var(--subtle); cursor: pointer; line-height: 1; }
@@ -537,10 +545,13 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
     bottom: 8px;
     left: 8px;
     z-index: 40;
-    width: auto;
+    /* Full-width bottom sheet on mobile: override any dragged desktop width. */
+    width: auto !important;
     max-height: 66vh;
     padding: 16px;
   }
+  /* Resize-by-drag is a desktop affordance; the mobile sheet spans the width already. */
+  .details-resize { display: none; }
   .panel .close {
     min-width: 36px;
     min-height: 36px;

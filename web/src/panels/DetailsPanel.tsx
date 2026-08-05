@@ -9,12 +9,52 @@ import { CitationExplorer } from "./CitationExplorer";
 import { FirstFigure } from "./FirstFigure";
 import { RelatedWorksPanel } from "./RelatedWorksPanel";
 
+// Draggable panel width (desktop only), persisted so it survives re-selects and reloads.
+const WIDTH_KEY = "detailsPanelWidth";
+const MIN_WIDTH = 360;
+function clampWidth(px: number): number {
+  // Cap at 92% of the viewport so the panel never fully covers the map; floor keeps the
+  // citation graph / tabs usable.
+  const max = Math.max(MIN_WIDTH, Math.round(window.innerWidth * 0.92));
+  return Math.min(max, Math.max(MIN_WIDTH, px));
+}
+
 export function DetailsPanel({ ds }: { ds: Dataset }) {
   const selectedNode = useStore((s) => s.selectedNode);
   const selectNode = useStore((s) => s.selectNode);
   const [view, setView] = useState<"citations" | "paper">("citations");
   const [detail, setDetail] = useState<PaperDetail | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Panel width. Read the saved value lazily; 0 means "use the CSS default" until the user
+  // drags. Only applied on wide viewports (the mobile bottom-sheet ignores it via CSS).
+  const [width, setWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem(WIDTH_KEY));
+    return saved >= MIN_WIDTH ? saved : 0;
+  });
+
+  // Left-edge drag to resize. The panel is anchored to the right, so widening means the left
+  // edge moves left → width grows as the pointer x decreases. Uses a pointer capture so the
+  // drag keeps tracking even over the map/canvas.
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = panelRef.current?.offsetWidth ?? (width || MIN_WIDTH);
+    const onMove = (ev: PointerEvent) => setWidth(clampWidth(startW + (startX - ev.clientX)));
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.userSelect = "";
+      setWidth((w) => {
+        if (w >= MIN_WIDTH) localStorage.setItem(WIDTH_KEY, String(w));
+        return w;
+      });
+    };
+    document.body.style.userSelect = "none"; // don't select text while dragging
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   useEffect(() => setView("citations"), [selectedNode]);
 
@@ -52,13 +92,28 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
 
   return (
     <div
+      ref={panelRef}
       className="panel details"
       role="dialog"
       aria-label="Paper details"
+      style={width >= MIN_WIDTH ? { width } : undefined}
       onKeyDown={(e) => {
         if (e.key === "Escape") selectNode(null);
       }}
     >
+      {/* Drag the left edge to widen the panel (e.g. to see a figure at full width). */}
+      <div
+        className="details-resize"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize paper panel"
+        title="Drag to resize"
+        onPointerDown={startResize}
+        onDoubleClick={() => {
+          localStorage.removeItem(WIDTH_KEY);
+          setWidth(0);
+        }}
+      />
       <button
         type="button"
         className="close"

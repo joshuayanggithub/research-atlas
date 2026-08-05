@@ -48,8 +48,7 @@ export function FirstFigure({
       if (controller.signal.aborted) return;
       const target = canvasRef.current;
       if (!target) return;
-      const cssWidth = target.parentElement?.clientWidth || 360;
-      extractFirstFigure(pdfUrl, target, cssWidth, controller.signal)
+      extractFirstFigure(pdfUrl, target, controller.signal)
         .then((crop) => {
           if (controller.signal.aborted) return;
           if (!crop) {

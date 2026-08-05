@@ -86,7 +86,10 @@ silently dropped.
 ## Selection, citations & related works
 
 - **Click a paper** to open a details card: title, authors, date, venue, citation count, and
-  a direct link (DOI / arXiv). Author names, venue, and ids are **fetched on demand** for
+  a direct link (DOI / arXiv). The card is **resizable** — drag its left edge to widen it
+  (e.g. to read a figure at full size); double-click the handle to reset. The width persists
+  across selections and reloads. (Desktop only; on mobile the card is a full-width bottom
+  sheet.) Author names, venue, and ids are **fetched on demand** for
   the selected paper (sharded per node); the resident index holds title, year, citations,
   and author ids for all papers. Consequence: hover cards and citation/related **list rows**
   show *title · year · citations* (author names/venue appear on the selected-paper card),

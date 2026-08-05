@@ -103,7 +103,6 @@ function cropRectFor(cap: Caption): FigureCrop["rect"] {
 export async function extractFirstFigure(
   pdfUrl: string,
   canvas: HTMLCanvasElement,
-  cssWidth: number,
   signal: AbortSignal,
   maxPages = 8,
 ): Promise<FigureCrop | null> {
@@ -133,10 +132,13 @@ export async function extractFirstFigure(
     const { cap, label } = chosen;
     const rect = cropRectFor(cap);
 
-    // Pass 2: render just the crop region of that page.
+    // Pass 2: render the crop region to a FIXED high-resolution bitmap, independent of the
+    // panel's current width. The canvas is displayed with CSS width:100% (no inline px
+    // width), so the browser scales this crisp bitmap to fill the panel at any size — the
+    // figure stays sharp when the user resizes the panel wider, without a re-render.
     const page = await doc.getPage(cap.pageNumber);
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const scale = (cssWidth / rect.width) * dpr;
+    const RENDER_WIDTH = 900; // logical px; ample for a widened panel on hi-dpi screens
+    const scale = (RENDER_WIDTH / rect.width) * Math.min(window.devicePixelRatio || 1, 2);
     const full = page.getViewport({ scale });
     const offsetX = rect.x * scale;
     // pdf.js device y grows downward; crop top in user space = rect.y + rect.height.
@@ -147,8 +149,8 @@ export async function extractFirstFigure(
     if (!ctx) throw new Error("no 2d context");
     canvas.width = Math.ceil(rect.width * scale);
     canvas.height = Math.ceil(rect.height * scale);
-    canvas.style.width = `${(rect.width * scale) / dpr}px`;
-    canvas.style.height = `${(rect.height * scale) / dpr}px`;
+    // No inline width/height — CSS (.first-figure-canvas { width:100%; height:auto }) scales
+    // it responsively to the panel.
     await page.render({
       canvasContext: ctx,
       viewport: full,
