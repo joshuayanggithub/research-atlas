@@ -149,6 +149,24 @@ def _neighbors_table() -> pa.Table:
     }, schema=S.NEIGHBORS_SCHEMA)
 
 
+def _emit_neighbor_shards(neighbors: pa.Table) -> tuple[list[str], int]:
+    """Write neighbors as fixed node-id-block shards for on-demand loading.
+
+    node_id is dense (0..N-1) and the table is emitted in node order, so shard ``s`` holds
+    rows [s*SIZE, (s+1)*SIZE). The frontend computes shard = node_id // SIZE and fetches
+    only that file when a paper is selected. Returns (shard paths, shard_size).
+    """
+    size = S.NEIGHBOR_SHARD_SIZE
+    n = neighbors.num_rows
+    paths: list[str] = []
+    for shard, start in enumerate(range(0, n, size)):
+        chunk = neighbors.slice(start, min(size, n - start))
+        name = S.neighbors_shard(shard)
+        write_arrow(chunk, WEB_DATA_DIR / name)
+        paths.append(name)
+    return paths, size
+
+
 def _edges_table() -> pa.Table:
     d = np.load(EDGES_IN)
     return pa.table({
@@ -173,7 +191,8 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     write_arrow(points, WEB_DATA_DIR / S.POINTS)
     point_tiles = _emit_point_tiles(points, reveal_levels)
     write_arrow(_build_papers(corpus), WEB_DATA_DIR / S.PAPERS)
-    write_arrow(_neighbors_table(), WEB_DATA_DIR / S.NEIGHBORS)
+    # Neighbors are sharded for on-demand related-works loading (not shipped whole).
+    neighbor_shards, neighbor_shard_size = _emit_neighbor_shards(_neighbors_table())
     write_arrow(_edges_table(), WEB_DATA_DIR / S.EDGES)
 
     # Copy JSON + authors artifacts from data/artifacts.
@@ -186,7 +205,11 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     clusters_doc = read_json(WEB_DATA_DIR / S.CLUSTERS)
     levels = clusters_doc["levels"]
 
-    tracked = list(S.ALL_FILES) + [t.path for t in point_tiles]
+    tracked = (
+        [f for f in S.ALL_FILES if f != S.NEIGHBORS]  # sharded, not shipped whole
+        + [t.path for t in point_tiles]
+        + neighbor_shards
+    )
     files: dict[str, S.FileMeta] = {}
     for fname in tracked:
         if fname == S.MANIFEST:
@@ -216,6 +239,8 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
         levels=[S.LevelBand(**lv) for lv in levels],
         files=files,
         point_tiles=point_tiles,
+        neighbor_shard_size=neighbor_shard_size,
+        n_neighbor_shards=len(neighbor_shards),
         palette={"background": cfg.palette.background},
     )
     write_json(manifest, WEB_DATA_DIR / S.MANIFEST)

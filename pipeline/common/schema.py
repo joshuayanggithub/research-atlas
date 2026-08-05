@@ -36,6 +36,16 @@ def points_tile(level: int) -> str:
     return f"points-L{level}.arrow"
 
 
+# Neighbors (related-works kNN) are sharded by fixed node-id block so the frontend fetches
+# only the shard for a selected paper on demand, instead of the whole ~9MB (→50MB at 390k)
+# table up front. shard index = node_id // NEIGHBOR_SHARD_SIZE, computed with no lookup.
+NEIGHBOR_SHARD_SIZE = 4096
+
+
+def neighbors_shard(shard: int) -> str:
+    return f"neighbors-{shard}.arrow"
+
+
 ALL_FILES = [
     MANIFEST, POINTS, PAPERS, NEIGHBORS, EDGES, AUTHORS,
     CLUSTERS, LABELS, ORGS, TOPICS,
@@ -237,4 +247,8 @@ class Manifest(BaseModel):
     # Present when the corpus is shipped as fetch-on-demand reveal-level tiles. Ordered by
     # level (0 = coarsest). Empty/omitted for a legacy single-points.arrow bundle.
     point_tiles: list[PointTile] = []
+    # Neighbors (related-works) shard block size; 0 means neighbors.arrow is shipped whole
+    # (legacy). When >0 the frontend loads shard (node_id // size) on demand.
+    neighbor_shard_size: int = 0
+    n_neighbor_shards: int = 0
     palette: dict

@@ -98,7 +98,16 @@ export interface Manifest {
   projector: Record<string, unknown>;
   levels: LevelBand[];
   files: Record<string, FileMeta>;
+  // Related-works neighbors are sharded for on-demand loading: shard = node_id // size.
+  // 0 means the legacy whole neighbors.arrow.
+  neighbor_shard_size?: number;
+  n_neighbor_shards?: number;
   palette: { background: number[] };
+}
+
+export interface NeighborList {
+  ids: Int32Array;
+  scores: Float32Array;
 }
 
 // Columnar point data, unpacked from points.arrow into typed arrays for deck.gl.
@@ -156,7 +165,9 @@ export interface Dataset {
   orgs: OrgsDoc;
   topics: TopicsDoc;
   authors: AuthorRow[];
-  neighbors: { ids: Int32Array[]; scores: Float32Array[] };
+  // Related-works neighbors are fetched on demand by node_id (shard = node_id // size),
+  // so the ~9MB (→50MB at 390k) neighbor table is not in the initial load. Cached per shard.
+  getNeighbors: (node: number) => Promise<NeighborList>;
   edges: CitationEdges;
   // Adjacency built at load from the same directed edge arrays.
   citesOut: Map<number, number[]>;

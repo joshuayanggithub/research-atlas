@@ -8,6 +8,7 @@ import type {
   Dataset,
   LabelsDoc,
   Manifest,
+  NeighborList,
   OrgsDoc,
   PaperMeta,
   PointData,
@@ -94,16 +95,39 @@ function unpackAuthors(table: Table): AuthorRow[] {
   return out;
 }
 
-function unpackNeighbors(table: Table) {
-  const n = table.numRows;
-  const ids: Int32Array[] = new Array(n);
-  const scores: Float32Array[] = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const row = table.get(i)!;
-    ids[row.node_id] = row.neighbor_ids ? Int32Array.from(row.neighbor_ids) : new Int32Array();
-    scores[row.node_id] = row.scores ? Float32Array.from(row.scores) : new Float32Array();
+// Lazy, cached related-works loader. Neighbors are sharded by node-id block (s11), so a
+// selection fetches only its shard instead of the whole ~9MB (→50MB at 390k) table.
+function makeNeighborLoader(manifest: Manifest) {
+  const size = manifest.neighbor_shard_size ?? 0;
+  const shardCache = new Map<number, Promise<Map<number, NeighborList>>>();
+  const EMPTY: NeighborList = { ids: new Int32Array(), scores: new Float32Array() };
+
+  async function loadShard(shard: number): Promise<Map<number, NeighborList>> {
+    const table = await fetchArrow(`neighbors-${shard}.arrow`);
+    const byNode = new Map<number, NeighborList>();
+    for (let i = 0; i < table.numRows; i++) {
+      const row = table.get(i)!;
+      byNode.set(row.node_id, {
+        ids: row.neighbor_ids ? Int32Array.from(row.neighbor_ids) : new Int32Array(),
+        scores: row.scores ? Float32Array.from(row.scores) : new Float32Array(),
+      });
+    }
+    return byNode;
   }
-  return { ids, scores };
+
+  return async function getNeighbors(node: number): Promise<NeighborList> {
+    if (size <= 0) return EMPTY; // no sharded neighbors in this bundle
+    const shard = Math.floor(node / size);
+    let pending = shardCache.get(shard);
+    if (!pending) {
+      pending = loadShard(shard).catch((error) => {
+        shardCache.delete(shard); // allow retry on transient failure
+        throw error;
+      });
+      shardCache.set(shard, pending);
+    }
+    return (await pending).get(node) ?? EMPTY;
+  };
 }
 
 function buildAdjacency(table: Table) {
@@ -121,7 +145,7 @@ function buildAdjacency(table: Table) {
 }
 
 function validateDataset(dataset: Dataset): void {
-  const { manifest, points, papers, neighbors, edges } = dataset;
+  const { manifest, points, papers, edges } = dataset;
   if (manifest.schema_version !== SUPPORTED_SCHEMA_VERSION) {
     throw new Error(
       `unsupported data schema ${manifest.schema_version}; expected ${SUPPORTED_SCHEMA_VERSION}`,
@@ -132,8 +156,8 @@ function validateDataset(dataset: Dataset): void {
       `points row count ${points.count} does not match manifest count ${manifest.corpus.count}`,
     );
   }
-  if (papers.length !== points.count || neighbors.ids.length !== points.count) {
-    throw new Error("paper, point, and neighbor artifacts have different row counts");
+  if (papers.length !== points.count) {
+    throw new Error("paper and point artifacts have different row counts");
   }
   for (let i = 0; i < points.count; i++) {
     if (points.nodeId[i] !== i) {
@@ -158,11 +182,11 @@ function validateDataset(dataset: Dataset): void {
 async function loadDatasetImpl(): Promise<Dataset> {
   const manifest = await fetchJSON<Manifest>("manifest.json");
 
-  const [pointsT, papersT, authorsT, neighborsT, edgesT] = await Promise.all([
+  // Neighbors are NOT fetched here — they load on demand per selection (makeNeighborLoader).
+  const [pointsT, papersT, authorsT, edgesT] = await Promise.all([
     fetchArrow("points.arrow"),
     fetchArrow("papers.arrow"),
     fetchArrow("authors.arrow"),
-    fetchArrow("neighbors.arrow"),
     fetchArrow("edges.arrow"),
   ]);
   const [clusters, labels, orgs, topics] = await Promise.all([
@@ -191,7 +215,7 @@ async function loadDatasetImpl(): Promise<Dataset> {
     orgs,
     topics,
     authors: unpackAuthors(authorsT),
-    neighbors: unpackNeighbors(neighborsT),
+    getNeighbors: makeNeighborLoader(manifest),
     edges,
     citesOut,
     citedBy,

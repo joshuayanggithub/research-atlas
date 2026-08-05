@@ -449,7 +449,7 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 
 .related { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
 .related h4 { margin: 0 0 8px; font-size: 12.5px; }
-.related.empty { color: var(--subtle); font-size: 12px; }
+.related.empty, .related.loading { color: var(--subtle); font-size: 12px; }
 .related ol { margin: 0; padding: 0; list-style: none; }
 .related li { margin: 0; padding: 0; }
 .related li button {

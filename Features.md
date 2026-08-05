@@ -96,7 +96,10 @@ silently dropped.
   of the arXiv PDF** via pdf.js; if no arXiv ID is stored it resolves one via Semantic
   Scholar, falling back to a TL;DR/abstract card.
 - **Related works** panel lists the most similar papers using a **fused text + citation**
-  similarity (semantic neighbors, direct citations, co-citations, shared references).
+  similarity (semantic neighbors, direct citations, co-citations, shared references). The
+  neighbor data is **fetched on demand** — sharded by node id, so selecting a paper loads
+  only its shard (~540KB) rather than the whole ~9MB (→50MB at 390k) neighbor table up
+  front. Shards are cached, so re-selecting nearby papers is instant.
 
 ## Search
 

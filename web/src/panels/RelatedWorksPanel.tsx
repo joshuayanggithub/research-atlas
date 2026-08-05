@@ -1,16 +1,31 @@
 // Related works for the selected paper: the fused text+citation kNN neighbors (s08).
-// Clicking a related work selects and (via the map) re-centers on it.
+// Neighbors load ON DEMAND (ds.getNeighbors) — sharded by node id — so the whole neighbor
+// table is not in the initial download. Clicking a related work selects and re-centers on it.
 
-import type { Dataset } from "../data/types";
+import { useEffect, useState } from "react";
+import type { Dataset, NeighborList } from "../data/types";
 import { useStore } from "../state/store";
 
 export function RelatedWorksPanel({ ds, node }: { ds: Dataset; node: number }) {
   const selectNode = useStore((s) => s.selectNode);
   const setHover = useStore((s) => s.setHover);
+  const [neighbors, setNeighbors] = useState<NeighborList | null>(null);
 
-  const ids = ds.neighbors.ids[node] ?? new Int32Array();
-  const scores = ds.neighbors.scores[node] ?? new Float32Array();
+  useEffect(() => {
+    let live = true;
+    setNeighbors(null);
+    ds.getNeighbors(node).then((n) => {
+      if (live) setNeighbors(n);
+    });
+    return () => {
+      live = false;
+    };
+  }, [ds, node]);
 
+  if (neighbors === null) {
+    return <div className="related loading">Loading related works…</div>;
+  }
+  const { ids, scores } = neighbors;
   if (ids.length === 0) return <div className="related empty">No related works.</div>;
 
   return (
@@ -21,15 +36,17 @@ export function RelatedWorksPanel({ ds, node }: { ds: Dataset; node: number }) {
           const p = ds.papers[nid];
           if (!p) return null;
           return (
-            <li
-              key={nid}
-              onClick={() => selectNode(nid)}
-              onMouseEnter={() => setHover(nid)}
-              onMouseLeave={() => setHover(null)}
-            >
-              <span className="score">{scores[i]?.toFixed(2)}</span>
-              <span className="rtitle">{p.title}</span>
-              <span className="ryear">{p.publicationDate?.slice(0, 4)}</span>
+            <li key={nid}>
+              <button
+                type="button"
+                onClick={() => selectNode(nid)}
+                onMouseEnter={() => setHover(nid)}
+                onMouseLeave={() => setHover(null)}
+              >
+                <span className="score">{scores[i]?.toFixed(2)}</span>
+                <span className="rtitle">{p.title}</span>
+                <span className="ryear">{p.publicationDate?.slice(0, 4)}</span>
+              </button>
             </li>
           );
         })}
