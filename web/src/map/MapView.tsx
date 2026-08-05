@@ -156,6 +156,7 @@ export function MapView({ ds }: { ds: Dataset }) {
     monthMin: filters.monthMin,
     monthMax: filters.monthMax,
     onSelect: selectNode,
+    onHover: onHoverNode,
   });
 
   const layers = useMemo(

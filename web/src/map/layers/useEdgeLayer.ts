@@ -56,6 +56,9 @@ interface Args {
   monthMin: number;
   monthMax: number;
   onSelect: (node: number) => void;
+  // Hovering a connected paper's endpoint ring surfaces the same preview tooltip as
+  // hovering a point (the ring sits atop the point layer and would otherwise swallow it).
+  onHover: (node: number | null, x: number, y: number) => void;
 }
 
 const OUTGOING = [55, 214, 199] as const;
@@ -105,6 +108,7 @@ export function useEdgeLayer({
   monthMin,
   monthMax,
   onSelect,
+  onHover,
 }: Args) {
   const relativeZoom = zoom - baseZoom;
   const sampleThreshold =
@@ -342,19 +346,32 @@ export function useEdgeLayer({
           number,
           number,
         ],
-      // Ring radius encodes importance too, so the most-cited linked papers read as the
-      // largest rings — reinforcing the width/opacity ranking on the lines.
+      // Ring radius AND outline thickness encode importance, so the most-important linked
+      // papers (relative to the selected one) read as the largest, boldest-outlined rings —
+      // reinforcing the width/opacity/arrowhead ranking on the lines.
       getRadius: (endpoint) => 2.0 + 2.4 * endpoint.weight,
       radiusUnits: "common",
       radiusMinPixels: 3,
       radiusMaxPixels: 11,
-      lineWidthMinPixels: 2,
+      getLineWidth: (endpoint) => 1.5 + 3.0 * endpoint.weight,
+      lineWidthUnits: "pixels",
+      lineWidthMinPixels: 1.5,
+      lineWidthMaxPixels: 5,
       pickable: true,
+      autoHighlight: true,
+      highlightColor: [255, 255, 255, 90],
       parameters: { depthCompare: "always" },
-      updateTriggers: { getRadius: [selectedNode, edgeMode] },
+      updateTriggers: {
+        getRadius: [selectedNode, edgeMode],
+        getLineWidth: [selectedNode, edgeMode],
+      },
       onClick: (info) => {
         if (info.object) onSelect(info.object.node);
       },
+      // The ring sits on top of the point, so route its hover to the same preview tooltip;
+      // otherwise hovering a connected paper during selection shows nothing.
+      onHover: (info) =>
+        onHover(info.object ? info.object.node : null, info.x, info.y),
     }),
   ];
 

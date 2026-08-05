@@ -93,12 +93,14 @@ silently dropped.
   keeping the initial download light at any corpus size.
 - **On selection, irrelevant papers are fully hidden** (culled on the GPU — not drawn, not
   hoverable), so the selected paper and its citation network are the only things on the map.
-  Deselecting restores the full map.
+  Deselecting restores the full map. The connected papers **stay hoverable** — hovering one
+  during a selection shows the same preview card (title · year · citations).
 - **Citation importance is visualized in rank order.** On both the map edges and the
   details-panel citation graph, each linked paper's **edge width, opacity, arrowhead size,
-  and node/endpoint size scale with its importance** (a blend of citation magnitude and rank
-  position), so the strongest references and citers read as the boldest, largest links —
-  in-citations and out-citations each self-scale independently.
+  and endpoint-ring size + outline thickness scale with its importance relative to the
+  selected paper** (a blend of citation magnitude and rank position), so the strongest
+  references and citers read as the boldest, largest links and rings — in-citations and
+  out-citations each self-scale independently.
 - The normal map view shows a deterministic, zoom-adaptive sample of **directed citation
   edges by default**; an **Edges** toggle hides or restores them.
 - A dedicated **citation explorer** separates **References**, **Cited by**, and **Both**,
