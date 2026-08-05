@@ -15,12 +15,12 @@ interface Args {
   colorMode: ColorMode;
   filter: FilterArrays;
   orgDisplayMode: OrgDisplayMode;
-  yearMin: number;
-  yearMax: number;
+  monthMin: number;
+  monthMax: number;
   selectedNode: number | null;
   hoverNode: number | null;
   onClick: (nodeId: number | null) => void;
-  onHover: (nodeId: number | null) => void;
+  onHover: (nodeId: number | null, x: number, y: number) => void;
 }
 
 export function usePointsLayer({
@@ -28,8 +28,8 @@ export function usePointsLayer({
   colorMode,
   filter,
   orgDisplayMode,
-  yearMin,
-  yearMax,
+  monthMin,
+  monthMax,
   selectedNode,
   hoverNode,
   onClick,
@@ -51,6 +51,14 @@ export function usePointsLayer({
 
   // Whether org/author filtering hides (vs dims) non-matches.
   const hideNonMatch = filter.anyOrgAuthorActive && orgDisplayMode === "hide";
+  const connected = useMemo(() => {
+    if (selectedNode === null) return null;
+    return new Set([
+      selectedNode,
+      ...(ds.citesOut.get(selectedNode) ?? []),
+      ...(ds.citedBy.get(selectedNode) ?? []),
+    ]);
+  }, [ds, selectedNode]);
 
   return new ScatterplotLayer({
     id: "points",
@@ -58,44 +66,69 @@ export function usePointsLayer({
     getPosition: (_: unknown, { index }: { index: number }) =>
       [ds.points.x[index], ds.points.y[index]] as [number, number],
     getFillColor: (_: unknown, { index }: { index: number }) => {
-      const dim = filter.anyOrgAuthorActive && filter.matchValue[index] === 0;
-      const a = dim ? 26 : 200;
+      // When an org/author filter is active, non-matching papers are effectively hidden
+      // (near-transparent) rather than merely dimmed — the filtered set should read as the
+      // whole map, so its topic labels/colors dominate. In "hide" mode the GPU filter culls
+      // them entirely; here we handle the default "dim" mode.
+      // Papers outside a selection's citation context are culled on the GPU (channel 2
+      // below), so they never reach this branch — the selected paper + its cited/citing
+      // set read as the only papers on the map.
+      const filteredOut = filter.anyOrgAuthorActive && filter.matchValue[index] === 0;
+      const a = filteredOut ? 8 : 210;
       return [rgb[index * 3], rgb[index * 3 + 1], rgb[index * 3 + 2], a] as [
         number, number, number, number,
       ];
     },
-    // Radius scales gently with citation count; selected/hover points get a floor bump.
+    // Radius encodes citation count as an importance signal, on a log scale so the
+    // 0 → ~10K span is a *noticeable but restrained* ~2x radius (not a 4x blob): a
+    // 0-cite paper is 1.0, a 10K-cite paper ≈ 2.1. Small overall so dense topic regions
+    // read as distinct color fields rather than merging; citation edges carry visual weight.
+    // selected/hover/connected get a floor bump; filtered-out papers shrink.
     getRadius: (_: unknown, { index }: { index: number }) => {
       const c = ds.points.citedByCount[index];
-      const base = 1 + Math.log10(1 + c) * 0.6;
-      if (index === selectedNode) return base * 3;
-      if (index === hoverNode) return base * 2;
+      const base = 1.0 + Math.log10(1 + c) * 0.28; // c=0→1.0, 10→1.3, 100→1.56, 1K→1.84, 10K→2.1
+      if (index === selectedNode) return base * 2.8;
+      if (index === hoverNode) return base * 1.9;
+      if (connected?.has(index)) return base * 1.35;
+      if (filter.anyOrgAuthorActive && filter.matchValue[index] === 0) return base * 0.55;
       return base;
     },
     radiusUnits: "common",
-    radiusMinPixels: 1.5,
-    radiusMaxPixels: 14,
+    radiusMinPixels: 1,
+    radiusMaxPixels: 13,
     pickable: true,
     autoHighlight: true,
     highlightColor: [255, 255, 255, 120],
     onClick: (info) => onClick(info.index >= 0 ? info.index : null),
-    onHover: (info) => onHover(info.index >= 0 ? info.index : null),
+    onHover: (info) => onHover(info.index >= 0 ? info.index : null, info.x, info.y),
 
-    // GPU date filter + optional org/author hide, both via DataFilterExtension.
-    // channel 0 = year, channel 1 = org/author match (only enforced in "hide" mode).
-    extensions: [new DataFilterExtension({ filterSize: 2 })],
+    // GPU date filter + optional org/author hide + selection citation-context cull, all via
+    // DataFilterExtension. channel 0 = month index (month-granularity date filter);
+    // channel 1 = org/author match (only enforced in "hide" mode); channel 2 = selection
+    // membership — when a paper is selected, only the selected node and its cited/citing set
+    // pass, so every irrelevant paper is culled entirely (not drawn, not pickable).
+    extensions: [new DataFilterExtension({ filterSize: 3 })],
     getFilterValue: (_: unknown, { index }: { index: number }) =>
-      [ds.points.year[index], hideNonMatch ? filter.matchValue[index] : 1] as [
-        number, number,
-      ],
+      [
+        ds.points.monthIndex[index],
+        hideNonMatch ? filter.matchValue[index] : 1,
+        connected === null || connected.has(index) ? 1 : 0,
+      ] as [number, number, number],
     filterRange: [
-      [yearMin, yearMax],
+      [monthMin, monthMax],
+      [1, 1],
       [1, 1],
     ],
     updateTriggers: {
-      getFillColor: [colorMode, filter.matchValue, filter.anyOrgAuthorActive, rgb],
-      getRadius: [selectedNode, hoverNode],
-      getFilterValue: [hideNonMatch, filter.matchValue],
+      getFillColor: [
+        colorMode,
+        filter.matchValue,
+        filter.anyOrgAuthorActive,
+        rgb,
+        selectedNode,
+      ],
+      getRadius: [selectedNode, hoverNode, connected, filter.matchValue, filter.anyOrgAuthorActive],
+      getFilterValue: [hideNonMatch, filter.matchValue, connected],
     },
   });
 }
