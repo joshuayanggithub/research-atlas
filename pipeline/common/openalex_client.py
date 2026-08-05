@@ -26,8 +26,21 @@ BASE = "https://api.openalex.org"
 # A 429 during a long unauthenticated pull is transient throttling, not a hard failure, so
 # retry patiently: without honoring this the whole fetch dies and discards everything
 # already streamed to disk. ~10 attempts with a long ceiling rides out multi-minute limits.
-_MAX_ATTEMPTS = 10
+_MAX_ATTEMPTS = 8
 _MAX_BACKOFF = 120.0
+# A 429 with Retry-After beyond this is a daily-quota exhaustion, not transient throttling —
+# retrying is futile (the reset is hours away). Raise a distinct error so the caller stops
+# cleanly and keeps everything fetched so far, instead of hammering the wall.
+_QUOTA_WALL_SECONDS = 600.0
+
+
+class QuotaExhausted(RuntimeError):
+    """OpenAlex daily request quota is spent; the reset is `reset_seconds` away."""
+
+    def __init__(self, reset_seconds: float):
+        self.reset_seconds = reset_seconds
+        hours = reset_seconds / 3600.0
+        super().__init__(f"OpenAlex daily quota exhausted; resets in ~{hours:.1f}h")
 
 
 def short_id(openalex_url: Optional[str]) -> Optional[str]:
@@ -67,11 +80,15 @@ class OpenAlexClient:
     )
     def _get(self, path: str, params: dict) -> dict:
         r = self._client.get(f"{BASE}{path}", params=self._params(params))
-        # Retry on rate-limit / server errors; raise others immediately.
         if r.status_code == 429:
-            # Honor Retry-After when present; log so a long throttle is visible, not silent.
-            retry_after = r.headers.get("retry-after")
-            wait_s = float(retry_after) if retry_after and retry_after.isdigit() else 5.0
+            # Distinguish transient throttling from daily-quota exhaustion. OpenAlex sends
+            # the seconds-until-reset in Retry-After / x-ratelimit-reset; if it's hours away,
+            # retrying is pointless — raise QuotaExhausted so the fetch stops and keeps its
+            # progress. Otherwise sleep the short interval (capped) and let tenacity retry.
+            reset = r.headers.get("retry-after") or r.headers.get("x-ratelimit-reset")
+            wait_s = float(reset) if reset and reset.replace(".", "", 1).isdigit() else 5.0
+            if wait_s > _QUOTA_WALL_SECONDS:
+                raise QuotaExhausted(wait_s)
             log.warn(f"OpenAlex 429 rate-limited; sleeping {wait_s:.0f}s before retry")
             time.sleep(min(wait_s, _MAX_BACKOFF))
             r.raise_for_status()

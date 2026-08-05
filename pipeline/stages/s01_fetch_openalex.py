@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from pipeline.common import log
 from pipeline.common.io import read_json
-from pipeline.common.openalex_client import OpenAlexClient
+from pipeline.common.openalex_client import OpenAlexClient, QuotaExhausted
 from pipeline.config import INTERIM_DIR, RAW_DIR, Config, ensure_dirs, load_config
 
 ORGS_IN = INTERIM_DIR / "orgs_resolved.json"
@@ -139,6 +139,7 @@ def run(cfg: Config | None = None) -> int:
     page_pause = 0.0 if cfg.secrets.openalex_api_key else 0.2
     client = OpenAlexClient(cfg.secrets.openalex_mailto, cfg.secrets.openalex_api_key,
                             page_pause=page_pause)
+    quota_hit = False
     try:
         with OUT.open(mode, encoding="utf-8") as f:
             for filt in filters:
@@ -164,10 +165,20 @@ def run(cfg: Config | None = None) -> int:
                         bar.update(1)
                         if n >= cfg.corpus.max_works:
                             break
+                if n >= cfg.corpus.max_works:
+                    break
+    except QuotaExhausted as e:
+        # Daily quota spent mid-fetch. Everything streamed so far is on disk (flushed per
+        # line); stop cleanly so the rest of the pipeline can build from what we have, and
+        # a later run resumes by skipping the already-written ids. Do NOT hammer the wall.
+        quota_hit = True
+        log.warn(f"{e} — stopping fetch with {n} works on disk; re-run after reset to "
+                 f"continue toward max_works={cfg.corpus.max_works}")
     finally:
         client.close()
 
-    log.info(f"wrote {n} works ({len(seen)} unique ids) -> {OUT}")
+    log.info(f"wrote {n} works ({len(seen)} unique ids) -> {OUT}"
+             + ("  [PARTIAL — quota-limited]" if quota_hit else ""))
     return n
 
 
