@@ -1,12 +1,14 @@
 """Minimal OpenAlex client: institution search + cursor-paginated works iteration.
 
 Uses the polite pool (``mailto``) and an optional API key. Retries transient failures
-(429/5xx) with exponential backoff. Kept dependency-light (httpx only) so it works
-without ``pyalex``.
+(429/5xx) with exponential backoff, honoring the ``Retry-After`` header, and throttles
+proactively so long pulls (hundreds of thousands of works) don't trip the rate limit and
+lose progress. Kept dependency-light (httpx only) so it works without ``pyalex``.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Iterator, Optional
 
 import httpx
@@ -17,7 +19,15 @@ from tenacity import (
     wait_exponential,
 )
 
+from pipeline.common import log
+
 BASE = "https://api.openalex.org"
+
+# A 429 during a long unauthenticated pull is transient throttling, not a hard failure, so
+# retry patiently: without honoring this the whole fetch dies and discards everything
+# already streamed to disk. ~10 attempts with a long ceiling rides out multi-minute limits.
+_MAX_ATTEMPTS = 10
+_MAX_BACKOFF = 120.0
 
 
 def short_id(openalex_url: Optional[str]) -> Optional[str]:
@@ -28,9 +38,14 @@ def short_id(openalex_url: Optional[str]) -> Optional[str]:
 
 
 class OpenAlexClient:
-    def __init__(self, mailto: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(self, mailto: Optional[str] = None, api_key: Optional[str] = None,
+                 page_pause: float = 0.0):
         self.mailto = mailto
         self.api_key = api_key
+        # Small inter-page sleep to stay under the rate limit on long pulls. The polite pool
+        # allows ~10 req/s; a pause is cheap insurance against a 429 wall mid-fetch. With an
+        # api_key the limit is higher, so callers can pass 0.
+        self.page_pause = page_pause
         self._client = httpx.Client(
             timeout=60.0,
             headers={"User-Agent": f"research-visualizer (mailto:{mailto or 'anon'})"},
@@ -46,14 +61,21 @@ class OpenAlexClient:
 
     @retry(
         retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
-        wait=wait_exponential(multiplier=1, min=2, max=60),
-        stop=stop_after_attempt(6),
+        wait=wait_exponential(multiplier=2, min=3, max=_MAX_BACKOFF),
+        stop=stop_after_attempt(_MAX_ATTEMPTS),
         reraise=True,
     )
     def _get(self, path: str, params: dict) -> dict:
         r = self._client.get(f"{BASE}{path}", params=self._params(params))
         # Retry on rate-limit / server errors; raise others immediately.
-        if r.status_code in (429, 500, 502, 503, 504):
+        if r.status_code == 429:
+            # Honor Retry-After when present; log so a long throttle is visible, not silent.
+            retry_after = r.headers.get("retry-after")
+            wait_s = float(retry_after) if retry_after and retry_after.isdigit() else 5.0
+            log.warn(f"OpenAlex 429 rate-limited; sleeping {wait_s:.0f}s before retry")
+            time.sleep(min(wait_s, _MAX_BACKOFF))
+            r.raise_for_status()
+        if r.status_code in (500, 502, 503, 504):
             r.raise_for_status()
         r.raise_for_status()
         return r.json()
@@ -100,6 +122,8 @@ class OpenAlexClient:
                 if max_records is not None and emitted >= max_records:
                     return
             cursor = data.get("meta", {}).get("next_cursor")
+            if cursor and self.page_pause:
+                time.sleep(self.page_pause)
 
     def count_works(self, filter_str: str) -> int:
         data = self._get("/works", {"filter": filter_str, "per-page": 1,
