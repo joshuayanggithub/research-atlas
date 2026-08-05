@@ -91,6 +91,14 @@ silently dropped.
   and author ids for all papers. Consequence: hover cards and citation/related **list rows**
   show *title · year · citations* (author names/venue appear on the selected-paper card),
   keeping the initial download light at any corpus size.
+- **First figure at a glance.** On the details card the paper's **Figure 1** (or Table 1 if
+  the paper opens with a table) is cropped directly from the arXiv PDF and shown inline
+  above the tabs — so you get the gist immediately without opening the Paper tab. The crop
+  is anchored on the PDF text layer's "Figure 1:" / "Table 1:" caption (its bounding box
+  tells us the column and the region above it, so both raster and vector figures work),
+  not "the first embedded image" (which grabs logos and misses vector figures). Fully
+  client-side via pdf.js on the CORS-open arXiv PDF, no backend. Silently hidden when the
+  paper has no arXiv id or no locatable Figure 1.
 - **On selection, irrelevant papers are fully hidden** (culled on the GPU — not drawn, not
   hoverable), so the selected paper and its citation network are the only things on the map.
   Deselecting restores the full map. The connected papers **stay hoverable** — hovering one

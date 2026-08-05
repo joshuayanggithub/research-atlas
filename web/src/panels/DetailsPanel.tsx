@@ -6,6 +6,7 @@ import type { Dataset, PaperDetail } from "../data/types";
 import { useStore } from "../state/store";
 import { ArxivPreview } from "./ArxivPreview";
 import { CitationExplorer } from "./CitationExplorer";
+import { FirstFigure } from "./FirstFigure";
 import { RelatedWorksPanel } from "./RelatedWorksPanel";
 
 export function DetailsPanel({ ds }: { ds: Dataset }) {
@@ -84,6 +85,11 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
           Open paper <ExternalLink size={13} aria-hidden="true" />
         </a>
       )}
+
+      {/* The paper's Figure 1 (or Table 1), cropped from the arXiv PDF — an at-a-glance gist
+          shown immediately on select. Keyed by node so it re-fetches per paper; renders
+          nothing when there's no arXiv id or no locatable figure. */}
+      <FirstFigure key={selectedNode} arxivId={detail?.arxivId ?? null} doi={detail?.doi ?? null} />
 
       <div
         className="seg details-tabs"

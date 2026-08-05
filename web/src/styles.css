@@ -430,6 +430,16 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
   gap: 8px; color: var(--subtle); font-size: 12px; text-align: center; }
 .arxiv-status strong { color: var(--text); font-weight: 500; }
 /* First-page render (pdf.js → canvas). Paper white so the page reads as a page. */
+/* First-figure gist thumbnail on the details card (FirstFigure.tsx). */
+.first-figure { position: relative; margin: 10px 0 4px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: #f3f1ea; overflow: hidden; min-height: 0; }
+.first-figure-canvas { display: block; width: 100%; height: auto; }
+.first-figure-loading { display: flex; align-items: center; gap: 8px; padding: 12px 13px;
+  color: #3e4652; font-family: var(--font-mono); font-size: 11px; }
+.first-figure-tag { position: absolute; top: 6px; left: 6px; padding: 2px 7px;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em; border-radius: 4px;
+  background: rgba(12, 14, 20, 0.82); color: #edf0f7; }
+
 .arxiv-page-shell { position: relative; width: 100%; min-height: 120px; overflow: hidden;
   border: 1px solid var(--line); border-radius: var(--radius); background: #f3f1ea; }
 .arxiv-page-canvas { display: block; width: 100%; height: auto; }
