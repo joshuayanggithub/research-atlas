@@ -9,6 +9,7 @@ import {
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import type { Dataset } from "../data/types";
 import { useStore, type EdgeMode } from "../state/store";
+import { importanceWeight } from "../map/importance";
 
 const GRAPH_LIMIT = 5;
 const LIST_LIMIT = 7;
@@ -24,12 +25,9 @@ interface GraphPaper {
 }
 
 // Importance weight in [0,1] for a paper shown at position `index` within a `count`-long
-// fan already sorted by citations (0 = most important). We blend two signals:
-//   - magnitude: log citations normalized against the strongest paper in the same fan;
-//   - rank: position within the shown fan.
-// Rank guarantees visible, monotonic steps even when every linked paper is hugely cited
-// (e.g. ResNet's references are all 40K-75K cites, which magnitude alone compresses to a
-// flat ~1.0). The two sides self-scale independently.
+// fan already sorted by citations (0 = most important). See map/importance.ts — blends
+// citation magnitude with rank so the ordering is always visible even when every linked
+// paper is hugely cited (e.g. ResNet's references are all 40K-75K cites).
 function weighByRankAndCitations(
   ids: number[],
   ds: Dataset,
@@ -37,9 +35,12 @@ function weighByRankAndCitations(
   count: number,
 ): number {
   const top = ids.length ? Math.log1p(ds.papers[ids[0]].citedByCount) : 0;
-  const magnitude = top > 0 ? Math.log1p(ds.papers[ids[index]].citedByCount) / top : 0;
-  const rank = count > 1 ? 1 - index / (count - 1) : 1;
-  return 0.45 * magnitude + 0.55 * rank;
+  return importanceWeight(
+    Math.log1p(ds.papers[ids[index]].citedByCount),
+    top,
+    index,
+    count,
+  );
 }
 
 function ranked(ids: number[], ds: Dataset): number[] {

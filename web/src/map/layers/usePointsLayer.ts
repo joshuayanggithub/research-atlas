@@ -9,6 +9,7 @@ import type { Dataset } from "../../data/types";
 import type { ColorMode, OrgDisplayMode } from "../../state/store";
 import type { FilterArrays } from "../../filters/useFilterMask";
 import { baseColor } from "../colors";
+import { lodRamp, lodVisibleCount } from "../importance";
 
 interface Args {
   ds: Dataset;
@@ -25,16 +26,10 @@ interface Args {
   onHover: (nodeId: number | null, x: number, y: number) => void;
 }
 
-// Level-of-detail: at the fully-zoomed-out "fit" view, 71k points overlap into a solid
-// mass (measured: ~90% of points sit within 2px of a neighbor, and a dot is 2px wide). So
-// zoomed out we show only the most-cited papers and reveal the rest as the user zooms in,
-// where there is pixel room for them. `LOD_MIN_VISIBLE` points are always shown so a filter
-// that matches only low-citation papers is never blank.
-const LOD_MIN_VISIBLE = 6000;
-// Fraction of the corpus visible at the fit zoom, ramping to 1.0 by LOD_FULL_OFFSET.
-const LOD_BASE_FRACTION = 0.12;
-const LOD_FULL_OFFSET = 3.5; // zoom offset (from fit) at which all points are shown
-
+// Level-of-detail thresholds and the visible-count / ramp math live in ../importance.ts
+// (pure + unit-tested). At the fit view 71k points overlap into a solid mass (~90% within
+// 2px of a neighbor, dot diameter 2px), so we show only the most-cited fraction and reveal
+// the rest as the user zooms in.
 export function usePointsLayer({
   ds,
   colorMode,
@@ -66,16 +61,14 @@ export function usePointsLayer({
   // full set (LOD would otherwise hide connected/matching papers that happen to be low-cited).
   const relOffset = Math.max(0, zoom - baseZoom);
   const forceAll = selectedNode !== null || filter.anyOrgAuthorActive;
-  const visibleCount = useMemo(() => {
-    if (forceAll) return n;
-    const t = Math.min(1, relOffset / LOD_FULL_OFFSET);
-    const frac = LOD_BASE_FRACTION + (1 - LOD_BASE_FRACTION) * t;
-    return Math.min(n, Math.max(LOD_MIN_VISIBLE, Math.round(n * frac)));
-  }, [forceAll, relOffset, n]);
+  const visibleCount = useMemo(
+    () => lodVisibleCount(n, relOffset, forceAll),
+    [forceAll, relOffset, n],
+  );
 
   // Fade + shrink dots at the fit view so the home map reads as airy topic fields rather
-  // than a wall of ink; both ramp to full by LOD_FULL_OFFSET (matching the LOD reveal).
-  const lodT = forceAll ? 1 : Math.min(1, relOffset / LOD_FULL_OFFSET);
+  // than a wall of ink; both ramp to full by the LOD reveal offset.
+  const lodT = lodRamp(relOffset, forceAll);
   const layerOpacity = 0.55 + 0.45 * lodT;
   const radiusScale = 0.72 + 0.28 * lodT;
 

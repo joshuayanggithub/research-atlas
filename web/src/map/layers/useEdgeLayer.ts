@@ -9,6 +9,7 @@ import { useMemo } from "react";
 import type { Dataset } from "../../data/types";
 import type { FilterArrays } from "../../filters/useFilterMask";
 import type { EdgeMode, OrgDisplayMode } from "../../state/store";
+import { importanceWeight } from "../importance";
 
 type Position = [number, number];
 type Color = [number, number, number, number];
@@ -129,18 +130,14 @@ export function useEdgeLayer({
         .slice(0, perDirectionLimit);
 
     // Importance weight in [0,1] for a linked paper at rank `index` within its own
-    // (citation-sorted) fan. Blends magnitude (log citations vs the strongest link) with
-    // rank position, so the ordering is always visible even when every linked paper is
-    // hugely cited and magnitude alone would compress them flat. Matches the details-panel
-    // citation graph's weighting.
+    // (citation-sorted) fan. See importance.ts: blends citation magnitude with rank so the
+    // ordering is always visible even when every linked paper is hugely cited. Matches the
+    // details-panel citation graph's weighting.
     const weigh = (linked: number[]) => {
       const top = linked.length ? Math.log1p(ds.papers[linked[0]].citedByCount) : 0;
       const count = linked.length;
-      return (node: number, index: number) => {
-        const magnitude = top > 0 ? Math.log1p(ds.papers[node].citedByCount) / top : 0;
-        const rank = count > 1 ? 1 - index / (count - 1) : 1;
-        return 0.45 * magnitude + 0.55 * rank;
-      };
+      return (node: number, index: number) =>
+        importanceWeight(Math.log1p(ds.papers[node].citedByCount), top, index, count);
     };
 
     const add = (
