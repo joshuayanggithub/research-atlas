@@ -126,6 +126,17 @@ class PaletteCfg(BaseModel):
     background: list[int] = Field(default_factory=lambda: [12, 14, 20])
 
 
+class TilingCfg(BaseModel):
+    """Reveal-level thinning (s12) → overlap-free semantic zoom + fetch-on-demand tiles."""
+
+    # Level-0 separation radius = layout span / base_divisor. Larger ⇒ sparser home view.
+    base_divisor: float = 40.0
+    # Max reveal levels; the last is a catch-all for coordinate duplicates.
+    max_levels: int = 16
+    # Importance signal that orders reveal ("cited_by_count" is the only one shipped today).
+    importance: Literal["cited_by_count"] = "cited_by_count"
+
+
 class Secrets(BaseModel):
     """Loaded from environment (.env), never from config.yaml."""
 
@@ -143,6 +154,7 @@ class Config(BaseModel):
     hierarchy: HierarchyCfg = Field(default_factory=HierarchyCfg)
     fused: FusedCfg = Field(default_factory=FusedCfg)
     labels: LabelsCfg = Field(default_factory=LabelsCfg)
+    tiling: TilingCfg = Field(default_factory=TilingCfg)
     palette: PaletteCfg = Field(default_factory=PaletteCfg)
     secrets: Secrets = Field(default_factory=Secrets)
 

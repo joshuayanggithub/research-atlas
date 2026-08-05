@@ -26,6 +26,7 @@ from pipeline.config import (
 CORPUS_IN = CORPUS_ACTIVE
 COORDS_IN = INTERIM_DIR / "coords2d.npy"
 CLUSTER_IN = INTERIM_DIR / "cluster_assign.npy"
+REVEAL_IN = INTERIM_DIR / "reveal_levels.npy"
 NEIGHBORS_IN = INTERIM_DIR / "neighbors.npz"
 EDGES_IN = INTERIM_DIR / "edges.npz"
 EMBED_META_IN = INTERIM_DIR / "embed_meta.json"
@@ -39,7 +40,7 @@ _PALETTE = [
 
 
 def _build_points(corpus: pl.DataFrame, coords: np.ndarray,
-                  clusters: np.ndarray) -> pa.Table:
+                  clusters: np.ndarray, reveal_levels: np.ndarray) -> pa.Table:
     n = corpus.height
     sub_ids = corpus["subfield_id"].to_list()
     uniq = sorted(set(sub_ids))
@@ -60,7 +61,38 @@ def _build_points(corpus: pl.DataFrame, coords: np.ndarray,
         "r": pa.array(rgb[:, 0], pa.uint8()),
         "g": pa.array(rgb[:, 1], pa.uint8()),
         "b": pa.array(rgb[:, 2], pa.uint8()),
+        "reveal_level": pa.array(reveal_levels.tolist(), pa.int16()),
     }, schema=S.POINTS_SCHEMA)
+
+
+def _emit_point_tiles(points: pa.Table, reveal_levels: np.ndarray) -> list[S.PointTile]:
+    """Split the points table into one Arrow file per reveal level.
+
+    The frontend fetches cumulative tiles 0..current for the viewport, so a huge corpus is
+    downloaded incrementally rather than all at once. Each tile is self-contained (full
+    POINTS_SCHEMA rows), so loading a set of tiles is a plain concatenation.
+    """
+    tiles: list[S.PointTile] = []
+    n = points.num_rows
+    n_used = int(reveal_levels.max()) + 1 if n else 0
+    cumulative = 0
+    for level in range(n_used):
+        mask = reveal_levels == level
+        rows = int(mask.sum())
+        if rows == 0:
+            continue
+        cumulative += rows
+        tile = points.filter(pa.array(mask))
+        path = WEB_DATA_DIR / S.points_tile(level)
+        write_arrow(tile, path)
+        tiles.append(S.PointTile(
+            level=level,
+            path=S.points_tile(level),
+            rows=rows,
+            cumulative=cumulative,
+            bytes=path.stat().st_size,
+        ))
+    return tiles
 
 
 def _build_papers(corpus: pl.DataFrame) -> pa.Table:
@@ -133,9 +165,13 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     corpus = pl.read_parquet(CORPUS_IN)
     coords = read_npy(COORDS_IN)
     clusters = read_npy(CLUSTER_IN)
+    reveal_levels = read_npy(REVEAL_IN).astype(np.int64)
 
-    # Big Arrow tables.
-    write_arrow(_build_points(corpus, coords, clusters), WEB_DATA_DIR / S.POINTS)
+    # Big Arrow tables. points.arrow keeps the full corpus (reference / non-tiled fallback);
+    # per-level tiles are what the frontend actually fetches.
+    points = _build_points(corpus, coords, clusters, reveal_levels)
+    write_arrow(points, WEB_DATA_DIR / S.POINTS)
+    point_tiles = _emit_point_tiles(points, reveal_levels)
     write_arrow(_build_papers(corpus), WEB_DATA_DIR / S.PAPERS)
     write_arrow(_neighbors_table(), WEB_DATA_DIR / S.NEIGHBORS)
     write_arrow(_edges_table(), WEB_DATA_DIR / S.EDGES)
@@ -150,8 +186,9 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     clusters_doc = read_json(WEB_DATA_DIR / S.CLUSTERS)
     levels = clusters_doc["levels"]
 
+    tracked = list(S.ALL_FILES) + [t.path for t in point_tiles]
     files: dict[str, S.FileMeta] = {}
-    for fname in S.ALL_FILES:
+    for fname in tracked:
         if fname == S.MANIFEST:
             continue
         p = WEB_DATA_DIR / fname
@@ -178,6 +215,7 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
                    "n_neighbors": cfg.projector.n_neighbors},
         levels=[S.LevelBand(**lv) for lv in levels],
         files=files,
+        point_tiles=point_tiles,
         palette={"background": cfg.palette.background},
     )
     write_json(manifest, WEB_DATA_DIR / S.MANIFEST)

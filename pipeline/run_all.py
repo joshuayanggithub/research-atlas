@@ -19,18 +19,20 @@ from pipeline.config import load_config
 
 app = typer.Typer(add_completion=False)
 
-# (key, module) in execution order. s09 before s08 (neighbors needs edges).
+# (key, module) in execution order. The hierarchy consumes the fused neighbor graph, so
+# edges and neighbors must be built before s06.
 STAGES: list[tuple[str, str]] = [
     ("s00", "pipeline.stages.s00_resolve_orgs"),
     ("s01", "pipeline.stages.s01_fetch_openalex"),
     ("s02", "pipeline.stages.s02_build_corpus"),
     ("s03", "pipeline.stages.s03_embed"),
     ("s04", "pipeline.stages.s04_project"),
+    ("s12", "pipeline.stages.s12_tiles"),
     ("s05", "pipeline.stages.s05_cluster"),
-    ("s06", "pipeline.stages.s06_hierarchy"),
-    ("s07", "pipeline.stages.s07_label"),
     ("s09", "pipeline.stages.s09_edges"),
     ("s08", "pipeline.stages.s08_neighbors"),
+    ("s06", "pipeline.stages.s06_hierarchy"),
+    ("s07", "pipeline.stages.s07_label"),
     ("s10", "pipeline.stages.s10_indexes"),
     ("s11", "pipeline.stages.s11_emit"),
 ]

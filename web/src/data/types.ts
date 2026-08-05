@@ -52,8 +52,14 @@ export interface Institution {
   type: string;
   kind: string;
   lineage: number[];
-  count: number;
-  node_ids: number[];
+  count: number; // rollup count (this org/unit + all descendants), deduplicated
+  node_ids: number[]; // rollup node ids
+  // Directory hierarchy (evidence-backed dept/lab sub-units).
+  parent: string | null; // parent org key, or null for a root org
+  unit_type: string; // organization | school | department | institute | lab | ...
+  children: string[]; // child unit keys
+  direct_count: number; // size of this unit's own evidence set (node_ids list not shipped)
+  curated: boolean; // curated seed org/unit (drives tree + color) vs. directory-only entry
 }
 
 export interface OrgsDoc {
@@ -102,12 +108,19 @@ export interface PointData {
   x: Float32Array;
   y: Float32Array;
   year: Int16Array;
+  // Months since the corpus start month (from papers.arrow publication_date), enabling
+  // month-granularity date filtering on the GPU. Derived at load, not shipped in Arrow.
+  monthIndex: Int16Array;
   citedByCount: Int32Array;
   subfieldId: Int16Array;
   topicId: Int32Array;
   r: Uint8Array;
   g: Uint8Array;
   b: Uint8Array;
+  // Coarsest zoom level at which a point may render (s12 greedy thinning). The map draws a
+  // point only when its reveal_level <= the active zoom level, which guarantees no two
+  // visible points overlap at any zoom. A large sentinel means "not yet loaded".
+  revealLevel: Int16Array;
 }
 
 // Per-paper display metadata (papers.arrow), accessed by node_id.
@@ -129,6 +142,11 @@ export interface AuthorRow {
   count: number;
 }
 
+export interface CitationEdges {
+  src: Int32Array;
+  dst: Int32Array;
+}
+
 export interface Dataset {
   manifest: Manifest;
   points: PointData;
@@ -139,7 +157,8 @@ export interface Dataset {
   topics: TopicsDoc;
   authors: AuthorRow[];
   neighbors: { ids: Int32Array[]; scores: Float32Array[] };
-  // adjacency built at load from edges.arrow
+  edges: CitationEdges;
+  // Adjacency built at load from the same directed edge arrays.
   citesOut: Map<number, number[]>;
   citedBy: Map<number, number[]>;
 }

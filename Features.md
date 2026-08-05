@@ -14,13 +14,16 @@ silently dropped.
   similar** (position from SPECTER2 embeddings projected to 2D with openTSNE).
 - **GPU rendering** via deck.gl handles the full corpus at interactive framerates on an
   orthographic (map-style) canvas with smooth pan/zoom.
-- **Level of detail (LOD)** — at the zoomed-out home view the corpus is far too dense to
-  read (measured: ~90% of points sit within 2px of a neighbor), so only the most-cited
-  ~12% render, and the rest reveal progressively as you zoom in (100% by +3.5 zoom), with a
-  floor so the map is never sparse. Points also fade and shrink at the home view, ramping to
-  full as you zoom. A selection or active filter forces the full set so nothing relevant is
-  hidden. This is the whole point of the tool: **you preview a chosen region/zoom, never the
-  entire corpus at once.**
+- **Level of detail (LOD) with guaranteed no overlap** — at the zoomed-out home view the
+  corpus is far too dense to read (measured: ~90% of points sit within 2px of a neighbor).
+  A pipeline stage (s12) assigns each paper a **reveal level** via greedy spatial thinning:
+  level 0 is a sparse, evenly-separated set of the most-cited papers, and each deeper level
+  admits ~4× more while maintaining a minimum on-screen separation — so **no two visible
+  points ever overlap at any zoom**. The map draws a point only when its reveal level ≤ the
+  active zoom level; citation edges are gated the same way, so the edge web thins with the
+  points. A selection or active filter forces the full set so nothing relevant is hidden.
+  This is the whole point of the tool: **you preview a chosen region/zoom, never the entire
+  corpus at once.**
 - **Point color** encodes CS **subfield** by default; switchable to **organization** or
   **recency** (publication year) via the legend.
 - **Point size** scales gently with citation count (a log ramp), so influential papers stand
@@ -146,6 +149,7 @@ should never lose its guard silently. Run `python -m pytest pipeline/tests -q` (
 | Org affiliation evidence scoped per authorship | `test_org_affiliation_evidence_is_scoped_per_authorship`, `test_org_affiliation_evidence_empty_without_map` | `pipeline/tests/test_corpus.py` |
 | Curated roots + full directory split; no duplication | `test_curated_root_and_directory_split`, `test_curated_institution_not_duplicated_in_directory`, `test_directory_entry_falls_back_to_id_without_registry` | `pipeline/tests/test_org_index.py` |
 | Frozen projector keeps new points in the same map space | `test_frozen_projector_reuses_fit_normalization_for_new_points`, `test_frozen_projector_rejects_non_2d_fit_coordinates` | `pipeline/tests/test_project.py` |
+| Reveal-level thinning: total coverage, overlap-free per zoom, importance-ordered, deterministic | `test_cumulative_levels_are_overlap_free`, `test_every_paper_gets_a_level`, `test_most_important_papers_reveal_first`, `test_deterministic`, `test_ties_broken_by_index_not_random`, +2 | `pipeline/tests/test_thinning.py` |
 | Map loads, corpus summary, filled canvas | `loads the map, corpus summary, and a filled canvas` | `web/e2e/app.spec.ts` |
 | Title search → select → details | `title search selects a paper and opens details` | `web/e2e/app.spec.ts` |
 | Hover preview tooltip | `hovering a point shows a preview tooltip` | `web/e2e/app.spec.ts` |
@@ -158,11 +162,13 @@ should never lose its guard silently. Run `python -m pytest pipeline/tests -q` (
 These are shipped but currently guarded only by manual/visual verification. Adding tests
 here is welcome; **removing the feature should still update this file.**
 
-- **LOD reveal + fade/shrink by zoom** and **citation importance ordering** — the pure math
-  (`lodVisibleCount`, `lodRamp`, `importanceWeight`) is centralized in
-  `web/src/map/importance.ts`, ready to unit-test, but the web app has **no JS unit-test
-  runner** yet (only Playwright e2e + Python pytest). Adding vitest + a test for that module
-  is the natural next guard; until then these are verified visually.
+- **Reveal-level render gate + fade/shrink + citation importance ordering** — the *pipeline*
+  thinning that produces reveal levels is fully tested (`test_thinning.py`); the *frontend*
+  math (`lodRamp`, `importanceWeight`, the zoom→level mapping) is centralized in
+  `web/src/map/importance.ts` and `usePointsLayer.ts`, ready to unit-test, but the web app
+  has **no JS unit-test runner** yet (only Playwright e2e + Python pytest). Adding vitest +
+  a test for that module is the natural next guard; until then the frontend half is verified
+  visually.
 - **Selection culls irrelevant papers** (`usePointsLayer.ts` filter channel) — no e2e assert
   that non-connected points stop rendering/picking; verified visually.
 - **t-SNE island separation** (`projector.exaggeration`) — no numeric guard on inter-cluster

@@ -29,6 +29,13 @@ ORGS = "orgs.json"
 TOPICS = "topics.json"
 MANIFEST = "manifest.json"
 
+# Per-reveal-level point tiles (s12/s11): the frontend fetches cumulative levels 0..current
+# for the viewport instead of the whole points table, so corpus size stops gating the
+# initial download and no two visible points overlap at any zoom.
+def points_tile(level: int) -> str:
+    return f"points-L{level}.arrow"
+
+
 ALL_FILES = [
     MANIFEST, POINTS, PAPERS, NEIGHBORS, EDGES, AUTHORS,
     CLUSTERS, LABELS, ORGS, TOPICS,
@@ -53,6 +60,9 @@ POINTS_SCHEMA = pa.schema([
     ("r", pa.uint8()),
     ("g", pa.uint8()),
     ("b", pa.uint8()),
+    # Coarsest zoom level at which this point becomes visible (s12). Papers are split into
+    # per-level tile files by this column; the full points.arrow keeps it for reference.
+    ("reveal_level", pa.int16()),
 ])
 
 # Display metadata keyed by node_id. Abstract is NOT shipped (size); linked via doi/arxiv.
@@ -152,6 +162,20 @@ class Institution(BaseModel):
     lineage: list[int] = Field(default_factory=list)  # local institution ids (self + parents)
     count: int = 0
     node_ids: list[int] = Field(default_factory=list)
+    # Directory hierarchy (evidence-backed department/lab sub-units, docs/ORGANIZATION_DIRECTORY.md).
+    parent: Optional[str] = None  # parent org key, or None for a root org
+    unit_type: str = "organization"  # organization | school | department | institute | lab | ...
+    children: list[str] = Field(default_factory=list)  # child unit keys
+    # node_ids is the ROLLUP set (this unit + all descendants), deduplicated. direct_count is
+    # the size of the unit's OWN evidence set (== count for leaf units and for parents whose
+    # rollup is just their institution set). The frontend never needs the direct node-id list
+    # (it filters on node_ids), so we do NOT ship direct_node_ids — it was a 100% duplicate of
+    # node_ids and ~31% of orgs.json.
+    direct_count: int = 0
+    # Curated seed org (or its reviewed sub-unit) vs. an auto-included corpus institution.
+    # Curated entries drive the hierarchy tree and color-by-org; directory entries are
+    # search-and-filter only. See docs/ORGANIZATION_DIRECTORY.md.
+    curated: bool = True
 
 
 class OrgsDoc(BaseModel):
@@ -192,6 +216,16 @@ class FileMeta(BaseModel):
     rows: Optional[int] = None
 
 
+class PointTile(BaseModel):
+    """One per-reveal-level point tile the frontend fetches on demand (s12/s11)."""
+
+    level: int
+    path: str
+    rows: int          # papers newly revealed at this level
+    cumulative: int    # papers visible once levels 0..this are loaded
+    bytes: int
+
+
 class Manifest(BaseModel):
     schema_version: int
     built_at: str
@@ -200,4 +234,7 @@ class Manifest(BaseModel):
     projector: dict
     levels: list[LevelBand]
     files: dict[str, FileMeta]
+    # Present when the corpus is shipped as fetch-on-demand reveal-level tiles. Ordered by
+    # level (0 = coarsest). Empty/omitted for a legacy single-points.arrow bundle.
+    point_tiles: list[PointTile] = []
     palette: dict

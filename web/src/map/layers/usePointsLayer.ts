@@ -9,7 +9,11 @@ import type { Dataset } from "../../data/types";
 import type { ColorMode, OrgDisplayMode } from "../../state/store";
 import type { FilterArrays } from "../../filters/useFilterMask";
 import { baseColor } from "../colors";
-import { lodRamp, lodVisibleCount } from "../importance";
+import { lodRamp } from "../importance";
+
+// Upper bound for the reveal-level filter when all points should show (selection/filter).
+// Larger than any level s12 emits.
+const MAX_REVEAL_LEVEL = 32767;
 
 interface Args {
   ds: Dataset;
@@ -46,28 +50,25 @@ export function usePointsLayer({
 }: Args) {
   const n = ds.points.count;
 
-  // Descending citation rank per point (0 = most cited). A point is "important" if its rank
-  // is within the currently-visible budget. Computed once per dataset; the actual threshold
-  // is applied cheaply on the GPU so panning/zooming never recomputes this.
-  const rank = useMemo(() => {
-    const order = Array.from({ length: n }, (_, i) => i);
-    order.sort((a, b) => ds.points.citedByCount[b] - ds.points.citedByCount[a]);
-    const r = new Int32Array(n);
-    for (let pos = 0; pos < n; pos++) r[order[pos]] = pos;
-    return r;
-  }, [ds, n]);
-
-  // How many points to reveal at the current zoom. A selection or active filter forces the
-  // full set (LOD would otherwise hide connected/matching papers that happen to be low-cited).
+  // Level-of-detail via reveal_level (s12 greedy thinning): a point renders only when its
+  // reveal_level <= the active level, which GUARANTEES no two visible points overlap at any
+  // zoom (each level maintains a minimum on-screen separation). This replaces the old
+  // citation-rank budget, which merely limited the count and still let points collide.
+  //
+  // Level 0 fills at the fit zoom (base_divisor tuned so ~a few hundred points separate by
+  // ~1/40 of the span). Each reveal level corresponds to one 2x zoom step, matching how the
+  // thinning radius halves per level; +1 headroom keeps the next level's points appearing
+  // just before you need them. A selection or active filter forces all levels so nothing
+  // connected/matching is hidden.
   const relOffset = Math.max(0, zoom - baseZoom);
   const forceAll = selectedNode !== null || filter.anyOrgAuthorActive;
-  const visibleCount = useMemo(
-    () => lodVisibleCount(n, relOffset, forceAll),
-    [forceAll, relOffset, n],
-  );
+  // At the fit zoom (relOffset 0) show only level 0 — the sparsest, guaranteed-separated
+  // set; each ~1 zoom step in reveals the next level. floor (not +1) so the home view is
+  // the calibrated sparse set rather than already two levels deep.
+  const activeLevel = forceAll ? MAX_REVEAL_LEVEL : Math.floor(relOffset);
 
   // Fade + shrink dots at the fit view so the home map reads as airy topic fields rather
-  // than a wall of ink; both ramp to full by the LOD reveal offset.
+  // than a wall of ink; both ramp to full over the first few zoom steps.
   const lodT = lodRamp(relOffset, forceAll);
   const layerOpacity = 0.55 + 0.45 * lodT;
   const radiusScale = 0.72 + 0.28 * lodT;
@@ -142,22 +143,22 @@ export function usePointsLayer({
     // GPU date filter + org/author hide + selection cull + zoom LOD, all via
     // DataFilterExtension. channel 0 = month index (date filter); channel 1 = org/author
     // match (only in "hide" mode); channel 2 = selection membership (only the selected node
-    // + its cited/citing set pass when a paper is selected); channel 3 = citation-rank LOD
-    // (points ranked beyond the current zoom's budget are culled when zoomed out). All four
-    // are applied on the GPU, so panning/zooming never re-evaluates JS per point.
+    // + its cited/citing set pass when a paper is selected); channel 3 = reveal_level LOD
+    // (a point shows only when its reveal_level <= the active level, guaranteeing no overlap
+    // at any zoom). All four are applied on the GPU, so pan/zoom never re-evaluate per point.
     extensions: [new DataFilterExtension({ filterSize: 4 })],
     getFilterValue: (_: unknown, { index }: { index: number }) =>
       [
         ds.points.monthIndex[index],
         hideNonMatch ? filter.matchValue[index] : 1,
         connected === null || connected.has(index) ? 1 : 0,
-        rank[index],
+        ds.points.revealLevel[index],
       ] as [number, number, number, number],
     filterRange: [
       [monthMin, monthMax],
       [1, 1],
       [1, 1],
-      [0, visibleCount - 1],
+      [0, activeLevel],
     ],
     updateTriggers: {
       getFillColor: [
@@ -168,7 +169,7 @@ export function usePointsLayer({
         selectedNode,
       ],
       getRadius: [selectedNode, hoverNode, connected, filter.matchValue, filter.anyOrgAuthorActive],
-      getFilterValue: [hideNonMatch, filter.matchValue, connected, rank],
+      getFilterValue: [hideNonMatch, filter.matchValue, connected, ds.points.revealLevel],
     },
   });
 }

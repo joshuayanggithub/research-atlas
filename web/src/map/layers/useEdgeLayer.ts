@@ -178,6 +178,12 @@ export function useEdgeLayer({
     return edges;
   }, [ds, edgeMode, screenScale, selectedNode]);
 
+  // Match the points layer's reveal-level LOD (usePointsLayer): a global edge is only drawn
+  // when BOTH endpoints are currently revealed, so the edge web thins out with the points at
+  // the zoomed-out home view instead of drawing lines to hidden nodes.
+  const activeLevel = Math.floor(Math.max(0, zoom - baseZoom));
+  const revealLevel = ds.points.revealLevel;
+
   const globalEdges = useMemo(() => {
     if (!show) return [];
 
@@ -188,6 +194,8 @@ export function useEdgeLayer({
       if (
         sourceNode === selectedNode ||
         targetNode === selectedNode ||
+        revealLevel[sourceNode] > activeLevel ||
+        revealLevel[targetNode] > activeLevel ||
         ds.points.monthIndex[sourceNode] < monthMin ||
         ds.points.monthIndex[sourceNode] > monthMax ||
         ds.points.monthIndex[targetNode] < monthMin ||
@@ -224,12 +232,14 @@ export function useEdgeLayer({
     }
     return edges;
   }, [
+    activeLevel,
     baseAlpha,
     ds,
     filter.anyOrgAuthorActive,
     filter.matchValue,
     hideNonMatch,
     maxScreenLength,
+    revealLevel,
     sampleThreshold,
     screenScale,
     selectedNode,
