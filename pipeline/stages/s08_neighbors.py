@@ -1,9 +1,9 @@
-"""s08: Build the related-works kNN graph on FUSED (text + citation) similarity.
+"""s08: Build the fused related-works graph.
 
 1. Build an hnswlib cosine index over the L2-normalized embeddings.
-2. Query top (knn_k * 3) text neighbors per node (candidate pool).
-3. Re-rank candidates by fused score = alpha*cosine + (1-alpha)*citation_score, where
-   citation_score = mean(bibliographic-coupling, co-citation) over the intra-corpus graph.
+2. Query semantic candidates from text embeddings.
+3. Add direct citations, bibliographic-coupling, and co-citation candidates.
+4. Rank the union by fused score = alpha*cosine + (1-alpha)*citation_score.
 4. Keep top knn_k per node.
 
 Emits:
@@ -17,7 +17,10 @@ import polars as pl
 
 from pipeline.common import log
 from pipeline.common.io import read_npy
-from pipeline.common.fused_similarity import build_reference_sets, fuse_neighbors
+from pipeline.common.fused_similarity import (
+    build_reference_sets,
+    fuse_candidate_neighbors,
+)
 from pipeline.config import CORPUS_ACTIVE, INTERIM_DIR, Config, ensure_dirs, load_config
 
 VEC_IN = INTERIM_DIR / "embeddings.npy"
@@ -36,16 +39,34 @@ def run(cfg: Config | None = None) -> str:
     vectors = read_npy(VEC_IN)
     n, dim = vectors.shape
     k = cfg.fused.knn_k
-    cand = min(n - 1, k * 3)
+    cand = min(n - 1, k * cfg.fused.text_candidate_multiplier)
     log.info(f"hnswlib cosine index: n={n} dim={dim} k={k} candidates={cand}")
 
     index = hnswlib.Index(space="cosine", dim=dim)
-    index.init_index(max_elements=n, ef_construction=200, M=16)
-    index.add_items(vectors, np.arange(n))
+    index.init_index(
+        max_elements=n,
+        ef_construction=200,
+        M=16,
+        random_seed=cfg.cluster.random_state,
+    )
+    # hnswlib's parallel construction is not reproducible even with a fixed seed, so we use
+    # one thread for stable artifacts — but single-thread is impractically slow at scale
+    # (~30+ min at 400k). Above fused.single_thread_max_n, use all cores and accept the minor
+    # non-determinism (an offline stage; the approximate kNN is robust to it).
+    threads = 1 if n <= cfg.fused.single_thread_max_n else 0  # 0 = all cores in hnswlib
+    if threads != 1:
+        log.warn(f"n={n} > single_thread_max_n={cfg.fused.single_thread_max_n}: building "
+                 f"HNSW with all cores (faster, slightly non-deterministic)")
+    index.set_num_threads(threads)
+    index.add_items(vectors, np.arange(n), num_threads=threads)
     index.set_ef(max(cand + 10, 50))
 
     with log.timer("knn query"):
-        labels, distances = index.knn_query(vectors, k=cand + 1)  # +1 for self
+        labels, distances = index.knn_query(
+            vectors,
+            k=cand + 1,
+            num_threads=threads,
+        )  # +1 for self
     # cosine similarity = 1 - cosine distance; drop self (first col is usually self).
     text_ids = np.empty((n, cand), dtype=np.int32)
     text_scores = np.empty((n, cand), dtype=np.float32)
@@ -67,10 +88,19 @@ def run(cfg: Config | None = None) -> str:
     if EDGES_IN.exists():
         e = np.load(EDGES_IN)
         out_refs, in_citers = build_reference_sets(e["src"], e["dst"], n)
-        log.info("fusing text kNN with citation coupling")
+        citation_limit = k * cfg.fused.citation_candidate_multiplier
+        log.info(
+            "ranking union of text, direct-citation, coupling, and co-citation candidates"
+        )
         with log.timer("fuse"):
-            fused_ids, fused_scores = fuse_neighbors(
-                text_ids, text_scores, out_refs, in_citers, cfg.fused.alpha, k
+            fused_ids, fused_scores = fuse_candidate_neighbors(
+                vectors,
+                text_ids,
+                out_refs,
+                in_citers,
+                cfg.fused.alpha,
+                k,
+                citation_limit,
             )
     else:
         log.warn("no edges.npz — using pure text neighbors (run s09 first for fused)")

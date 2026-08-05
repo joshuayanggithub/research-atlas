@@ -13,10 +13,19 @@ corpus:
   # lost the edge. 2015 captures the modern era; 2012 (+~17k works) would add AlexNet.
   date_from: "2015-01-01"
   date_to: "2026-12-31"
-  # Hard cap on number of works pulled. Raised with the window: the proposed org+date
-  # filter matches ~89k works, so the old 40k cap would silently truncate ~55% of the
-  # corpus in OpenAlex API order (i.e. arbitrarily, not by relevance).
-  max_works: 120000
+  # Corpus scope. "field" = the WHOLE CS field with a citation floor, NO org fetch-gate, so
+  # any influential paper appears regardless of author affiliation (the org list below then
+  # only drives UI filters). "orgs" = the previous affiliation-gated behavior.
+  scope: "field"
+  # field scope: keep works cited > min_citations across the full range, OR published since
+  # recent_since with cited > recent_min_citations (a light floor so recent work appears
+  # without pulling the ~1.5M uncited papers from the last two years).
+  #   cited>25 (2015+) ~= 388k  +  recent 2025+ cited>2 ~= 81k  ->  ~400-420k after dedup.
+  min_citations: 25
+  recent_since: "2025-01-01"
+  recent_min_citations: 2
+  # Hard cap over the union of the two field-scope streams (safety bound on corpus size).
+  max_works: 450000
   # Per-request page size for OpenAlex cursor pagination (max 200).
   per_page: 200
   # Starter organizations (a few named orgs). Each maps to one or more OpenAlex

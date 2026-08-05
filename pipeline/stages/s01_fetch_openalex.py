@@ -65,6 +65,28 @@ def build_filter(cfg: Config, inst_ids: list[str]) -> str:
     )
 
 
+def build_field_filters(cfg: Config) -> list[str]:
+    """Field-scope fetch: the whole CS field, no org gate, kept feasible by a citation
+    floor with a recency exception. OpenAlex ORs only within one field's values, not across
+    fields, so "cited_by_count>N OR recent" becomes TWO filters the caller unions + dedups:
+      1. high-citation works across the full date range;
+      2. recent works (>= recent_since) regardless of citations.
+    """
+    base = (
+        f"primary_topic.field.id:{cfg.corpus.field_id},"
+        f"from_publication_date:{cfg.corpus.date_from},"
+        f"to_publication_date:{cfg.corpus.date_to}"
+    )
+    high_cite = f"{base},cited_by_count:>{cfg.corpus.min_citations}"
+    recent = (
+        f"primary_topic.field.id:{cfg.corpus.field_id},"
+        f"from_publication_date:{cfg.corpus.recent_since},"
+        f"to_publication_date:{cfg.corpus.date_to},"
+        f"cited_by_count:>{cfg.corpus.recent_min_citations}"
+    )
+    return [high_cite, recent]
+
+
 def run(cfg: Config | None = None) -> int:
     cfg = cfg or load_config()
     ensure_dirs()
@@ -72,30 +94,50 @@ def run(cfg: Config | None = None) -> int:
 
     resolved = read_json(ORGS_IN)
     inst_ids = _all_institution_ids(resolved)
-    filt = build_filter(cfg, inst_ids)
-    log.info(f"{len(inst_ids)} institution ids | field={cfg.corpus.field_id} "
-             f"| {cfg.corpus.date_from}..{cfg.corpus.date_to}")
+
+    if cfg.corpus.scope == "field":
+        filters = build_field_filters(cfg)
+        log.info(f"scope=field (NO org gate) | field={cfg.corpus.field_id} "
+                 f"| cited>{cfg.corpus.min_citations} OR since {cfg.corpus.recent_since} "
+                 f"| {cfg.corpus.date_from}..{cfg.corpus.date_to}")
+    else:
+        filters = [build_filter(cfg, inst_ids)]
+        log.info(f"scope=orgs | {len(inst_ids)} institution ids | field={cfg.corpus.field_id} "
+                 f"| {cfg.corpus.date_from}..{cfg.corpus.date_to}")
 
     client = OpenAlexClient(cfg.secrets.openalex_mailto, cfg.secrets.openalex_api_key)
     try:
-        total = client.count_works(filt)
-        target = min(total, cfg.corpus.max_works)
-        log.info(f"matching works: {total} | fetching up to {target}")
-
+        # In field scope the two streams (high-citation, recent) overlap, so dedup by work id
+        # across both. The cap is a global budget over the union.
+        seen: set[str] = set()
         n = 0
-        with OUT.open("w", encoding="utf-8") as f, \
-                tqdm(total=target, desc="  fetch", unit="w") as bar:
-            for w in client.iter_works(
-                filt, SELECT, per_page=cfg.corpus.per_page, max_records=target
-            ):
-                f.write(json.dumps(w, ensure_ascii=False))
-                f.write("\n")
-                n += 1
-                bar.update(1)
+        with OUT.open("w", encoding="utf-8") as f:
+            for filt in filters:
+                total = client.count_works(filt)
+                remaining = cfg.corpus.max_works - n
+                if remaining <= 0:
+                    log.warn(f"hit max_works={cfg.corpus.max_works}; skipping remaining filters")
+                    break
+                log.info(f"matching works: {total} | fetching up to {remaining} more (cap "
+                         f"{cfg.corpus.max_works})")
+                with tqdm(total=min(total, remaining), desc="  fetch", unit="w") as bar:
+                    for w in client.iter_works(
+                        filt, SELECT, per_page=cfg.corpus.per_page, max_records=remaining
+                    ):
+                        wid = w.get("id")
+                        if wid in seen:
+                            continue
+                        seen.add(wid)
+                        f.write(json.dumps(w, ensure_ascii=False))
+                        f.write("\n")
+                        n += 1
+                        bar.update(1)
+                        if n >= cfg.corpus.max_works:
+                            break
     finally:
         client.close()
 
-    log.info(f"wrote {n} works -> {OUT}")
+    log.info(f"wrote {n} works ({len(seen)} unique ids) -> {OUT}")
     return n
 
 

@@ -59,6 +59,20 @@ class CorpusCfg(BaseModel):
     max_works: int = 40000
     per_page: int = 200
     orgs: list[OrgSpec] = Field(default_factory=list)
+    # Corpus scope (s01 fetch predicate):
+    #   "orgs"  — only works authored at one of `orgs` (affiliation-gated; the MVP default).
+    #   "field" — the WHOLE CS field, no org gate, with a citation floor so the corpus stays
+    #             a feasible size. Orgs then act only as UI filters, not as a fetch gate, so
+    #             any paper (e.g. arXiv landmarks whose authors aren't at a listed org) can
+    #             appear. This is what makes "show all papers regardless of org" real.
+    scope: Literal["orgs", "field"] = "orgs"
+    # field scope only: keep works with cited_by_count > min_citations, OR published on/after
+    # recent_since with cited_by_count > recent_min_citations (a lighter floor so recent work
+    # that hasn't accrued citations yet still appears, without flooding the corpus with the
+    # ~1.5M uncited papers from the last two years).
+    min_citations: int = 25
+    recent_since: str = "2025-01-01"
+    recent_min_citations: int = 2
 
 
 class EmbeddingCfg(BaseModel):
@@ -113,6 +127,11 @@ class FusedCfg(BaseModel):
     knn_k: int = 15
     text_candidate_multiplier: int = 4
     citation_candidate_multiplier: int = 4
+    # s08 builds/queries the HNSW index single-threaded for reproducible artifacts. Parallel
+    # hnswlib is not deterministic even with a fixed seed, but single-thread is impractically
+    # slow at scale (~30+ min at 400k). Above this N, s08 uses all cores and accepts the
+    # minor non-determinism. Set to 0 to always parallelize, or a huge number to never.
+    single_thread_max_n: int = 150000
 
 
 class LabelsCfg(BaseModel):
