@@ -19,9 +19,21 @@ interface Args {
   monthMax: number;
   selectedNode: number | null;
   hoverNode: number | null;
+  zoom: number;
+  baseZoom: number;
   onClick: (nodeId: number | null) => void;
   onHover: (nodeId: number | null, x: number, y: number) => void;
 }
+
+// Level-of-detail: at the fully-zoomed-out "fit" view, 71k points overlap into a solid
+// mass (measured: ~90% of points sit within 2px of a neighbor, and a dot is 2px wide). So
+// zoomed out we show only the most-cited papers and reveal the rest as the user zooms in,
+// where there is pixel room for them. `LOD_MIN_VISIBLE` points are always shown so a filter
+// that matches only low-citation papers is never blank.
+const LOD_MIN_VISIBLE = 6000;
+// Fraction of the corpus visible at the fit zoom, ramping to 1.0 by LOD_FULL_OFFSET.
+const LOD_BASE_FRACTION = 0.12;
+const LOD_FULL_OFFSET = 3.5; // zoom offset (from fit) at which all points are shown
 
 export function usePointsLayer({
   ds,
@@ -32,10 +44,40 @@ export function usePointsLayer({
   monthMax,
   selectedNode,
   hoverNode,
+  zoom,
+  baseZoom,
   onClick,
   onHover,
 }: Args) {
   const n = ds.points.count;
+
+  // Descending citation rank per point (0 = most cited). A point is "important" if its rank
+  // is within the currently-visible budget. Computed once per dataset; the actual threshold
+  // is applied cheaply on the GPU so panning/zooming never recomputes this.
+  const rank = useMemo(() => {
+    const order = Array.from({ length: n }, (_, i) => i);
+    order.sort((a, b) => ds.points.citedByCount[b] - ds.points.citedByCount[a]);
+    const r = new Int32Array(n);
+    for (let pos = 0; pos < n; pos++) r[order[pos]] = pos;
+    return r;
+  }, [ds, n]);
+
+  // How many points to reveal at the current zoom. A selection or active filter forces the
+  // full set (LOD would otherwise hide connected/matching papers that happen to be low-cited).
+  const relOffset = Math.max(0, zoom - baseZoom);
+  const forceAll = selectedNode !== null || filter.anyOrgAuthorActive;
+  const visibleCount = useMemo(() => {
+    if (forceAll) return n;
+    const t = Math.min(1, relOffset / LOD_FULL_OFFSET);
+    const frac = LOD_BASE_FRACTION + (1 - LOD_BASE_FRACTION) * t;
+    return Math.min(n, Math.max(LOD_MIN_VISIBLE, Math.round(n * frac)));
+  }, [forceAll, relOffset, n]);
+
+  // Fade + shrink dots at the fit view so the home map reads as airy topic fields rather
+  // than a wall of ink; both ramp to full by LOD_FULL_OFFSET (matching the LOD reveal).
+  const lodT = forceAll ? 1 : Math.min(1, relOffset / LOD_FULL_OFFSET);
+  const layerOpacity = 0.55 + 0.45 * lodT;
+  const radiusScale = 0.72 + 0.28 * lodT;
 
   // Precompute base RGB per point for the active color mode (cheap; memo on mode).
   const rgb = useMemo(() => {
@@ -63,6 +105,8 @@ export function usePointsLayer({
   return new ScatterplotLayer({
     id: "points",
     data: { length: n },
+    opacity: layerOpacity,
+    radiusScale,
     getPosition: (_: unknown, { index }: { index: number }) =>
       [ds.points.x[index], ds.points.y[index]] as [number, number],
     getFillColor: (_: unknown, { index }: { index: number }) => {
@@ -102,22 +146,25 @@ export function usePointsLayer({
     onClick: (info) => onClick(info.index >= 0 ? info.index : null),
     onHover: (info) => onHover(info.index >= 0 ? info.index : null, info.x, info.y),
 
-    // GPU date filter + optional org/author hide + selection citation-context cull, all via
-    // DataFilterExtension. channel 0 = month index (month-granularity date filter);
-    // channel 1 = org/author match (only enforced in "hide" mode); channel 2 = selection
-    // membership — when a paper is selected, only the selected node and its cited/citing set
-    // pass, so every irrelevant paper is culled entirely (not drawn, not pickable).
-    extensions: [new DataFilterExtension({ filterSize: 3 })],
+    // GPU date filter + org/author hide + selection cull + zoom LOD, all via
+    // DataFilterExtension. channel 0 = month index (date filter); channel 1 = org/author
+    // match (only in "hide" mode); channel 2 = selection membership (only the selected node
+    // + its cited/citing set pass when a paper is selected); channel 3 = citation-rank LOD
+    // (points ranked beyond the current zoom's budget are culled when zoomed out). All four
+    // are applied on the GPU, so panning/zooming never re-evaluates JS per point.
+    extensions: [new DataFilterExtension({ filterSize: 4 })],
     getFilterValue: (_: unknown, { index }: { index: number }) =>
       [
         ds.points.monthIndex[index],
         hideNonMatch ? filter.matchValue[index] : 1,
         connected === null || connected.has(index) ? 1 : 0,
-      ] as [number, number, number],
+        rank[index],
+      ] as [number, number, number, number],
     filterRange: [
       [monthMin, monthMax],
       [1, 1],
       [1, 1],
+      [0, visibleCount - 1],
     ],
     updateTriggers: {
       getFillColor: [
@@ -128,7 +175,7 @@ export function usePointsLayer({
         selectedNode,
       ],
       getRadius: [selectedNode, hoverNode, connected, filter.matchValue, filter.anyOrgAuthorActive],
-      getFilterValue: [hideNonMatch, filter.matchValue, connected],
+      getFilterValue: [hideNonMatch, filter.matchValue, connected, rank],
     },
   });
 }
