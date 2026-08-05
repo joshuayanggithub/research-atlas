@@ -172,7 +172,6 @@ export interface Dataset {
   manifest: Manifest;
   points: PointData;
   papers: PaperMeta[];
-  clusters: ClustersDoc;
   labels: LabelsDoc;
   orgs: OrgsDoc;
   topics: TopicsDoc;

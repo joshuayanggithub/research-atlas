@@ -111,6 +111,24 @@ silently dropped.
 - Title and author search support keyboard selection.
 - On small screens, filters open as a drawer and paper details use a bottom sheet.
 
+## Initial download (on-demand data delivery)
+
+The app has no backend — it downloads a static bundle — so keeping the *initial* download
+small as the corpus grows is a real constraint. What loads up front vs on demand:
+
+- **On demand** (fetched per selection, sharded by node id, cached): related-works
+  neighbors, and per-paper detail (author names, venue, ids, full date).
+- **Not shipped to the browser at all**: `clusters.json` (the per-region array — the
+  frontend never read it; the zoom levels it carried are in the manifest).
+- **Resident** (needed for all-paper interactions): point tiles by zoom, the papers index
+  (title + year + citations + author_ids), the author index (names), and the citation edge
+  list (adjacency drives citation LOD gating + the explorer; ~11MB at 390k, kept whole).
+
+Net: the 72k bundle's initial load is ~22MB (was ~29MB); projected ~117MB uncompressed at
+390k — roughly 40–50MB over the wire with gzip, since titles/JSON compress well. The floor
+at large N is titles + author names, which must be resident for client-side search; going
+beyond that would require server-side search, which the no-backend design trades away.
+
 ## Data & provenance
 
 - The paper corpus comes from OpenAlex; SPECTER2 vectors from Semantic Scholar, addressed by

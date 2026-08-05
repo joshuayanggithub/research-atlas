@@ -261,15 +261,18 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     neighbor_shards, neighbor_shard_size = _emit_neighbor_shards(_neighbors_table())
     write_arrow(_edges_table(), WEB_DATA_DIR / S.EDGES)
 
-    # Copy JSON + authors artifacts from data/artifacts.
-    for fname in (S.CLUSTERS, S.LABELS, S.ORGS, S.TOPICS):
+    # Copy JSON + authors artifacts from data/artifacts. clusters.json is intentionally NOT
+    # shipped to the browser: the frontend never reads its per-region array (24k+ entries,
+    # ~7MB now / ~40MB at 390k — the single largest artifact), and the only thing needed
+    # from it (the zoom `levels`) goes into the manifest below. Semantic-zoom labels come
+    # from labels.json. Keeping it out of web/public/data is the biggest initial-load win.
+    for fname in (S.LABELS, S.ORGS, S.TOPICS):
         write_json(read_json(ARTIFACTS_DIR / fname), WEB_DATA_DIR / fname)
     write_arrow(read_arrow(ARTIFACTS_DIR / S.AUTHORS), WEB_DATA_DIR / S.AUTHORS)
 
     # Manifest.
     embed_meta = read_json(EMBED_META_IN)
-    clusters_doc = read_json(WEB_DATA_DIR / S.CLUSTERS)
-    levels = clusters_doc["levels"]
+    levels = read_json(ARTIFACTS_DIR / S.CLUSTERS)["levels"]  # from artifacts, not the bundle
 
     # PAPERS and NEIGHBORS are sharded (or index-split), not shipped whole in the load path.
     tracked = (

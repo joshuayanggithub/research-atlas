@@ -58,9 +58,11 @@ def paper_detail_shard(shard: int) -> str:
     return f"papers-detail-{shard}.arrow"
 
 
+# NOTE: CLUSTERS is written to data/artifacts (pipeline-internal, source of manifest levels)
+# but is intentionally NOT shipped to web/public/data — the frontend never reads it.
 ALL_FILES = [
     MANIFEST, POINTS, PAPERS, PAPERS_INDEX, NEIGHBORS, EDGES, AUTHORS,
-    CLUSTERS, LABELS, ORGS, TOPICS,
+    LABELS, ORGS, TOPICS,
 ]
 
 # ---------------------------------------------------------------------------

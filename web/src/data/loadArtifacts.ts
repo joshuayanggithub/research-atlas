@@ -4,7 +4,6 @@
 import { Table, tableFromIPC } from "apache-arrow";
 import type {
   AuthorRow,
-  ClustersDoc,
   Dataset,
   LabelsDoc,
   Manifest,
@@ -182,8 +181,9 @@ async function loadDatasetImpl(): Promise<Dataset> {
     fetchArrow("authors.arrow"),
     fetchArrow("edges.arrow"),
   ]);
-  const [clusters, labels, orgs, topics] = await Promise.all([
-    fetchJSON<ClustersDoc>("clusters.json"),
+  // clusters.json is NOT fetched — nothing reads its per-region array, and the zoom levels
+  // it used to carry are in the manifest. Semantic-zoom labels come from labels.json.
+  const [labels, orgs, topics] = await Promise.all([
     fetchJSON<LabelsDoc>("labels.json"),
     fetchJSON<OrgsDoc>("orgs.json"),
     fetchJSON<TopicsDoc>("topics.json"),
@@ -221,7 +221,6 @@ async function loadDatasetImpl(): Promise<Dataset> {
     manifest,
     points,
     papers,
-    clusters,
     labels,
     orgs,
     topics,
