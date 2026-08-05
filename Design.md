@@ -173,9 +173,12 @@ miss, giving one SPECTER2 space at 100% coverage with no island and no dropped r
 ### 4. Layout vs clustering: two independent reductions
 
 - **Layout**: openTSNE 768→2D with the "PubMed-landscape" recipe (PCA init, uniform
-  affinities k=10, cosine metric, exaggeration annealing). The fitted embedding is
-  **frozen** (`projector.pkl`) together with the fit-time center and scale, so future
-  incremental runs `transform()` new papers into the same displayed coordinate system.
+  affinities k=10, cosine metric, exaggeration annealing). A sustained `projector.
+  exaggeration` (default 1.5) additionally separates topic clusters into distinct islands
+  with whitespace between them (grid occupancy 62% → 50%), so the zoomed-out home view
+  reads as airy continents rather than one dense mass. The fitted embedding is **frozen**
+  (`projector.pkl`) together with the fit-time center and scale, so future incremental runs
+  `transform()` new papers into the same displayed coordinate system.
 - **Clustering**: a *separate* UMAP 768→~10D + HDBSCAN. We deliberately **do not cluster
   on the 2D coords** — UMAP's own docs warn that clustering the display projection creates
   false tears / density artifacts. The resulting `cluster_leaf` is emitted per paper, but
@@ -227,7 +230,7 @@ comparison (`hierarchy.method: "leiden" | "louvain" | "kmeans" | "quadtree"`). S
 `docs/RESEARCH_PRIOR_WORK.md` §1.4 for the evidence.
 
 Child memberships are strict subsets of their parents, and a split's children exactly
-partition that parent. The current build has **11 bands and 24,215 regions** (see §5's
+partition that parent. The current build has **11 bands and ~24,600 regions** (see §5's
 micro-cluster note for why the hierarchy was deepened). Small terminal communities stop
 splitting, so coarse labels persist where no defensible finer partition exists. The frozen
 2D coordinates only determine each community label's centroid and bounding box.
@@ -310,14 +313,28 @@ their endpoints. Every arrow points from the citing paper to the cited paper, an
 legend can hide all citation links.
 
 Selecting a paper overlays its capped incoming/outgoing links at full contrast with
-direction colors, larger arrowheads, clickable endpoint rings, and unrelated points
-dimmed. The citation explorer retains every intra-corpus link in searchable **References**
-and **Cited by** lists even when the map overlay is capped. A separate **Paper** tab embeds
-the first page from arXiv lazily; when the corpus lacks an arXiv ID, it tries an exact
-Semantic Scholar DOI/title resolution and provides explicit fallback links.
+direction colors, larger arrowheads, clickable endpoint rings, and every unrelated point
+**culled entirely** (GPU filter channel, so they are neither drawn nor pickable — the
+citation network reads as the only thing on the map). The citation explorer retains every
+intra-corpus link in searchable **References** and **Cited by** lists even when the map
+overlay is capped. A separate **Paper** tab embeds the first page from arXiv lazily; when
+the corpus lacks an arXiv ID, it tries an exact Semantic Scholar DOI/title resolution and
+provides explicit fallback links.
 
-Date filtering runs on the GPU via `DataFilterExtension`; org/author filtering dims or
-hides non-matches.
+**Point level-of-detail.** At the fit (home) zoom, 71k points overlap into a solid mass
+(~90% sit within 2px of a neighbor while a dot is 2px wide). Because the home view
+auto-fits the layout to the viewport, spreading the layout apart cannot help — `fitZoom`
+just zooms out to compensate, leaving pixel density unchanged; the exaggerated layout (§4)
+improves the *shape* but not the count. So the scatter renders fewer, calmer points when
+zoomed out: a citation-rank LOD channel shows ~12% of the corpus (most-cited) at the home
+view and ramps to 100% by +3.5 zoom (with a 6k floor so it is never sparse), and points
+fade + shrink at the fit view, ramping to full over the same range. A selection or active
+org/author filter forces the full set, so nothing connected or matching is ever hidden by
+LOD.
+
+Date filtering, the org/author hide, the selection cull, and the LOD reveal all run on the
+GPU via a single 4-channel `DataFilterExtension`, so pan/zoom never re-evaluate JS per
+point.
 
 Arrow files are written **uncompressed** — the browser's `apache-arrow` cannot decode
 compressed record batches ("compression not implemented"); gzip/brotli at the HTTP/CDN

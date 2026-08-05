@@ -75,6 +75,10 @@ class ProjectorCfg(BaseModel):
     n_neighbors: int = 10
     learning_rate: Optional[float] = None
     random_state: int = 42
+    # openTSNE exaggeration held through the whole optimization (not just the early phase).
+    # >1 pulls topic clusters apart into visibly separated islands with whitespace between
+    # them, which reads far less crowded at the zoomed-out home view. 1.0 = standard t-SNE.
+    exaggeration: float = 1.5
 
 
 class ClusterCfg(BaseModel):

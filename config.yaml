@@ -120,9 +120,12 @@ embedding:
 projector:
   method: "opentsne"          # "opentsne" | "umap"
   n_neighbors: 10             # uniform-affinity kNN (PubMed-landscape recipe)
-  # learning rate uses n/12 when null; exaggeration annealing handled in s04.
+  # learning rate uses n/12 when null; early-exaggeration annealing handled in s04.
   learning_rate: null
   random_state: 42
+  # Sustained exaggeration (>1) separates topic clusters into distinct islands with
+  # whitespace between them, so the zoomed-out home view is less crowded. 1.0 = plain t-SNE.
+  exaggeration: 1.5
 
 cluster:
   method: "hdbscan"           # "hdbscan" | "hkmeans"

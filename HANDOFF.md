@@ -102,7 +102,7 @@ s09 edges → s08 neighbors → s06 hierarchy → s07 label → s10 indexes → 
 | Embeddings | **SPECTER2** (768-d) from Semantic Scholar, addressed by arXiv→DOI→MAG (MAG pass recovers papers whose OpenAlex DOI S2 can't resolve, e.g. "Attention Is All You Need"); `on_uncovered: drop` keeps only papers with a real vector (89,140 fetched → 80.6% covered → **71,831 kept**) for one clean space |
 | Layout | openTSNE 768→2D; reducer and map normalization frozen in `projector.pkl` |
 | Clusters | UMAP→10D + HDBSCAN (235 clusters) — used for `cluster_leaf` |
-| Semantic zoom | **nested Leiden communities on the planar substrate** (2D-layout kNN adjacency, 768-D cosine weights) so each region is one contiguous area of the map: **11 bands, 24,215 regions**; resolution bisected to the target child count. Deepest band resolves ~3-paper micro-clusters. (Prior fused-graph `leiden`/`louvain` and 2D `kmeans`/`quadtree` stay selectable via `hierarchy.method`. See Design.md §5 + `docs/RESEARCH_PRIOR_WORK.md` §1.4.) |
+| Semantic zoom | **nested Leiden communities on the planar substrate** (2D-layout kNN adjacency, 768-D cosine weights) so each region is one contiguous area of the map: **11 bands, ~24,600 regions**; resolution bisected to the target child count. Deepest band resolves ~3-paper micro-clusters. (Prior fused-graph `leiden`/`louvain` and 2D `kmeans`/`quadtree` stay selectable via `hierarchy.method`. See Design.md §5 + `docs/RESEARCH_PRIOR_WORK.md` §1.4.) |
 | Labels | discriminative OpenAlex topics + representative title/abstract c-TF-IDF phrases (MathML stripped structurally), ancestor/sibling-deduped; **small leaf communities named from their shared title n-gram** (~11,700 labels) |
 | Bundle | 9 files, ~51 MB uncompressed Arrow/JSON in `web/public/data/` |
 
