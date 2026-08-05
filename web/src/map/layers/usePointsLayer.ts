@@ -1,12 +1,13 @@
 // The scatterplot of papers. Positions come from points.arrow (x,y); fill color from the
-// active color mode; org/author filtering dims or hides non-matches; the date range is
-// applied on the GPU via DataFilterExtension so slider drags don't recompute anything.
+// active color mode; org/author filtering HIDES non-matches (GPU-culled, not clickable);
+// the date range is applied on the GPU via DataFilterExtension so slider drags don't
+// recompute anything.
 
 import { ScatterplotLayer } from "@deck.gl/layers";
 import { DataFilterExtension } from "@deck.gl/extensions";
 import { useMemo } from "react";
 import type { Dataset } from "../../data/types";
-import type { ColorMode, OrgDisplayMode } from "../../state/store";
+import type { ColorMode } from "../../state/store";
 import type { FilterArrays } from "../../filters/useFilterMask";
 import { baseColor } from "../colors";
 import { lodRamp } from "../importance";
@@ -19,7 +20,6 @@ interface Args {
   ds: Dataset;
   colorMode: ColorMode;
   filter: FilterArrays;
-  orgDisplayMode: OrgDisplayMode;
   monthMin: number;
   monthMax: number;
   selectedNode: number | null;
@@ -38,7 +38,6 @@ export function usePointsLayer({
   ds,
   colorMode,
   filter,
-  orgDisplayMode,
   monthMin,
   monthMax,
   selectedNode,
@@ -85,8 +84,10 @@ export function usePointsLayer({
     return arr;
   }, [ds, colorMode, filter.orgOfNode, n]);
 
-  // Whether org/author filtering hides (vs dims) non-matches.
-  const hideNonMatch = filter.anyOrgAuthorActive && orgDisplayMode === "hide";
+  // Any active org/author filter HIDES non-matching papers entirely (GPU-culled below — not
+  // drawn, not pickable), so a filtered view shows only the matching set, never a dimmed
+  // backdrop. (Previously this was an optional "hide" mode; now it is unconditional.)
+  const hideNonMatch = filter.anyOrgAuthorActive;
   const connected = useMemo(() => {
     if (selectedNode === null) return null;
     return new Set([
@@ -104,16 +105,10 @@ export function usePointsLayer({
     getPosition: (_: unknown, { index }: { index: number }) =>
       [ds.points.x[index], ds.points.y[index]] as [number, number],
     getFillColor: (_: unknown, { index }: { index: number }) => {
-      // When an org/author filter is active, non-matching papers are effectively hidden
-      // (near-transparent) rather than merely dimmed — the filtered set should read as the
-      // whole map, so its topic labels/colors dominate. In "hide" mode the GPU filter culls
-      // them entirely; here we handle the default "dim" mode.
-      // Papers outside a selection's citation context are culled on the GPU (channel 2
-      // below), so they never reach this branch — the selected paper + its cited/citing
-      // set read as the only papers on the map.
-      const filteredOut = filter.anyOrgAuthorActive && filter.matchValue[index] === 0;
-      const a = filteredOut ? 8 : 210;
-      return [rgb[index * 3], rgb[index * 3 + 1], rgb[index * 3 + 2], a] as [
+      // Non-matching (org/author filter) and out-of-selection-context papers are culled on
+      // the GPU (channels 2 & 1 below), so they never reach this branch — only visible
+      // papers are colored, all at full opacity.
+      return [rgb[index * 3], rgb[index * 3 + 1], rgb[index * 3 + 2], 210] as [
         number, number, number, number,
       ];
     },
@@ -128,7 +123,6 @@ export function usePointsLayer({
       if (index === selectedNode) return base * 2.8;
       if (index === hoverNode) return base * 1.9;
       if (connected?.has(index)) return base * 1.35;
-      if (filter.anyOrgAuthorActive && filter.matchValue[index] === 0) return base * 0.55;
       return base;
     },
     radiusUnits: "common",

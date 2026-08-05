@@ -8,7 +8,7 @@ import { LineLayer, ScatterplotLayer, SolidPolygonLayer } from "@deck.gl/layers"
 import { useMemo } from "react";
 import type { Dataset } from "../../data/types";
 import type { FilterArrays } from "../../filters/useFilterMask";
-import type { EdgeMode, OrgDisplayMode } from "../../state/store";
+import type { EdgeMode } from "../../state/store";
 import { importanceWeight } from "../importance";
 
 type Position = [number, number];
@@ -53,7 +53,6 @@ interface Args {
   zoom: number;
   baseZoom: number;
   filter: FilterArrays;
-  orgDisplayMode: OrgDisplayMode;
   monthMin: number;
   monthMax: number;
   onSelect: (node: number) => void;
@@ -103,7 +102,6 @@ export function useEdgeLayer({
   zoom,
   baseZoom,
   filter,
-  orgDisplayMode,
   monthMin,
   monthMax,
   onSelect,
@@ -117,7 +115,9 @@ export function useEdgeLayer({
     ? relativeZoom < 0.75 ? 120 : 105
     : 18;
   const screenScale = 2 ** zoom;
-  const hideNonMatch = filter.anyOrgAuthorActive && orgDisplayMode === "hide";
+  // Any active org/author filter hides edges touching a non-matching paper entirely (to
+  // match the points, which are GPU-culled), so a filtered view shows only intra-set links.
+  const hideNonMatch = filter.anyOrgAuthorActive;
 
   const selectedEdges = useMemo(() => {
     if (selectedNode === null) return [];
@@ -204,10 +204,14 @@ export function useEdgeLayer({
         continue;
       }
 
-      const bothMatch =
-        !filter.anyOrgAuthorActive ||
-        (filter.matchValue[sourceNode] === 1 && filter.matchValue[targetNode] === 1);
-      if (hideNonMatch && !bothMatch) continue;
+      // Drop any edge touching a non-matching paper when a filter is active — hidden points
+      // must not keep dangling links (matches the unconditional point cull).
+      if (
+        hideNonMatch &&
+        (filter.matchValue[sourceNode] === 0 || filter.matchValue[targetNode] === 0)
+      ) {
+        continue;
+      }
       if (edgeHash(sourceNode, targetNode) >= sampleThreshold) continue;
 
       const source: Position = [ds.points.x[sourceNode], ds.points.y[sourceNode]];
@@ -219,8 +223,7 @@ export function useEdgeLayer({
       if (screenLength < 10 || screenLength > maxScreenLength) continue;
 
       const influence = Math.min(1, Math.log1p(ds.points.citedByCount[targetNode]) / 8);
-      const filterFactor = bothMatch ? 1 : 0.22;
-      const alpha = Math.round(baseAlpha * (0.52 + 0.48 * influence) * filterFactor);
+      const alpha = Math.round(baseAlpha * (0.52 + 0.48 * influence));
       const arrowAlpha = Math.min(180, Math.round(alpha * 1.8));
       edges.push({
         source,

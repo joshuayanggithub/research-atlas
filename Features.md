@@ -52,8 +52,8 @@ silently dropped.
   sibling names. Embedded MathML/LaTeX markup is stripped structurally so formula markup can
   never become a label.
 - **Filter-aware labels**: when an organization or author filter is active, only labels whose
-  region still contains matching papers remain, so topic names and point colors describe the
-  filtered subset rather than the whole map.
+  region still contains matching papers remain, so topic names describe the filtered subset
+  (which is all that renders) rather than the whole map.
 
 ## Filtering
 
@@ -75,6 +75,11 @@ silently dropped.
   histogram**, plus presets (All, Last 12mo, Last 24mo, current year) and a live "papers in
   range" count. Runs on the GPU, so dragging is instant.
 - Filters **compose** (organization AND author AND date). "Clear" resets them.
+- **Any active org/author filter hides non-matching papers completely** — they are
+  GPU-culled (not drawn, not hoverable/clickable) and their citation edges are dropped, so a
+  filtered view shows *only* the matching set with no dimmed backdrop. (This is unconditional;
+  there is no dim-vs-hide toggle.) The same holds for a single-paper selection, which shows
+  only that paper and its citation network.
 
 ## Selection, citations & related works
 

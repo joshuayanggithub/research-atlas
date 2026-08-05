@@ -58,7 +58,6 @@ export function MapView({ ds }: { ds: Dataset }) {
   }));
 
   const colorMode = useStore((s) => s.colorMode);
-  const orgDisplayMode = useStore((s) => s.orgDisplayMode);
   const edgeMode = useStore((s) => s.edgeMode);
   const showCitationEdges = useStore((s) => s.showCitationEdges);
   const filters = useStore((s) => s.filters);
@@ -128,7 +127,6 @@ export function MapView({ ds }: { ds: Dataset }) {
     ds,
     colorMode,
     filter: filter!,
-    orgDisplayMode,
     monthMin: filters.monthMin,
     monthMax: filters.monthMax,
     selectedNode,
@@ -155,7 +153,6 @@ export function MapView({ ds }: { ds: Dataset }) {
     zoom,
     baseZoom: base.zoom,
     filter: filter!,
-    orgDisplayMode,
     monthMin: filters.monthMin,
     monthMax: filters.monthMax,
     onSelect: selectNode,
