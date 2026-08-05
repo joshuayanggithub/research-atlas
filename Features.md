@@ -97,10 +97,13 @@ silently dropped.
 - **First figure at a glance.** On the details card the paper's **Figure 1** (or Table 1 if
   the paper opens with a table) is cropped directly from the arXiv PDF and shown inline
   above the tabs — so you get the gist immediately without opening the Paper tab. The crop
-  is anchored on the PDF text layer's "Figure 1:" / "Table 1:" caption (its bounding box
-  tells us the column and the region above it, so both raster and vector figures work),
-  not "the first embedded image" (which grabs logos and misses vector figures). Fully
-  client-side via pdf.js on the CORS-open arXiv PDF. The arXiv id is resolved **in the
+  is located in two steps: (1) anchor on the PDF text layer's "Figure 1:" / "Table 1:"
+  caption to find its page and column, then (2) render a generous band above the caption and
+  **detect the figure's tight pixel bounds by ink analysis** — scan up from the caption,
+  take the inked block, and stop at the whitespace gap that separates the figure from the
+  header/title above it, trimming to the inked columns. This isolates the real figure/table
+  box (works for raster and vector alike) and excludes page headers, unlike a naive
+  crop-above-the-caption. Fully client-side via pdf.js on the CORS-open arXiv PDF. The arXiv id is resolved **in the
   pipeline** (from Semantic Scholar during embedding, since S2 is CORS-blocked in the
   browser) and baked into the corpus, so the figure shows for essentially every arXiv paper
   at runtime with no lookup. Silently hidden for non-arXiv papers or when no Figure 1 is

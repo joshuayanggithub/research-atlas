@@ -72,26 +72,95 @@ function findFirstCaption(
   return null;
 }
 
-// Turn a caption position into a crop rect for the figure/table body. The body is the block
-// directly ABOVE the caption, within the caption's column. We estimate column width from the
-// caption's x (single- vs two-column) and cap the block height so we don't grab the whole
-// page. These are heuristics tuned on arXiv two-column + single-column layouts.
-function cropRectFor(cap: Caption): FigureCrop["rect"] {
+// A generous SEARCH band above the caption, within its column, to render and then trim by
+// pixel analysis. Wider/taller than the figure on purpose — findInkBounds() tightens it to
+// the actual figure box. Estimates the column from the caption's x (two-column arXiv puts a
+// right-column caption past mid-page; single-column spans the text width).
+function searchBand(cap: Caption): FigureCrop["rect"] {
   const { x, y, pageWidth, pageHeight } = cap;
-  const margin = 0.08 * pageWidth; // typical page margin
+  const margin = 0.08 * pageWidth;
   const midX = pageWidth / 2;
-  // Column bounds: if the caption starts left of center it's the left column (or full width
-  // for single-column); we detect two-column by whether a caption ever starts right of center.
   const isRightColumn = x > midX;
   const colLeft = isRightColumn ? midX + margin * 0.25 : margin;
-  const colRight = isRightColumn ? pageWidth - margin : (x > margin * 1.5 && x < midX ? midX - margin * 0.25 : pageWidth - margin);
+  const colRight = isRightColumn
+    ? pageWidth - margin
+    : x > margin * 1.5 && x < midX
+      ? midX - margin * 0.25
+      : pageWidth - margin;
   const left = Math.min(x - 4, colLeft);
   const width = Math.max(colRight - left, 0.3 * pageWidth);
-  // Figure body sits above the caption baseline. Take a generous band up-page, capped.
-  const bottom = y + 2; // just above the caption line
-  const maxHeight = 0.55 * pageHeight;
-  const top = Math.min(bottom + maxHeight, pageHeight - margin * 0.5);
+  // Start the band ABOVE the caption's own text — the caption baseline is `y`, and its glyphs
+  // rise ~1 line above it. If the band included the caption, the upward ink scan would grab
+  // the caption strip and stop at the gap between caption and figure. A ~1.4-line skip clears
+  // the caption (and any 2-line caption's first line is fine — we want the figure, not text).
+  const captionSkip = 0.026 * pageHeight; // ≈ one text line on a US-letter page
+  const bottom = y + captionSkip;
+  const maxHeight = 0.72 * pageHeight; // generous: trimmed by ink analysis
+  const top = Math.min(bottom + maxHeight, pageHeight - margin * 0.4);
   return { x: left, y: bottom, width, height: top - bottom };
+}
+
+// Given a rendered band (device pixels, caption at the BOTTOM edge), find the tight bounding
+// box of the figure/table by ink analysis. Papers put a whitespace gap between a figure and
+// whatever sits above it (body text, a section header, the page title), so:
+//   - scan rows upward from the bottom; accumulate the figure while rows have ink, and STOP
+//     at the first sustained whitespace gap — that excludes the ICLR-style header / title;
+//   - then trim left/right to the inked columns so a narrow figure isn't boxed in whitespace.
+// Returns bounds in device px within the band, or null if the band is essentially empty.
+interface PxBounds { top: number; bottom: number; left: number; right: number; }
+function findInkBounds(data: Uint8ClampedArray, w: number, h: number): PxBounds | null {
+  // "Ink" = a pixel darker than near-white. arXiv pages are white; figures/tables/text ink.
+  const isInk = (i: number) => data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245;
+
+  const rowInk = new Float32Array(h);
+  const colInk = new Float32Array(w);
+  for (let yy = 0; yy < h; yy++) {
+    let count = 0;
+    const base = yy * w * 4;
+    for (let xx = 0; xx < w; xx++) {
+      if (isInk(base + xx * 4)) {
+        count++;
+        colInk[xx]++;
+      }
+    }
+    rowInk[yy] = count / w; // fraction of the row that is inked
+  }
+
+  const ROW_INK_MIN = 0.006; // a row with less ink than this counts as blank
+  const GAP_ROWS = Math.max(6, Math.round(h * 0.035)); // sustained-blank run that ends a block
+
+  // Walk up from the bottom (caption side). Skip a small initial blank margin, take the
+  // inked block, stop at the first GAP_ROWS-long blank run above it.
+  let bottom = h - 1;
+  while (bottom > 0 && rowInk[bottom] < ROW_INK_MIN) bottom--;
+  if (bottom <= 0) return null;
+  let top = bottom;
+  let blank = 0;
+  for (let yy = bottom; yy >= 0; yy--) {
+    if (rowInk[yy] < ROW_INK_MIN) {
+      blank++;
+      if (blank >= GAP_ROWS) break;
+    } else {
+      blank = 0;
+      top = yy;
+    }
+  }
+
+  // Trim horizontally to inked columns within [top, bottom].
+  let left = 0;
+  while (left < w - 1 && colInk[left] < 1) left++;
+  let right = w - 1;
+  while (right > left && colInk[right] < 1) right--;
+
+  if (right - left < 8 || bottom - top < 8) return null;
+  // Small padding so we don't clip antialiased edges.
+  const pad = Math.round(h * 0.008);
+  return {
+    top: Math.max(0, top - pad),
+    bottom: Math.min(h - 1, bottom + pad),
+    left: Math.max(0, left - pad),
+    right: Math.min(w - 1, right + pad),
+  };
 }
 
 /**
@@ -130,34 +199,54 @@ export async function extractFirstFigure(
     if (!chosen || signal.aborted) return null;
 
     const { cap, label } = chosen;
-    const rect = cropRectFor(cap);
+    const band = searchBand(cap);
 
-    // Pass 2: render the crop region to a FIXED high-resolution bitmap, independent of the
-    // panel's current width. The canvas is displayed with CSS width:100% (no inline px
-    // width), so the browser scales this crisp bitmap to fill the panel at any size — the
-    // figure stays sharp when the user resizes the panel wider, without a re-render.
+    // Pass 2: render the (generous) search band to an OFFSCREEN canvas, detect the figure's
+    // tight pixel bounds by ink analysis (excludes the header/title above the real figure),
+    // then blit just that region into the display canvas at high resolution. The display
+    // canvas has no inline width, so CSS width:100% scales the crisp bitmap to the panel.
     const page = await doc.getPage(cap.pageNumber);
     const RENDER_WIDTH = 900; // logical px; ample for a widened panel on hi-dpi screens
-    const scale = (RENDER_WIDTH / rect.width) * Math.min(window.devicePixelRatio || 1, 2);
+    const scale = (RENDER_WIDTH / band.width) * Math.min(window.devicePixelRatio || 1, 2);
     const full = page.getViewport({ scale });
-    const offsetX = rect.x * scale;
-    // pdf.js device y grows downward; crop top in user space = rect.y + rect.height.
+    const offsetX = band.x * scale;
     const pageHeightUser = page.getViewport({ scale: 1 }).height;
-    const offsetY = (pageHeightUser - (rect.y + rect.height)) * scale;
+    const offsetY = (pageHeightUser - (band.y + band.height)) * scale;
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("no 2d context");
-    canvas.width = Math.ceil(rect.width * scale);
-    canvas.height = Math.ceil(rect.height * scale);
-    // No inline width/height — CSS (.first-figure-canvas { width:100%; height:auto }) scales
-    // it responsively to the panel.
+    const bandW = Math.ceil(band.width * scale);
+    const bandH = Math.ceil(band.height * scale);
+    const off = document.createElement("canvas");
+    off.width = bandW;
+    off.height = bandH;
+    const offCtx = off.getContext("2d", { willReadFrequently: true });
+    if (!offCtx) throw new Error("no 2d context");
+    // White backdrop so transparent PDF pixels read as page-white for the ink test.
+    offCtx.fillStyle = "#ffffff";
+    offCtx.fillRect(0, 0, bandW, bandH);
     await page.render({
-      canvasContext: ctx,
+      canvasContext: offCtx,
       viewport: full,
       transform: [1, 0, 0, 1, -offsetX, -offsetY],
     }).promise;
+    if (signal.aborted) return null;
 
-    return { pageNumber: cap.pageNumber, rect, label };
+    const bounds =
+      findInkBounds(offCtx.getImageData(0, 0, bandW, bandH).data, bandW, bandH) ?? {
+        top: 0,
+        bottom: bandH - 1,
+        left: 0,
+        right: bandW - 1,
+      };
+    const cw = bounds.right - bounds.left + 1;
+    const ch = bounds.bottom - bounds.top + 1;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("no 2d context");
+    canvas.width = cw;
+    canvas.height = ch;
+    ctx.drawImage(off, bounds.left, bounds.top, cw, ch, 0, 0, cw, ch);
+
+    return { pageNumber: cap.pageNumber, rect: band, label };
   } finally {
     doc.destroy();
   }
