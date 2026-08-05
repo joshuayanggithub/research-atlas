@@ -97,8 +97,11 @@ silently dropped.
   is anchored on the PDF text layer's "Figure 1:" / "Table 1:" caption (its bounding box
   tells us the column and the region above it, so both raster and vector figures work),
   not "the first embedded image" (which grabs logos and misses vector figures). Fully
-  client-side via pdf.js on the CORS-open arXiv PDF, no backend. Silently hidden when the
-  paper has no arXiv id or no locatable Figure 1.
+  client-side via pdf.js on the CORS-open arXiv PDF. The arXiv id is resolved **in the
+  pipeline** (from Semantic Scholar during embedding, since S2 is CORS-blocked in the
+  browser) and baked into the corpus, so the figure shows for essentially every arXiv paper
+  at runtime with no lookup. Silently hidden for non-arXiv papers or when no Figure 1 is
+  located.
 - **On selection, irrelevant papers are fully hidden** (culled on the GPU — not drawn, not
   hoverable), so the selected paper and its citation network are the only things on the map.
   Deselecting restores the full map. The connected papers **stay hoverable** — hovering one

@@ -90,9 +90,12 @@ class Specter2S2Backend:
         requests: list[tuple[int, str]],
         vectors: np.ndarray,
         covered: np.ndarray,
+        arxiv_ids: list[str | None],
         desc: str,
     ) -> None:
-        """Resolve one (row_index, s2_id) list, filling ``vectors``/``covered`` in place."""
+        """Resolve one (row_index, s2_id) list, filling ``vectors``/``covered``/``arxiv_ids``
+        in place. The S2 record carries ``externalIds.ArXiv`` alongside the vector, so we
+        capture the arXiv id here for free (used by the frontend's figure preview)."""
         for start in tqdm(
             range(0, len(requests), self.batch_size), desc=desc, unit="batch"
         ):
@@ -125,11 +128,20 @@ class Specter2S2Backend:
                 if vec and len(vec) == self.dim:
                     vectors[row_i] = np.asarray(vec, dtype=np.float32)
                     covered[row_i] = True
+                # Capture the arXiv id from the same record (present for arXiv-origin papers
+                # regardless of which id we queried by), if not already known for this row.
+                ext = rec.get("externalIds") or {}
+                axid = ext.get("ArXiv") or ext.get("arXiv")
+                if axid and not arxiv_ids[row_i]:
+                    arxiv_ids[row_i] = str(axid)
 
     def embed(self, corpus: pl.DataFrame) -> EmbeddingResult:
         n = corpus.height
         vectors = np.zeros((n, self.dim), dtype=np.float32)
         covered = np.zeros(n, dtype=bool)
+        # arXiv id per row, seeded from what the corpus already has, then enriched from S2
+        # responses (which carry externalIds.ArXiv for arXiv-origin papers).
+        arxiv_ids: list[str | None] = list(corpus["arxiv_id"].to_list())
 
         # Per row, the ordered list of S2 ids worth trying (arXiv, then DOI, then MAG).
         columns = ["node_id", "doi", "arxiv_id"]
@@ -149,7 +161,8 @@ class Specter2S2Backend:
         log.info(f"S2 SPECTER2: {n_addressable}/{n} rows have an addressable id "
                  f"(arXiv/DOI{'/MAG' if has_mag else ''})")
         if not n_addressable:
-            return EmbeddingResult(vectors, covered, self.name, self.model)
+            return EmbeddingResult(vectors, covered, self.name, self.model,
+                                   arxiv_ids=arxiv_ids)
 
         # Successive passes: each pass tries the next-choice id, but ONLY for rows still
         # uncovered. A row with a DOI S2 does not index therefore still gets its MAG
@@ -165,12 +178,14 @@ class Specter2S2Backend:
                     continue
                 before = int(covered.sum())
                 self._fetch_pass(
-                    client, requests, vectors, covered, f"  s2 pass{route + 1}"
+                    client, requests, vectors, covered, arxiv_ids, f"  s2 pass{route + 1}"
                 )
                 gained = int(covered.sum()) - before
                 log.info(f"  pass {route + 1}: {len(requests)} lookups -> "
                          f"+{gained} vectors (coverage {covered.mean():.1%})")
 
-        res = EmbeddingResult(vectors, covered, self.name, self.model)
-        log.info(f"S2 SPECTER2 coverage: {res.coverage:.1%}")
+        n_arxiv = sum(1 for a in arxiv_ids if a)
+        res = EmbeddingResult(vectors, covered, self.name, self.model, arxiv_ids=arxiv_ids)
+        log.info(f"S2 SPECTER2 coverage: {res.coverage:.1%} | arXiv ids known: "
+                 f"{n_arxiv}/{n} ({n_arxiv / n * 100:.0f}%)")
         return res

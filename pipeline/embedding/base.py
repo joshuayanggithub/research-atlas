@@ -21,6 +21,11 @@ class EmbeddingResult:
     covered: np.ndarray      # [N] bool — True where a real embedding was produced
     backend: str
     model: str
+    # Optional [N] arXiv ids discovered while fetching (S2 returns externalIds alongside the
+    # SPECTER2 vector at no extra request). None where unknown. s03 writes these back into the
+    # corpus so the frontend's first-figure preview can address the PDF without a runtime S2
+    # call. Length-0 or None means "backend did not resolve any".
+    arxiv_ids: list[str | None] | None = None
 
     @property
     def coverage(self) -> float:

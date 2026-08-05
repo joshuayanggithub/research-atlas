@@ -61,6 +61,17 @@ def run(cfg: Config | None = None) -> str:
         try:
             res = s2.embed(corpus)
             vectors, covered, model_used = res.vectors, res.covered, res.model
+            # Bake S2-resolved arXiv ids into the corpus (row-aligned) BEFORE any compaction,
+            # so the frontend's first-figure preview can address the PDF without a runtime S2
+            # call (S2 is CORS-blocked in the browser). Only fills blanks; never overwrites an
+            # id the corpus already had.
+            if res.arxiv_ids is not None and len(res.arxiv_ids) == n:
+                existing = corpus["arxiv_id"].to_list()
+                merged = [existing[i] or res.arxiv_ids[i] for i in range(n)]
+                n_added = sum(1 for i in range(n) if not existing[i] and merged[i])
+                corpus = corpus.with_columns(pl.Series("arxiv_id", merged))
+                log.info(f"arXiv ids: +{n_added} resolved from S2 "
+                         f"({sum(1 for m in merged if m)}/{n} total)")
         except Exception as e:  # noqa: BLE001
             log.warn(f"S2 fetch failed entirely ({e})")
 
