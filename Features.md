@@ -79,7 +79,11 @@ silently dropped.
 ## Selection, citations & related works
 
 - **Click a paper** to open a details card: title, authors, date, venue, citation count, and
-  a direct link (DOI / arXiv).
+  a direct link (DOI / arXiv). Author names, venue, and ids are **fetched on demand** for
+  the selected paper (sharded per node); the resident index holds title, year, citations,
+  and author ids for all papers. Consequence: hover cards and citation/related **list rows**
+  show *title · year · citations* (author names/venue appear on the selected-paper card),
+  keeping the initial download light at any corpus size.
 - **On selection, irrelevant papers are fully hidden** (culled on the GPU — not drawn, not
   hoverable), so the selected paper and its citation network are the only things on the map.
   Deselecting restores the full map.

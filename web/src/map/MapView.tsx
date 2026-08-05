@@ -202,13 +202,10 @@ export function MapView({ ds }: { ds: Dataset }) {
           }}
         >
           <div className="node-tooltip-title">{hoverPaper.title}</div>
-          <div className="node-tooltip-authors">
-            {hoverPaper.authorNames.slice(0, 3).join(", ")}
-            {hoverPaper.authorNames.length > 3 ? " et al." : ""}
-          </div>
+          {/* Author names / venue are lazy per-paper detail; the hover card uses only the
+              resident index (title, year, citations). Full metadata shows on selection. */}
           <div className="node-tooltip-meta">
-            {hoverPaper.publicationDate?.slice(0, 4) || "—"}
-            {hoverPaper.venue ? ` · ${hoverPaper.venue}` : ""} ·{" "}
+            {hoverPaper.publicationDate?.slice(0, 4) || "—"} ·{" "}
             {hoverPaper.citedByCount.toLocaleString()} cites
           </div>
         </div>

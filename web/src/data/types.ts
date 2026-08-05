@@ -102,6 +102,9 @@ export interface Manifest {
   // 0 means the legacy whole neighbors.arrow.
   neighbor_shard_size?: number;
   n_neighbor_shards?: number;
+  // Paper detail is sharded the same way; the resident index is papers-index.arrow.
+  paper_shard_size?: number;
+  n_paper_shards?: number;
   palette: { background: number[] };
 }
 
@@ -132,16 +135,25 @@ export interface PointData {
   revealLevel: Int16Array;
 }
 
-// Per-paper display metadata (papers.arrow), accessed by node_id.
+// Resident per-paper index (papers-index.arrow), accessed by node_id for every paper.
+// Holds only what search, list rows, sorting, and the author filter need; heavier fields
+// (author names, venue, ids) live in PaperDetail and load on demand.
 export interface PaperMeta {
-  paperId: string;
   title: string;
+  citedByCount: number;
+  authorIds: number[];
+  // Publication YEAR only (from points/index). Full ISO date is in PaperDetail. Kept as a
+  // string ("2017" / "") so existing `.publicationDate.slice(0,4)` call sites still work.
   publicationDate: string;
+}
+
+// Lazy per-node detail (papers-detail-<shard>.arrow), fetched only for the selected paper.
+export interface PaperDetail {
+  paperId: string;
+  publicationDate: string; // full ISO yyyy-mm-dd
   doi: string | null;
   arxivId: string | null;
   venue: string | null;
-  citedByCount: number;
-  authorIds: number[];
   authorNames: string[];
 }
 
@@ -168,6 +180,9 @@ export interface Dataset {
   // Related-works neighbors are fetched on demand by node_id (shard = node_id // size),
   // so the ~9MB (→50MB at 390k) neighbor table is not in the initial load. Cached per shard.
   getNeighbors: (node: number) => Promise<NeighborList>;
+  // Per-paper detail (author names, venue, ids, full date) is likewise fetched on demand
+  // for the selected paper only; the resident `papers` index holds title/year/citations.
+  getPaperDetail: (node: number) => Promise<PaperDetail | null>;
   edges: CitationEdges;
   // Adjacency built at load from the same directed edge arrays.
   citesOut: Map<number, number[]>;

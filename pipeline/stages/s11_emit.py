@@ -40,7 +40,8 @@ _PALETTE = [
 
 
 def _build_points(corpus: pl.DataFrame, coords: np.ndarray,
-                  clusters: np.ndarray, reveal_levels: np.ndarray) -> pa.Table:
+                  clusters: np.ndarray, reveal_levels: np.ndarray,
+                  month_index: np.ndarray) -> pa.Table:
     n = corpus.height
     sub_ids = corpus["subfield_id"].to_list()
     uniq = sorted(set(sub_ids))
@@ -62,6 +63,7 @@ def _build_points(corpus: pl.DataFrame, coords: np.ndarray,
         "g": pa.array(rgb[:, 1], pa.uint8()),
         "b": pa.array(rgb[:, 2], pa.uint8()),
         "reveal_level": pa.array(reveal_levels.tolist(), pa.int16()),
+        "month_index": pa.array(month_index.tolist(), pa.int16()),
     }, schema=S.POINTS_SCHEMA)
 
 
@@ -116,6 +118,63 @@ def _build_papers(corpus: pl.DataFrame) -> pa.Table:
         "author_names": pa.array(col("author_names"), pa.list_(pa.string())),
         "institution_ids": pa.array(_inst_placeholder(corpus), pa.list_(pa.int32())),
     }, schema=S.PAPERS_SCHEMA)
+
+
+def _build_papers_index(corpus: pl.DataFrame) -> pa.Table:
+    """Resident search/list index: the fields every all-N consumer needs (search, list
+    rows, sorting, the author filter). Ships whole; heavier fields go to lazy detail."""
+    return pa.table({
+        "node_id": pa.array(corpus["node_id"].to_list(), pa.int32()),
+        "title": pa.array(corpus["title"].to_list(), pa.string()),
+        "author_ids": pa.array(_local_author_ids(corpus), pa.list_(pa.int32())),
+        "cited_by_count": pa.array(corpus["cited_by_count"].to_list(), pa.int32()),
+        "year": pa.array(corpus["year"].to_list(), pa.int16()),
+    }, schema=S.PAPERS_INDEX_SCHEMA)
+
+
+def _build_paper_detail(corpus: pl.DataFrame) -> pa.Table:
+    """Per-node detail shown only when a paper is selected (author names, venue, ids)."""
+    def nz(name):
+        return [v if v else None for v in corpus[name].to_list()]
+    return pa.table({
+        "node_id": pa.array(corpus["node_id"].to_list(), pa.int32()),
+        "paper_id": pa.array(corpus["paper_id"].to_list(), pa.string()),
+        "publication_date": pa.array(corpus["publication_date"].to_list(), pa.string()),
+        "doi": pa.array(nz("doi"), pa.string()),
+        "arxiv_id": pa.array(nz("arxiv_id"), pa.string()),
+        "venue": pa.array(nz("venue"), pa.string()),
+        "author_names": pa.array(corpus["author_names"].to_list(), pa.list_(pa.string())),
+    }, schema=S.PAPER_DETAIL_SCHEMA)
+
+
+def _emit_paper_detail_shards(detail: pa.Table) -> tuple[list[str], int]:
+    """Shard per-node paper detail by fixed node-id block (same scheme as neighbors)."""
+    size = S.PAPER_SHARD_SIZE
+    n = detail.num_rows
+    paths: list[str] = []
+    for shard, start in enumerate(range(0, n, size)):
+        chunk = detail.slice(start, min(size, n - start))
+        name = S.paper_detail_shard(shard)
+        write_arrow(chunk, WEB_DATA_DIR / name)
+        paths.append(name)
+    return paths, size
+
+
+def _month_index(corpus: pl.DataFrame, date_from: str) -> np.ndarray:
+    """Months elapsed from the corpus start month to each paper's publication month (>=0).
+
+    Computed here (not derived from papers at load) so the GPU date filter needs no paper
+    metadata — papers detail is now fetched on demand.
+    """
+    from_year = int(date_from[:4])
+    out = np.zeros(corpus.height, dtype=np.int16)
+    for i, d in enumerate(corpus["publication_date"].to_list()):
+        if not d:
+            continue
+        y = int(d[:4]) if d[:4].isdigit() else from_year
+        m = int(d[5:7]) if len(d) >= 7 and d[5:7].isdigit() else 1
+        out[i] = max(0, (y - from_year) * 12 + (m - 1))
+    return out
 
 
 def _local_author_ids(corpus: pl.DataFrame) -> list[list[int]]:
@@ -184,13 +243,20 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     coords = read_npy(COORDS_IN)
     clusters = read_npy(CLUSTER_IN)
     reveal_levels = read_npy(REVEAL_IN).astype(np.int64)
+    month_index = _month_index(corpus, cfg.corpus.date_from)
 
     # Big Arrow tables. points.arrow keeps the full corpus (reference / non-tiled fallback);
     # per-level tiles are what the frontend actually fetches.
-    points = _build_points(corpus, coords, clusters, reveal_levels)
+    points = _build_points(corpus, coords, clusters, reveal_levels, month_index)
     write_arrow(points, WEB_DATA_DIR / S.POINTS)
     point_tiles = _emit_point_tiles(points, reveal_levels)
+
+    # Papers: resident search/list index (whole) + per-node detail (sharded, on demand).
+    # The legacy whole papers.arrow is still written for reference / fallback.
     write_arrow(_build_papers(corpus), WEB_DATA_DIR / S.PAPERS)
+    write_arrow(_build_papers_index(corpus), WEB_DATA_DIR / S.PAPERS_INDEX)
+    paper_shards, paper_shard_size = _emit_paper_detail_shards(_build_paper_detail(corpus))
+
     # Neighbors are sharded for on-demand related-works loading (not shipped whole).
     neighbor_shards, neighbor_shard_size = _emit_neighbor_shards(_neighbors_table())
     write_arrow(_edges_table(), WEB_DATA_DIR / S.EDGES)
@@ -205,10 +271,12 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     clusters_doc = read_json(WEB_DATA_DIR / S.CLUSTERS)
     levels = clusters_doc["levels"]
 
+    # PAPERS and NEIGHBORS are sharded (or index-split), not shipped whole in the load path.
     tracked = (
-        [f for f in S.ALL_FILES if f != S.NEIGHBORS]  # sharded, not shipped whole
+        [f for f in S.ALL_FILES if f not in (S.NEIGHBORS, S.PAPERS)]
         + [t.path for t in point_tiles]
         + neighbor_shards
+        + paper_shards
     )
     files: dict[str, S.FileMeta] = {}
     for fname in tracked:
@@ -241,6 +309,8 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
         point_tiles=point_tiles,
         neighbor_shard_size=neighbor_shard_size,
         n_neighbor_shards=len(neighbor_shards),
+        paper_shard_size=paper_shard_size,
+        n_paper_shards=len(paper_shards),
         palette={"background": cfg.palette.background},
     )
     write_json(manifest, WEB_DATA_DIR / S.MANIFEST)

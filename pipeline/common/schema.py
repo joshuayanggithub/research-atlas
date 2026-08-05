@@ -46,8 +46,20 @@ def neighbors_shard(shard: int) -> str:
     return f"neighbors-{shard}.arrow"
 
 
+# Resident papers search/list index (title + author_ids + cited_by_count + year, all N).
+PAPERS_INDEX = "papers-index.arrow"
+
+# Lazy per-node paper detail, sharded by fixed node-id block (same scheme as neighbors):
+# shard = node_id // PAPER_SHARD_SIZE, fetched only for the selected paper.
+PAPER_SHARD_SIZE = 4096
+
+
+def paper_detail_shard(shard: int) -> str:
+    return f"papers-detail-{shard}.arrow"
+
+
 ALL_FILES = [
-    MANIFEST, POINTS, PAPERS, NEIGHBORS, EDGES, AUTHORS,
+    MANIFEST, POINTS, PAPERS, PAPERS_INDEX, NEIGHBORS, EDGES, AUTHORS,
     CLUSTERS, LABELS, ORGS, TOPICS,
 ]
 
@@ -73,9 +85,38 @@ POINTS_SCHEMA = pa.schema([
     # Coarsest zoom level at which this point becomes visible (s12). Papers are split into
     # per-level tile files by this column; the full points.arrow keeps it for reference.
     ("reveal_level", pa.int16()),
+    # Months since corpus start (from publication_date). Lives here — not derived from
+    # papers at load — so month-granularity date filtering needs no paper metadata, which
+    # is now fetched on demand (Phase B). Clamped >= 0.
+    ("month_index", pa.int16()),
 ])
 
-# Display metadata keyed by node_id. Abstract is NOT shipped (size); linked via doi/arxiv.
+# --- Papers: split into a resident search/list INDEX + lazy per-node DETAIL (Phase B) ----
+# The index ships whole (search, list rows, sorting, author filter all need it); detail is
+# sharded and fetched only for the selected paper, so the heavy title-adjacent fields
+# (author_names, venue, ...) stay out of the initial download.
+
+# Resident index, one row per paper; ROW INDEX == node_id. Ships in full.
+PAPERS_INDEX_SCHEMA = pa.schema([
+    ("node_id", pa.int32()),
+    ("title", pa.string()),
+    ("author_ids", pa.list_(pa.int32())),  # for the author filter (resident until phase C)
+    ("cited_by_count", pa.int32()),
+    ("year", pa.int16()),
+])
+
+# Lazy per-node detail, sharded by node-id block like neighbors. Fetched on selection.
+PAPER_DETAIL_SCHEMA = pa.schema([
+    ("node_id", pa.int32()),
+    ("paper_id", pa.string()),
+    ("publication_date", pa.string()),
+    ("doi", pa.string()),
+    ("arxiv_id", pa.string()),
+    ("venue", pa.string()),
+    ("author_names", pa.list_(pa.string())),
+])
+
+# Legacy full papers table (kept for reference / any non-tiled fallback path).
 PAPERS_SCHEMA = pa.schema([
     ("node_id", pa.int32()),
     ("paper_id", pa.string()),        # OpenAlex work id (short form, e.g. "W123")
@@ -251,4 +292,9 @@ class Manifest(BaseModel):
     # (legacy). When >0 the frontend loads shard (node_id // size) on demand.
     neighbor_shard_size: int = 0
     n_neighbor_shards: int = 0
+    # Paper-detail shard block size; 0 means papers.arrow is shipped whole (legacy). When >0
+    # the frontend loads the resident papers-index.arrow whole and fetches per-node detail
+    # from shard (node_id // size) on demand.
+    paper_shard_size: int = 0
+    n_paper_shards: int = 0
     palette: dict

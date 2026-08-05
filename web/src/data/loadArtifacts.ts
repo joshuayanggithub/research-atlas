@@ -10,6 +10,7 @@ import type {
   Manifest,
   NeighborList,
   OrgsDoc,
+  PaperDetail,
   PaperMeta,
   PointData,
   TopicsDoc,
@@ -47,7 +48,8 @@ function unpackPoints(table: Table): PointData {
     x: toTypedColumn(table, "x") as Float32Array,
     y: toTypedColumn(table, "y") as Float32Array,
     year: toTypedColumn(table, "year") as Int16Array,
-    monthIndex: new Int16Array(table.numRows), // filled from papers in loadDatasetImpl
+    // month_index ships in points now (pipeline-computed) so date filtering needs no papers.
+    monthIndex: toTypedColumn(table, "month_index") as Int16Array,
     citedByCount: toTypedColumn(table, "cited_by_count") as Int32Array,
     subfieldId: toTypedColumn(table, "subfield_id") as Int16Array,
     topicId: toTypedColumn(table, "topic_id") as Int32Array,
@@ -58,29 +60,17 @@ function unpackPoints(table: Table): PointData {
   };
 }
 
-/** Months elapsed from `fromYear`-01 to a `yyyy-mm-dd` date (clamped >= 0). */
-function monthsSince(fromYear: number, publicationDate: string): number {
-  const y = parseInt(publicationDate.slice(0, 4));
-  const m = parseInt(publicationDate.slice(5, 7)) || 1;
-  if (!Number.isFinite(y)) return 0;
-  return Math.max(0, (y - fromYear) * 12 + (m - 1));
-}
-
-function unpackPapers(table: Table): PaperMeta[] {
+function unpackPapersIndex(table: Table): PaperMeta[] {
   const out: PaperMeta[] = new Array(table.numRows);
-  // Row-wise materialization; fine at MVP scale (~40k rows).
   for (let i = 0; i < table.numRows; i++) {
     const row = table.get(i)!;
-    out[i] = {
-      paperId: row.paper_id,
+    const year = row.year ?? 0;
+    // Index rows are node-ordered, but key by node_id defensively.
+    out[row.node_id] = {
       title: row.title,
-      publicationDate: row.publication_date,
-      doi: row.doi ?? null,
-      arxivId: row.arxiv_id ?? null,
-      venue: row.venue ?? null,
       citedByCount: row.cited_by_count,
       authorIds: row.author_ids ? Array.from(row.author_ids) : [],
-      authorNames: row.author_names ? Array.from(row.author_names) : [],
+      publicationDate: year ? String(year) : "",
     };
   }
   return out;
@@ -95,28 +85,30 @@ function unpackAuthors(table: Table): AuthorRow[] {
   return out;
 }
 
-// Lazy, cached related-works loader. Neighbors are sharded by node-id block (s11), so a
-// selection fetches only its shard instead of the whole ~9MB (→50MB at 390k) table.
-function makeNeighborLoader(manifest: Manifest) {
-  const size = manifest.neighbor_shard_size ?? 0;
-  const shardCache = new Map<number, Promise<Map<number, NeighborList>>>();
-  const EMPTY: NeighborList = { ids: new Int32Array(), scores: new Float32Array() };
+// Generic lazy, cached, node-id-block-sharded record loader. Both related-works neighbors
+// and per-paper detail are sharded the same way (shard = node_id // size, s11), so a
+// selection fetches only its shard instead of the whole table. Returns a fetcher that
+// resolves one node's record (or `fallback` when the bundle isn't sharded / row is absent).
+function makeShardLoader<T>(
+  size: number,
+  filename: (shard: number) => string,
+  unpackRow: (row: Record<string, unknown>) => T,
+  fallback: T,
+): (node: number) => Promise<T> {
+  const shardCache = new Map<number, Promise<Map<number, T>>>();
 
-  async function loadShard(shard: number): Promise<Map<number, NeighborList>> {
-    const table = await fetchArrow(`neighbors-${shard}.arrow`);
-    const byNode = new Map<number, NeighborList>();
+  async function loadShard(shard: number): Promise<Map<number, T>> {
+    const table = await fetchArrow(filename(shard));
+    const byNode = new Map<number, T>();
     for (let i = 0; i < table.numRows; i++) {
-      const row = table.get(i)!;
-      byNode.set(row.node_id, {
-        ids: row.neighbor_ids ? Int32Array.from(row.neighbor_ids) : new Int32Array(),
-        scores: row.scores ? Float32Array.from(row.scores) : new Float32Array(),
-      });
+      const row = table.get(i)! as unknown as Record<string, unknown>;
+      byNode.set(row.node_id as number, unpackRow(row));
     }
     return byNode;
   }
 
-  return async function getNeighbors(node: number): Promise<NeighborList> {
-    if (size <= 0) return EMPTY; // no sharded neighbors in this bundle
+  return async function get(node: number): Promise<T> {
+    if (size <= 0) return fallback;
     const shard = Math.floor(node / size);
     let pending = shardCache.get(shard);
     if (!pending) {
@@ -126,7 +118,7 @@ function makeNeighborLoader(manifest: Manifest) {
       });
       shardCache.set(shard, pending);
     }
-    return (await pending).get(node) ?? EMPTY;
+    return (await pending).get(node) ?? fallback;
   };
 }
 
@@ -182,10 +174,11 @@ function validateDataset(dataset: Dataset): void {
 async function loadDatasetImpl(): Promise<Dataset> {
   const manifest = await fetchJSON<Manifest>("manifest.json");
 
-  // Neighbors are NOT fetched here — they load on demand per selection (makeNeighborLoader).
-  const [pointsT, papersT, authorsT, edgesT] = await Promise.all([
+  // Neighbors and per-paper detail are NOT fetched here — they load on demand per selection.
+  // The resident papers-index holds title/year/citations/author_ids for all papers.
+  const [pointsT, papersIndexT, authorsT, edgesT] = await Promise.all([
     fetchArrow("points.arrow"),
-    fetchArrow("papers.arrow"),
+    fetchArrow("papers-index.arrow"),
     fetchArrow("authors.arrow"),
     fetchArrow("edges.arrow"),
   ]);
@@ -197,14 +190,32 @@ async function loadDatasetImpl(): Promise<Dataset> {
   ]);
 
   const { edges, citesOut, citedBy } = buildAdjacency(edgesT);
-
   const points = unpackPoints(pointsT);
-  const papers = unpackPapers(papersT);
-  // Derive month-since-corpus-start per point for month-granularity date filtering.
-  const fromYear = parseInt(manifest.corpus.date_from.slice(0, 4));
-  for (let i = 0; i < points.count; i++) {
-    points.monthIndex[i] = monthsSince(fromYear, papers[i]?.publicationDate ?? "");
-  }
+  const papers = unpackPapersIndex(papersIndexT);
+
+  const getNeighbors = makeShardLoader<NeighborList>(
+    manifest.neighbor_shard_size ?? 0,
+    (s) => `neighbors-${s}.arrow`,
+    (row) => ({
+      ids: row.neighbor_ids ? Int32Array.from(row.neighbor_ids as ArrayLike<number>) : new Int32Array(),
+      scores: row.scores ? Float32Array.from(row.scores as ArrayLike<number>) : new Float32Array(),
+    }),
+    { ids: new Int32Array(), scores: new Float32Array() },
+  );
+
+  const getPaperDetail = makeShardLoader<PaperDetail | null>(
+    manifest.paper_shard_size ?? 0,
+    (s) => `papers-detail-${s}.arrow`,
+    (row) => ({
+      paperId: row.paper_id as string,
+      publicationDate: (row.publication_date as string) ?? "",
+      doi: (row.doi as string) ?? null,
+      arxivId: (row.arxiv_id as string) ?? null,
+      venue: (row.venue as string) ?? null,
+      authorNames: row.author_names ? Array.from(row.author_names as ArrayLike<string>) : [],
+    }),
+    null,
+  );
 
   const dataset: Dataset = {
     manifest,
@@ -215,7 +226,8 @@ async function loadDatasetImpl(): Promise<Dataset> {
     orgs,
     topics,
     authors: unpackAuthors(authorsT),
-    getNeighbors: makeNeighborLoader(manifest),
+    getNeighbors,
+    getPaperDetail,
     edges,
     citesOut,
     citedBy,

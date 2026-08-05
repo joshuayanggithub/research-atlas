@@ -220,7 +220,8 @@ function CitationRows({
     <ol className="citation-list">
       {shown.map((id) => {
         const paper = ds.papers[id];
-        const authors = paper.authorNames.slice(0, 2).join(", ");
+        // Rows use the resident index only (title, year, citations); author names/venue are
+        // lazy per-paper detail shown when a paper is selected, not per list row.
         const year = paper.publicationDate.slice(0, 4);
         return (
           <li key={`${direction}-${id}`}>
@@ -239,10 +240,7 @@ function CitationRows({
               </span>
               <span className="citation-paper">
                 <span className="citation-title">{paper.title}</span>
-                <span className="citation-meta">
-                  {authors || "Unknown authors"} · {year}
-                  {paper.venue ? ` · ${paper.venue}` : ""}
-                </span>
+                <span className="citation-meta">{year || "—"}</span>
               </span>
               <span className="citation-count">{paper.citedByCount.toLocaleString()}</span>
             </button>
@@ -276,11 +274,8 @@ export function CitationExplorer({ ds, node }: { ds: Dataset; node: number }) {
   const matches = (id: number) => {
     const needle = query.trim().toLowerCase();
     if (!needle) return true;
-    const paper = ds.papers[id];
-    return (
-      paper.title.toLowerCase().includes(needle) ||
-      paper.authorNames.some((name) => name.toLowerCase().includes(needle))
-    );
+    // Filter by title only — author names are lazy per-paper detail, not resident.
+    return ds.papers[id].title.toLowerCase().includes(needle);
   };
   const filteredIn = incoming.filter(matches);
   const filteredOut = outgoing.filter(matches);
