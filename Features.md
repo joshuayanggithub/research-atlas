@@ -51,9 +51,11 @@ silently dropped.
   phrases** mined from representative titles and abstracts, avoiding repeated ancestor and
   sibling names. Embedded MathML/LaTeX markup is stripped structurally so formula markup can
   never become a label.
-- **Filter-aware labels**: when an organization or author filter is active, only labels whose
-  region still contains matching papers remain, so topic names describe the filtered subset
-  (which is all that renders) rather than the whole map.
+- **Restriction-aware labels**: whenever the view is restricted — an organization/author
+  filter, or a single-paper selection (which shows only that paper + its citation network) —
+  semantic-zoom labels over now-empty regions disappear, so topic names describe only what is
+  actually visible rather than blanketing the whole map. Clearing the restriction restores
+  all labels.
 
 ## Filtering
 

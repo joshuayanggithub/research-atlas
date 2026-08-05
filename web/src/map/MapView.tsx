@@ -68,7 +68,7 @@ export function MapView({ ds }: { ds: Dataset }) {
   const setZoom = useStore((s) => s.setZoom);
 
   const filter = useFilterMask(ds, filters);
-  const relevantLabelIds = useRelevantLabels(ds, filter);
+  const relevantLabelIds = useRelevantLabels(ds, filter, selectedNode);
 
   useEffect(() => {
     if (selectedNode === null || selectedNode < 0 || selectedNode >= ds.points.count) return;
