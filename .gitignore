@@ -40,3 +40,7 @@ playwright-responses/
 
 # TypeScript build cache
 web/tsconfig.tsbuildinfo
+
+# Keep README screenshots (override the *.png ignore above)
+!docs/screenshots/
+!docs/screenshots/*.png

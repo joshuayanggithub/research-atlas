@@ -1,61 +1,68 @@
-# Research Visualizer
+# Research Atlas
 
-> The web app presents itself as **Research Atlas** — the product wordmark and visual
-> identity (a "stellar-cartography" instrument theme). "Research Visualizer" remains the
-> repository/package name. See `docs/Design.md` §8 for the visual-identity design.
+A 2D map of CS/AI research papers. Each paper is a point, papers with similar
+titles/abstracts sit near each other, and citations are drawn as directed edges. Zooming
+works like a map: broad fields when zoomed out, specific topics in the middle, and
+micro-clusters of a few papers at the deepest zoom.
 
-An interactive 2D **map of CS/AI research**. Each paper is a point; semantically similar
-papers sit near each other; citations are directed edges; and the map supports
-**Google-Maps-style semantic zoom** — broad fields when zoomed out, ML topics mid-zoom,
-fine subtopics zoomed in (down to **micro-clusters of a few papers** at maximum zoom).
-Filter by **organization** (drill down into departments/labs and their researchers),
-**author**, and **date**; inspect a paper's **citations** and **related works**.
+![The map with topic labels and citation edges](docs/screenshots/01-home.png)
 
-See **`docs/Design.md`** (why), **`docs/Features.md`** (what), and
-**`docs/ORGANIZATION_DIRECTORY.md`** (the canonical institution/lab/company design).
+Select a paper to see its citation network, related work, and — for arXiv papers — its
+Figure 1 and Table 1 pulled straight from the PDF. A slider filters the network down to the
+most related papers.
 
-**Current scope:** the checked-in configuration builds a demonstrator from seven seed
-institutions. Arbitrary organizations and department/lab identity are target architecture,
-not current capabilities. The fused-graph topic hierarchy is implemented but still needs
-human quality validation; see the re-evaluation in `docs/Design.md`.
+![A selected paper with its citation network, first figure, and first table](docs/screenshots/02-selection.png)
 
-**Continuing this project / handing off?** Start with **`docs/HANDOFF.md`**, then
-**`docs/ARCHITECTURE.md`** (code map) and **`docs/ROADMAP.md`** (prioritized next work).
-
-## How it works
-
-An offline **Python pipeline** (`pipeline/`) turns OpenAlex works + Semantic Scholar
-SPECTER2 embeddings into a small **static artifact bundle**; a **React + deck.gl** app
-(`web/`) renders it. No backend — the browser loads pre-baked Arrow/JSON files.
+There is no backend. An offline Python pipeline turns OpenAlex + Semantic Scholar data into
+a static bundle of Arrow/JSON files, and a React + deck.gl app renders it.
 
 ```
-OpenAlex + Semantic Scholar  ──►  pipeline (s00…s11)  ──►  web/public/data/*  ──►  deck.gl app
+OpenAlex + Semantic Scholar  →  pipeline (s00…s13)  →  web/public/data/*  →  deck.gl app
 ```
+
+## What it does
+
+- **Semantic map** — positions come from SPECTER2 embeddings projected to 2D with openTSNE.
+  Nearby points are similar papers.
+- **Semantic zoom** — topic regions come from nested Leiden communities over a planar
+  substrate, so each region is one contiguous area of the map. Labels reveal finer topics as
+  you zoom in.
+- **Filters** — organization (drilling into departments/labs), author, CS topic (OpenAlex
+  subfield + fine topic), and date. Filters compose and run on the GPU.
+- **Selection** — a paper's references and citers are shown as directed edges, weighted by
+  importance. A relevance slider (bibliographic coupling + co-citation, like Connected
+  Papers) hides the least-related papers gradually.
+- **First figure & table** — Figure 1 and Table 1 are cropped from the arXiv PDF. The
+  pipeline can bake crops offline (PyMuPDF); otherwise the browser extracts them on demand
+  from the PDF operator list via pdf.js.
+
+See [`docs/Features.md`](docs/Features.md) for the full feature list, [`docs/Design.md`](docs/Design.md)
+for how it's built, and [`docs/DESIGN_DECISIONS.md`](docs/DESIGN_DECISIONS.md) for the
+tradeoffs behind each choice.
 
 ## Quick start
 
-### 1. Build the data (pipeline)
+### 1. Build the data
 
-Requires Python 3.11 (managed here via [`uv`](https://github.com/astral-sh/uv)).
+Requires Python 3.11 (via [`uv`](https://github.com/astral-sh/uv)).
 
 ```bash
 uv venv --python 3.11
 uv pip install -r pipeline/requirements.txt
-# Optional but recommended: local embedding fallback (pulls torch)
+# optional local embedding fallback (pulls torch):
 uv pip install "sentence-transformers>=3.0" "torch>=2.2"
 
-cp .env.example .env          # set OPENALEX_MAILTO; optional S2_API_KEY
+cp .env.example .env          # set OPENALEX_MAILTO; OPENALEX_API_KEY recommended
 
-# Run the whole pipeline (fetch → embed → project → cluster → label → emit)
-uv run python -m pipeline.run_all
-# …or resume from a stage:   uv run python -m pipeline.run_all --from s04
-# …or run a subset:          uv run python -m pipeline.run_all --only s06,s07
+uv run python -m pipeline.run_all              # full run
+uv run python -m pipeline.run_all --from s04   # resume from a stage
+uv run python -m pipeline.run_all --only s06,s07
 ```
 
-Configuration (corpus orgs, date range, cap, embedding backend, zoom bands) lives in
-**`config.yaml`**. Artifacts are emitted to `web/public/data/`.
+`config.yaml` holds everything configurable (corpus scope, date range, embedding backend,
+zoom bands, figure baking). Output lands in `web/public/data/`.
 
-### 2. Run the app (web)
+### 2. Run the app
 
 ```bash
 cd web
@@ -63,47 +70,65 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-## Repo layout
-
-```
-config.yaml              # single source of truth for the pipeline
-pipeline/
-  run_all.py             # stage orchestrator (typer CLI)
-  config.py              # typed config loader (config.yaml + .env)
-  common/                # schema (the artifact contract), abstract, openalex client, io, fused-sim
-  embedding/             # swappable embedding backends (specter2_s2, scincl_local)
-  stages/                # s00_resolve_orgs … s11_emit
-  tests/                 # unit tests (abstract reconstruction, …)
-web/
-  src/
-    data/                # artifact loader + TS types (mirror of schema.py)
-    state/               # zustand store
-    map/                 # deck.gl MapView + layers (points, labels, edges) + zoom/colors
-    filters/             # org / author / date filters + GPU filter mask
-    panels/              # details, citations, arXiv preview, related works, legend, search
-  public/data/           # ← pipeline output (git-ignored)
-```
+A fresh clone has no data bundle (it's gitignored — it's large and regenerable), so run the
+pipeline once first, or the app shows "Failed to load data."
 
 ## Pipeline stages
 
-| Stage | Does | Emits |
-|---|---|---|
-| s00 | resolve org names → OpenAlex institution ids | `orgs_resolved.json` |
-| s01 | fetch CS works (institutions × field × dates) | `works_raw.jsonl` |
-| s02 | reconstruct abstracts, dedupe, assign node_id | `corpus.parquet` |
-| s03 | embed (SPECTER2 fetch / SciNCL fallback), L2-normalize | `embeddings.npy` |
-| s04 | openTSNE 768→2D, freeze projector | `coords2d.npy`, `projector.pkl` |
-| s05 | UMAP→10D + HDBSCAN clustering | `cluster_assign.npy` |
-| s09 | intra-corpus citation edges | `edges.npz` |
-| s08 | fused semantic + citation candidate graph | `neighbors.npz` |
-| s06 | nested Leiden communities for semantic zoom | `tiles.json` |
-| s07 | discriminative topic + c-TF-IDF labels | `clusters.json`, `labels.json` |
-| s10 | org / author / topic indexes | `orgs.json`, `authors.arrow`, `topics.json` |
-| s11 | assemble bundle + manifest | `web/public/data/*` |
+| Stage | Does |
+|---|---|
+| s00 | resolve org names → OpenAlex institution ids |
+| s01 | fetch CS works (field × dates, optionally org-gated) |
+| s02 | reconstruct abstracts, dedupe, assign node ids, arXiv-preferred dates |
+| s03 | embed (SPECTER2 via Semantic Scholar, SciNCL fallback) |
+| s04 | openTSNE 768→2D, freeze the projector |
+| s05 | UMAP→10D + HDBSCAN clustering |
+| s09 / s08 | citation edges / fused semantic + citation neighbor graph |
+| s06 / s07 | nested Leiden communities / topic + phrase labels |
+| s12 | reveal levels for overlap-free zoom + on-demand tiles |
+| s10 | org / author / topic indexes |
+| s13 | (optional) bake Figure 1 crops from arXiv PDFs |
+| s11 | assemble the static bundle + manifest |
+
+## Repo layout
+
+```
+config.yaml            # single source of truth for the pipeline
+pipeline/
+  run_all.py           # stage orchestrator (typer CLI)
+  common/              # artifact schema, abstract reconstruction, OpenAlex client, figure extract
+  embedding/           # swappable backends (specter2_s2, scincl_local)
+  directory/           # curated org/department/lab units
+  stages/              # s00 … s13
+  tests/               # pytest
+web/
+  src/
+    data/              # artifact loader + TS types (mirror of schema.py)
+    state/             # zustand store
+    map/               # deck.gl MapView + layers (points, edges, labels) + relevance/scores
+    filters/           # org / author / topic / date + GPU filter mask
+    panels/            # details, citations, figure/table, arXiv preview, related works
+  public/data/         # ← pipeline output (gitignored)
+```
 
 ## Testing
 
 ```bash
-uv run pytest            # pipeline unit tests
-cd web && npx tsc -b     # frontend typecheck
+uv run pytest                    # pipeline unit tests
+cd web && npx tsc -b             # frontend typecheck
+cd web && npm run test:e2e       # Playwright (desktop + mobile)
 ```
+
+## Data & licensing
+
+Papers, citations, and topics come from [OpenAlex](https://openalex.org) (CC0); SPECTER2
+embeddings from [Semantic Scholar](https://www.semanticscholar.org); figure/table crops and
+dates from [arXiv](https://arxiv.org) under its API terms. This project is MIT-licensed (see
+[`LICENSE`](LICENSE)); the offline figure stage uses PyMuPDF (AGPL-3.0) — see
+[`NOTICE.md`](NOTICE.md) for what that means.
+
+## Status
+
+The checked-in config builds a demonstrator. Known limitations and next work are tracked in
+[`docs/TODO.md`](docs/TODO.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md); if you're picking the
+project up, start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
