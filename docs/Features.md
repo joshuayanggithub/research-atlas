@@ -73,10 +73,15 @@ silently dropped.
   prolific authors and add them to the author filter.
 - **Author** — type-ahead search over every author in the corpus; select one or more to
   spotlight their papers.
+- **CS topic** — filter by the OpenAlex taxonomy baked into the corpus: 11 **subfield**
+  toggle chips (Artificial Intelligence, Computer Vision, Systems, Theory, …) plus a
+  type-ahead over the ~288 fine **topics**. A paper passes when its subfield is selected
+  (when any) AND its topic is selected (when any); non-matching papers are GPU-culled like the
+  other facets.
 - **Date range** — a month-granularity **dual-handle slider** over a **publication
   histogram**, plus presets (All, Last 12mo, Last 24mo, current year) and a live "papers in
   range" count. Runs on the GPU, so dragging is instant.
-- Filters **compose** (organization AND author AND date). "Clear" resets them.
+- Filters **compose** (organization AND author AND topic AND date). "Clear" resets them.
 - **Any active org/author filter hides non-matching papers completely** — they are
   GPU-culled (not drawn, not hoverable/clickable) and their citation edges are dropped, so a
   filtered view shows *only* the matching set with no dimmed backdrop. (This is unconditional;
@@ -95,23 +100,36 @@ silently dropped.
   show *title · year · citations* (author names/venue appear on the selected-paper card),
   keeping the initial download light at any corpus size.
 - **First figure at a glance.** On the details card the paper's **Figure 1** (or Table 1 if
-  the paper opens with a table) is cropped directly from the arXiv PDF and shown inline
-  above the tabs — so you get the gist immediately without opening the Paper tab. The crop
-  is located in two steps: (1) anchor on the PDF text layer's "Figure 1:" / "Table 1:"
-  caption to find its page and column, then (2) render a generous band above the caption and
-  **detect the figure's tight pixel bounds by ink analysis** — scan up from the caption,
-  take the inked block, and stop at the whitespace gap that separates the figure from the
-  header/title above it, trimming to the inked columns. This isolates the real figure/table
-  box (works for raster and vector alike) and excludes page headers, unlike a naive
-  crop-above-the-caption. Fully client-side via pdf.js on the CORS-open arXiv PDF. The arXiv id is resolved **in the
-  pipeline** (from Semantic Scholar during embedding, since S2 is CORS-blocked in the
-  browser) and baked into the corpus, so the figure shows for essentially every arXiv paper
-  at runtime with no lookup. Silently hidden for non-arXiv papers or when no Figure 1 is
-  located.
+  the paper opens with a table) is shown inline above the tabs — so you get the gist
+  immediately without opening the Paper tab. There are **two sources**, tried in order:
+  1. **Pipeline-baked crop (preferred).** An offline stage (s13) extracts the figure with
+     **PyMuPDF** — the same caption-anchored, layout-structure method Semantic Scholar uses
+     (PDFFigures 2.0): anchor on the "Figure 1:" / "Table 1:" caption, then take the
+     graphical box directly above it via `find_tables` (tables), `cluster_drawings` (vector
+     figures — most ML diagrams), or `get_image_info` (raster), with a text-block fallback
+     for borderless tables. The crop is rendered to a PNG, sharded by node id, and served
+     statically — so it appears **instantly with no PDF parse in the browser**. The resident
+     papers index carries a `has_figure` flag so the card fetches a crop only when one exists.
+  2. **Client-side fallback (pdf.js).** For papers without a baked crop, the browser locates
+     and crops Figure 1 from the CORS-open arXiv PDF at runtime (caption anchor + ink-bounds
+     detection). The arXiv id is resolved **in the pipeline** (from Semantic Scholar during
+     embedding, since S2 is CORS-blocked in the browser) and baked into the corpus.
+
+  Silently hidden for non-arXiv papers or when no Figure 1 is located by either path. Baking
+  is optional (`figures.enabled`); a bundle built without it still works via the fallback.
 - **On selection, irrelevant papers are fully hidden** (culled on the GPU — not drawn, not
   hoverable), so the selected paper and its citation network are the only things on the map.
   Deselecting restores the full map. The connected papers **stay hoverable** — hovering one
   during a selection shows the same preview card (title · year · citations).
+- **Relevance slider (Connected-Papers-style).** With a paper selected, a slider on the
+  Citations tab **gradually filters its citation network by relevance**. The score is computed
+  on selection like Connected Papers — `|shared references| + |shared citers|` (bibliographic
+  coupling + co-citation) per connected paper, normalized to [0,1]. At 0 the whole network
+  shows; dragging up progressively hides the least-related papers (points GPU-culled and their
+  edges dropped together). Resets on each new selection.
+- **Selection labels track the visible set.** Semantic-zoom labels re-place to the selected
+  paper's citation network on selection (a prior bug reused the previous view's label
+  positions; fixed by keying the label layer's positional accessors on the placed set).
 - **Citation importance is visualized in rank order.** On both the map edges and the
   details-panel citation graph, each linked paper's **edge width, opacity, arrowhead size,
   and endpoint-ring size + outline thickness scale with its importance relative to the
@@ -194,6 +212,7 @@ should never lose its guard silently. Run `python -m pytest pipeline/tests -q` (
 | Labels combine topic + specific phrase; leaf micro-cluster naming | `test_label_combines_topic_with_specific_community_phrase`, `test_leaf_phrase_*` (3) | `pipeline/tests/test_labels.py` |
 | MathML/markup never becomes a label | `test_clean_strips_mathml_so_attribute_names_cannot_become_labels`, `test_markup_tokens_and_acronyms_are_normalized` | `pipeline/tests/test_labels.py` |
 | SPECTER2 arXiv→DOI→MAG addressing (recovers landmark papers) | `test_s2_addressing_routes_include_mag_fallback`, `test_arxiv_extraction`, `test_clean_doi_*` | `pipeline/tests/test_corpus.py` |
+| First-figure extraction: caption anchor, box-above-caption, "Figure 1.1"/"Figure 10", PNG render | `test_finds_figure_above_caption`, `test_ignores_midsentence_mention`, `test_chapter_numbered_caption`, `test_figure_ten_does_not_match`, `test_render_crop_returns_png`, `test_missing_pdf_returns_none` | `pipeline/tests/test_figure_extract.py` |
 | Abstract reconstruction from inverted index | `test_basic_reconstruction`, `test_out_of_order_index`, `test_gap_in_positions_is_skipped`, `test_duplicate_words_multiple_positions`, `test_missing_and_empty`, `test_embed_text_composition` | `pipeline/tests/test_abstract.py` |
 | Fused text + citation related-works ranking | `test_reference_sets_preserve_citation_direction`, `test_citation_candidates_include_direct_coupling_and_co_citation`, `test_fused_ranking_can_introduce_a_non_text_citation_candidate` | `pipeline/tests/test_fused_similarity.py` |
 | Org drill-down: dept/lab attribution, no cross-org leakage | `test_fair_is_separated_from_generic_meta`, `test_facebook_ai_without_research_is_meta_ai_not_fair`, `test_no_cross_org_leakage`, `test_cmu_specific_unit_wins_over_school`, +6 more | `pipeline/tests/test_directory.py` |

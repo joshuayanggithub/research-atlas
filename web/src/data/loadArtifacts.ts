@@ -70,6 +70,7 @@ function unpackPapersIndex(table: Table): PaperMeta[] {
       citedByCount: row.cited_by_count,
       authorIds: row.author_ids ? Array.from(row.author_ids) : [],
       publicationDate: year ? String(year) : "",
+      hasFigure: row.has_figure ?? false,
     };
   }
   return out;

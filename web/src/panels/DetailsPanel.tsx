@@ -9,6 +9,14 @@ import { CitationExplorer } from "./CitationExplorer";
 import { FirstFigure } from "./FirstFigure";
 import { RelatedWorksPanel } from "./RelatedWorksPanel";
 
+// URL of the pipeline-baked first-figure crop for a node, or null when none was baked (so
+// FirstFigure uses its pdf.js fallback). Mirrors schema.figure_path: figures/<node/size>/<node>.png.
+function bakedFigureUrl(ds: Dataset, node: number): string | null {
+  const fig = ds.manifest.figures;
+  if (!fig || !ds.papers[node]?.hasFigure) return null;
+  return `data/${fig.dir}/${Math.floor(node / fig.shard_size)}/${node}.png`;
+}
+
 // Draggable panel width (desktop only), persisted so it survives re-selects and reloads.
 const WIDTH_KEY = "detailsPanelWidth";
 const MIN_WIDTH = 360;
@@ -141,10 +149,16 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
         </a>
       )}
 
-      {/* The paper's Figure 1 (or Table 1), cropped from the arXiv PDF — an at-a-glance gist
-          shown immediately on select. Keyed by node so it re-fetches per paper; renders
-          nothing when there's no arXiv id or no locatable figure. */}
-      <FirstFigure key={selectedNode} arxivId={detail?.arxivId ?? null} doi={detail?.doi ?? null} />
+      {/* The paper's Figure 1 (or Table 1) — an at-a-glance gist shown immediately on select.
+          Prefers a pipeline-baked crop (static PNG); falls back to client-side pdf.js when
+          none was baked. Keyed by node so it re-fetches per paper; renders nothing when
+          neither source yields a figure. */}
+      <FirstFigure
+        key={selectedNode}
+        arxivId={detail?.arxivId ?? null}
+        doi={detail?.doi ?? null}
+        bakedUrl={bakedFigureUrl(ds, selectedNode)}
+      />
 
       <div
         className="seg details-tabs"
@@ -192,10 +206,43 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
         </div>
       ) : (
         <div role="tabpanel" id="panel-citations" aria-labelledby="tab-citations">
+          <RelevanceSlider />
           <CitationExplorer ds={ds} node={selectedNode} />
           <RelatedWorksPanel ds={ds} node={selectedNode} />
         </div>
       )}
+    </div>
+  );
+}
+
+// Gradual relevance filter for the selected paper's citation network. 0 shows the whole
+// network; dragging up hides the least-relevant papers (Connected-Papers coupling +
+// co-citation score, computed in useRelevanceScores). Resets to 0 on each new selection.
+function RelevanceSlider() {
+  const threshold = useStore((s) => s.relevanceThreshold);
+  const setThreshold = useStore((s) => s.setRelevanceThreshold);
+  const pct = Math.round(threshold * 100);
+  return (
+    <div className="relevance-slider">
+      <label htmlFor="relevance-range" className="relevance-slider-label">
+        Relevance filter
+        <span className="relevance-slider-value">
+          {threshold === 0 ? "all" : `top ${100 - pct}%`}
+        </span>
+      </label>
+      <input
+        id="relevance-range"
+        type="range"
+        min={0}
+        max={100}
+        step={1}
+        value={pct}
+        onChange={(e) => setThreshold(Number(e.target.value) / 100)}
+        aria-label="Filter citation network by relevance"
+      />
+      <p className="relevance-slider-hint">
+        Hide less-related papers (shared references &amp; co-citations).
+      </p>
     </div>
   );
 }

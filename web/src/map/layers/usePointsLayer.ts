@@ -24,6 +24,10 @@ interface Args {
   monthMax: number;
   selectedNode: number | null;
   hoverNode: number | null;
+  // Connected-Papers relevance per node for the current selection (null when nothing selected).
+  relevance: Map<number, number> | null;
+  // Hide connected papers scoring below this (0 = whole network .. 1 = most relevant only).
+  relevanceThreshold: number;
   zoom: number;
   baseZoom: number;
   onClick: (nodeId: number | null) => void;
@@ -42,6 +46,8 @@ export function usePointsLayer({
   monthMax,
   selectedNode,
   hoverNode,
+  relevance,
+  relevanceThreshold,
   zoom,
   baseZoom,
   onClick,
@@ -140,18 +146,30 @@ export function usePointsLayer({
     // + its cited/citing set pass when a paper is selected); channel 3 = reveal_level LOD
     // (a point shows only when its reveal_level <= the active level, guaranteeing no overlap
     // at any zoom). All four are applied on the GPU, so pan/zoom never re-evaluate per point.
+    // Channel 2 = selection membership + relevance. With no selection every point passes
+    // (1000). With a selection, a connected paper carries its Connected-Papers relevance
+    // (score×1000, so the slider's [0,1] threshold maps to [0,1000]); the selected node is
+    // pinned to 1000 (always shown); non-connected papers get -1 (always culled). The slider
+    // raises the filterRange floor to progressively hide the least-relevant connected papers.
     extensions: [new DataFilterExtension({ filterSize: 4 })],
     getFilterValue: (_: unknown, { index }: { index: number }) =>
       [
         ds.points.monthIndex[index],
         hideNonMatch ? filter.matchValue[index] : 1,
-        connected === null || connected.has(index) ? 1 : 0,
+        connected === null
+          ? 1000
+          : index === selectedNode
+            ? 1000
+            : connected.has(index)
+              ? Math.round((relevance?.get(index) ?? 0) * 1000)
+              : -1,
         ds.points.revealLevel[index],
       ] as [number, number, number, number],
     filterRange: [
       [monthMin, monthMax],
       [1, 1],
-      [1, 1],
+      // Selected node (1000) always passes; connected papers pass when score ≥ threshold.
+      [connected === null ? 1 : Math.round(relevanceThreshold * 1000), 1000],
       [0, activeLevel],
     ],
     updateTriggers: {
@@ -163,7 +181,7 @@ export function usePointsLayer({
         selectedNode,
       ],
       getRadius: [selectedNode, hoverNode, connected, filter.matchValue, filter.anyOrgAuthorActive],
-      getFilterValue: [hideNonMatch, filter.matchValue, connected, ds.points.revealLevel],
+      getFilterValue: [hideNonMatch, filter.matchValue, connected, relevance, ds.points.revealLevel],
     },
   });
 }

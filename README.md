@@ -1,14 +1,25 @@
 # Research Visualizer
 
+> The web app presents itself as **Research Atlas** — the product wordmark and visual
+> identity (a "stellar-cartography" instrument theme). "Research Visualizer" remains the
+> repository/package name. See `docs/Design.md` §8 for the visual-identity design.
+
 An interactive 2D **map of CS/AI research**. Each paper is a point; semantically similar
 papers sit near each other; citations are directed edges; and the map supports
 **Google-Maps-style semantic zoom** — broad fields when zoomed out, ML topics mid-zoom,
-fine subtopics zoomed in. Filter by **organization**, **author**, and **date**; inspect a
-paper's **citations** and **related works**.
+fine subtopics zoomed in (down to **micro-clusters of a few papers** at maximum zoom).
+Filter by **organization** (drill down into departments/labs and their researchers),
+**author**, and **date**; inspect a paper's **citations** and **related works**.
 
-See **`Design.md`** (why) and **`Features.md`** (what).
+See **`docs/Design.md`** (why), **`docs/Features.md`** (what), and
+**`docs/ORGANIZATION_DIRECTORY.md`** (the canonical institution/lab/company design).
 
-**Continuing this project / handing off?** Start with **`HANDOFF.md`**, then
+**Current scope:** the checked-in configuration builds a demonstrator from seven seed
+institutions. Arbitrary organizations and department/lab identity are target architecture,
+not current capabilities. The fused-graph topic hierarchy is implemented but still needs
+human quality validation; see the re-evaluation in `docs/Design.md`.
+
+**Continuing this project / handing off?** Start with **`docs/HANDOFF.md`**, then
 **`docs/ARCHITECTURE.md`** (code map) and **`docs/ROADMAP.md`** (prioritized next work).
 
 ## How it works
@@ -69,7 +80,7 @@ web/
     state/               # zustand store
     map/                 # deck.gl MapView + layers (points, labels, edges) + zoom/colors
     filters/             # org / author / date filters + GPU filter mask
-    panels/              # details, related works, legend, search
+    panels/              # details, citations, arXiv preview, related works, legend, search
   public/data/           # ← pipeline output (git-ignored)
 ```
 
@@ -83,10 +94,10 @@ web/
 | s03 | embed (SPECTER2 fetch / SciNCL fallback), L2-normalize | `embeddings.npy` |
 | s04 | openTSNE 768→2D, freeze projector | `coords2d.npy`, `projector.pkl` |
 | s05 | UMAP→10D + HDBSCAN clustering | `cluster_assign.npy` |
-| s06 | quadtree semantic-zoom hierarchy | `tiles.json` |
-| s07 | c-TF-IDF + OpenAlex topic labels | `clusters.json`, `labels.json` |
 | s09 | intra-corpus citation edges | `edges.npz` |
-| s08 | fused text+citation kNN neighbors | `neighbors.npz` |
+| s08 | fused semantic + citation candidate graph | `neighbors.npz` |
+| s06 | nested Leiden communities for semantic zoom | `tiles.json` |
+| s07 | discriminative topic + c-TF-IDF labels | `clusters.json`, `labels.json` |
 | s10 | org / author / topic indexes | `orgs.json`, `authors.arrow`, `topics.json` |
 | s11 | assemble bundle + manifest | `web/public/data/*` |
 

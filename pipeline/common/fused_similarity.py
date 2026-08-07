@@ -1,20 +1,20 @@
-"""Fused similarity for the related-works graph.
+"""Fused similarity and citation-derived candidate generation.
 
 Related-works ranking blends two signals (Connected Papers' insight: citations imply
 relatedness, but text catches new/sparsely-cited work):
 
     fused = alpha * cosine(text_embeddings) + (1 - alpha) * citation_score
 
-where ``citation_score`` combines **bibliographic coupling** (papers A and B share
-references) and **co-citation** (later papers cite A and B together), each as a Jaccard
-overlap in [0, 1]. Because we only have the intra-corpus citation graph, these are
-computed over corpus references/citers.
-
-Strategy: text kNN via hnswlib gives a candidate set per node; we then re-score those
-candidates by adding the citation term. This avoids an O(N^2) all-pairs citation pass.
+``citation_score`` is 1 for a direct citation; otherwise it combines bibliographic
+coupling (shared references) and co-citation (shared citers), each as a Jaccard overlap.
+The candidate pool is the union of text kNN, direct citations, and the strongest
+shared-reference/co-citation candidates. This matters: re-ranking text candidates alone
+cannot recover a citation-strong paper that is text-distant.
 """
 
 from __future__ import annotations
+
+from collections import Counter
 
 import numpy as np
 
@@ -47,10 +47,95 @@ def _jaccard(a: set[int], b: set[int]) -> float:
 def citation_score(
     i: int, j: int, out_refs: list[set[int]], in_citers: list[set[int]]
 ) -> float:
-    """Mean of bibliographic-coupling and co-citation Jaccard for a pair."""
+    """Citation relatedness in [0, 1], including direct citation evidence."""
+    if j in out_refs[i] or i in out_refs[j]:
+        return 1.0
     bib_coupling = _jaccard(out_refs[i], out_refs[j])   # shared references
     co_citation = _jaccard(in_citers[i], in_citers[j])  # shared citers
     return 0.5 * (bib_coupling + co_citation)
+
+
+def citation_candidates(
+    node: int,
+    out_refs: list[set[int]],
+    in_citers: list[set[int]],
+    overlap_limit: int,
+) -> set[int]:
+    """Return direct and strongest second-order citation candidates for ``node``.
+
+    Bibliographic-coupling candidates are other papers that cite one of ``node``'s
+    references. Co-citation candidates are other papers cited alongside ``node``.
+    Direct citations are never capped; only second-order candidates use ``overlap_limit``.
+    """
+    overlap: Counter[int] = Counter()
+
+    for reference in out_refs[node]:
+        for other in in_citers[reference]:
+            if other != node:
+                overlap[other] += 1
+
+    for citer in in_citers[node]:
+        for other in out_refs[citer]:
+            if other != node:
+                overlap[other] += 1
+
+    direct = out_refs[node] | in_citers[node]
+    ranked_overlap = sorted(overlap, key=lambda other: (-overlap[other], other))
+    return set(direct) | set(ranked_overlap[:overlap_limit])
+
+
+def fuse_candidate_neighbors(
+    vectors: np.ndarray,
+    text_neighbor_ids: np.ndarray,
+    out_refs: list[set[int]],
+    in_citers: list[set[int]],
+    alpha: float,
+    top_k: int,
+    citation_candidate_limit: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rank the union of semantic and citation candidates for every paper."""
+    n = text_neighbor_ids.shape[0]
+    out_ids = np.full((n, top_k), -1, dtype=np.int32)
+    out_scores = np.zeros((n, top_k), dtype=np.float32)
+
+    for i in range(n):
+        candidates = {int(j) for j in text_neighbor_ids[i] if j >= 0 and j != i}
+        candidates.update(
+            citation_candidates(i, out_refs, in_citers, citation_candidate_limit)
+        )
+        candidates.discard(i)
+        if not candidates:
+            continue
+
+        candidate_ids = np.asarray(sorted(candidates), dtype=np.int32)
+        # Embeddings are L2-normalized in s03, so the dot product is cosine similarity.
+        # Accumulate in float64. Some accelerated BLAS builds emit spurious overflow
+        # warnings for thousands of small float32 matrix-vector products.
+        text_similarity = np.clip(
+            np.einsum(
+                "ij,j->i",
+                vectors[candidate_ids],
+                vectors[i],
+                dtype=np.float64,
+                optimize=True,
+            ),
+            0.0,
+            1.0,
+        )
+        citation_similarity = np.fromiter(
+            (citation_score(i, int(j), out_refs, in_citers) for j in candidate_ids),
+            dtype=np.float32,
+            count=len(candidate_ids),
+        )
+        fused = alpha * text_similarity + (1.0 - alpha) * citation_similarity
+
+        # Stable tie break by node id.
+        order = np.lexsort((candidate_ids, -fused))[:top_k]
+        count = len(order)
+        out_ids[i, :count] = candidate_ids[order]
+        out_scores[i, :count] = fused[order].astype(np.float32)
+
+    return out_ids, out_scores
 
 
 def fuse_neighbors(
@@ -61,10 +146,10 @@ def fuse_neighbors(
     alpha: float,
     top_k: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Re-rank text kNN candidates by fused score; return top_k ids + scores per node.
+    """Legacy text-candidate-only re-ranker.
 
-    Candidates come from text (so brand-new papers still get neighbors); the citation
-    term only reorders and boosts within that candidate pool.
+    Kept for callers that already have candidate scores. New pipeline code should use
+    :func:`fuse_candidate_neighbors`, which can introduce citation-derived candidates.
     """
     n, k = text_neighbor_ids.shape
     out_ids = np.full((n, top_k), -1, dtype=np.int32)

@@ -50,7 +50,7 @@ export function bandForZoom(zoom: number, levels: LevelBand[], base: number): nu
 // Labels of band L become visible once zoom reaches that band's window, AND stay visible
 // as you zoom further in ONLY if they are at or coarser than the current band + 1. In
 // practice: show all bands whose level <= currentBand + 1, so coarse labels persist as
-// context and one finer band starts to reveal. CollisionFilter then declutters.
+// context and one finer band starts to reveal. The CPU screen-space pass then declutters.
 export function visibleLabelLevels(zoom: number, levels: LevelBand[], base: number): Set<number> {
   const current = bandForZoom(zoom, levels, base);
   const visible = new Set<number>();

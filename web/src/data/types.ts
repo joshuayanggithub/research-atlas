@@ -105,6 +105,10 @@ export interface Manifest {
   // Paper detail is sharded the same way; the resident index is papers-index.arrow.
   paper_shard_size?: number;
   n_paper_shards?: number;
+  // First-figure crops baked by the pipeline (s13). Present only when the figure stage ran;
+  // a crop lives at `${dir}/${node_id / shard_size | 0}/${node_id}.png`. The resident papers
+  // index `hasFigure` flag says which papers have one; absent ⇒ client-side pdf.js fallback.
+  figures?: { dir: string; shard_size: number; count: number };
   palette: { background: number[] };
 }
 
@@ -145,6 +149,9 @@ export interface PaperMeta {
   // Publication YEAR only (from points/index). Full ISO date is in PaperDetail. Kept as a
   // string ("2017" / "") so existing `.publicationDate.slice(0,4)` call sites still work.
   publicationDate: string;
+  // True when the pipeline baked a first-figure crop for this paper (manifest.figures + the
+  // sharded PNG). Lets the details card load the baked crop instead of parsing the PDF.
+  hasFigure: boolean;
 }
 
 // Lazy per-node detail (papers-detail-<shard>.arrow), fetched only for the selected paper.

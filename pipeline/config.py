@@ -156,6 +156,27 @@ class TilingCfg(BaseModel):
     importance: Literal["cited_by_count"] = "cited_by_count"
 
 
+class FiguresCfg(BaseModel):
+    """First-figure extraction (s13): bake Figure 1 / Table 1 crops from arXiv PDFs offline.
+
+    Disabled by default because it downloads a PDF per arXiv paper, and arXiv's Terms of Use
+    cap requests at 1 / 3s with no parallelism — so a full-corpus pass is a multi-hour polite
+    batch. Enable for a run (or point at a subset) when you want baked crops; the frontend
+    falls back to client-side pdf.js for any paper without one.
+    """
+
+    enabled: bool = False
+    # Seconds between arXiv PDF requests (arXiv API TOU: 1 req / 3s, single connection).
+    request_delay: float = 3.0
+    # First N pages to scan for the caption (Figure 1/Table 1 is always early).
+    max_pages: int = 8
+    # Render scale for the crop PNG (2× ≈ crisp on hi-dpi panels).
+    scale: float = 2.0
+    # Cap papers processed in one run (0 = no cap). Lets you bake a sample without the full
+    # multi-hour batch; the rest keep the client-side fallback.
+    max_papers: int = 0
+
+
 class Secrets(BaseModel):
     """Loaded from environment (.env), never from config.yaml."""
 
@@ -174,6 +195,7 @@ class Config(BaseModel):
     fused: FusedCfg = Field(default_factory=FusedCfg)
     labels: LabelsCfg = Field(default_factory=LabelsCfg)
     tiling: TilingCfg = Field(default_factory=TilingCfg)
+    figures: FiguresCfg = Field(default_factory=FiguresCfg)
     palette: PaletteCfg = Field(default_factory=PaletteCfg)
     secrets: Secrets = Field(default_factory=Secrets)
 

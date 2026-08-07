@@ -12,6 +12,7 @@ Also logs abstract coverage % (risk #4 monitoring).
 from __future__ import annotations
 
 import json
+import re
 
 import polars as pl
 
@@ -120,17 +121,25 @@ def _parse_work(
     loc = w.get("primary_location") or {}
     source = (loc.get("source") or {}) if isinstance(loc, dict) else {}
 
+    # arXiv is the source of truth for a preprint's date; OpenAlex sometimes carries a wrong
+    # date for a re-registered/oddly-DOI'd work (e.g. "Attention Is All You Need" comes back
+    # as 2025). When the paper has an arXiv id, prefer the date its id encodes.
+    arxiv_id = _arxiv_from_ids(ids)
+    oa_date = w.get("publication_date") or ""
+    oa_year = int(w.get("publication_year") or 0)
+    pub_date, year = _prefer_arxiv_date(arxiv_id, oa_date, oa_year)
+
     return {
         "paper_id": wid,
         "title": title,
         "abstract": abstract,
         "text": embed_text(title, abstract),
         "has_abstract": abstract is not None,
-        "publication_date": w.get("publication_date") or "",
-        "year": int(w.get("publication_year") or 0),
+        "publication_date": pub_date,
+        "year": year,
         "cited_by_count": int(w.get("cited_by_count") or 0),
         "doi": _clean_doi(ids.get("doi")),
-        "arxiv_id": _arxiv_from_ids(ids),
+        "arxiv_id": arxiv_id,
         # Third addressing route for Semantic Scholar. Some works — including landmark
         # papers — carry a DOI that S2 does not index, but S2 does resolve their MAG id.
         # "Attention Is All You Need" is exactly this case: OpenAlex gives it only
@@ -171,6 +180,47 @@ def _arxiv_from_ids(ids: dict) -> str | None:
     if "arxiv" in doi.lower():
         return doi.lower().split("arxiv.")[-1].strip("/")
     return None
+
+
+def _arxiv_yyyymm(arxiv_id: str | None) -> tuple[int, int] | None:
+    """(year, month) encoded by an arXiv id, or None if it can't be parsed.
+
+    Modern ids are ``YYMM.NNNNN`` (April 2007-on); older ones ``archive/YYMMNNN``. In both the
+    first four digits after any ``/`` are YYMM. YY < 91 → 20YY, else 19YY (arXiv began 1991-08).
+    """
+    if not arxiv_id:
+        return None
+    tail = arxiv_id.split("/")[-1]  # drop an old-style "archive/" prefix
+    m = re.match(r"(\d{2})(\d{2})", tail)
+    if not m:
+        return None
+    yy, mm = int(m.group(1)), int(m.group(2))
+    if mm < 1 or mm > 12:
+        return None
+    year = 1900 + yy if yy >= 91 else 2000 + yy
+    return year, mm
+
+
+def _prefer_arxiv_date(arxiv_id: str | None, oa_date: str, oa_year: int) -> tuple[str, int]:
+    """Prefer the arXiv-encoded date over OpenAlex when the paper is on arXiv.
+
+    arXiv's id encodes the true submission month, which is authoritative for a preprint;
+    OpenAlex occasionally reports a wildly wrong date for re-registered DOIs. Rule:
+      - No arXiv id, or unparseable → keep OpenAlex verbatim.
+      - arXiv id present → use arXiv's year/month. Keep OpenAlex's day only when its year+month
+        already agree with arXiv (so we don't invent a day); otherwise use the 1st.
+    """
+    ym = _arxiv_yyyymm(arxiv_id)
+    if ym is None:
+        return oa_date, oa_year
+    year, month = ym
+    oa_ym = None
+    m = re.match(r"(\d{4})-(\d{2})", oa_date or "")
+    if m:
+        oa_ym = (int(m.group(1)), int(m.group(2)))
+    if oa_ym == (year, month):
+        return oa_date, year  # OpenAlex agrees; keep its precise day
+    return f"{year:04d}-{month:02d}-01", year
 
 
 def _load_inst_to_org() -> dict[str, str]:

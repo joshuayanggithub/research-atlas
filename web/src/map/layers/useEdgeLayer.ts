@@ -55,6 +55,10 @@ interface Args {
   filter: FilterArrays;
   monthMin: number;
   monthMax: number;
+  // Connected-Papers relevance per node for the selection + the slider threshold, so selected
+  // edges to papers hidden by the relevance slider are dropped too (matches the point cull).
+  relevance: Map<number, number> | null;
+  relevanceThreshold: number;
   onSelect: (node: number) => void;
   // Hovering a connected paper's endpoint ring surfaces the same preview tooltip as
   // hovering a point (the ring sits atop the point layer and would otherwise swallow it).
@@ -107,6 +111,8 @@ export function useEdgeLayer({
   filter,
   monthMin,
   monthMax,
+  relevance,
+  relevanceThreshold,
   onSelect,
   onHover,
 }: Args) {
@@ -169,18 +175,23 @@ export function useEdgeLayer({
       });
     };
 
+    // Relevance slider: drop links to a paper scoring below the threshold, so the edge web
+    // thins together with the points the slider hides.
+    const passesRelevance = (node: number) =>
+      relevanceThreshold <= 0 || (relevance?.get(node) ?? 0) >= relevanceThreshold;
+
     if (edgeMode === "out" || edgeMode === "both") {
-      const refs = prioritize(ds.citesOut.get(selectedNode) ?? []);
+      const refs = prioritize(ds.citesOut.get(selectedNode) ?? []).filter(passesRelevance);
       const w = weigh(refs);
       refs.forEach((target, i) => add(selectedNode, target, true, w(target, i), i));
     }
     if (edgeMode === "in" || edgeMode === "both") {
-      const citers = prioritize(ds.citedBy.get(selectedNode) ?? []);
+      const citers = prioritize(ds.citedBy.get(selectedNode) ?? []).filter(passesRelevance);
       const w = weigh(citers);
       citers.forEach((source, i) => add(source, selectedNode, false, w(source, i), i));
     }
     return edges;
-  }, [ds, edgeMode, screenScale, selectedNode]);
+  }, [ds, edgeMode, screenScale, selectedNode, relevance, relevanceThreshold]);
 
   // Match the points layer's reveal-level LOD (usePointsLayer): a global edge is only drawn
   // when BOTH endpoints are currently revealed, so the edge web thins out with the points at

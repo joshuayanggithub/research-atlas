@@ -16,6 +16,7 @@ import { usePointsLayer } from "./layers/usePointsLayer";
 import { useLabelLayers } from "./layers/useLabelLayers";
 import { useEdgeLayer } from "./layers/useEdgeLayer";
 import { useRelevantLabels } from "./useRelevantLabels";
+import { useRelevanceScores } from "./useRelevanceScores";
 import { coordsCenter, fitZoom } from "./zoom";
 
 export function MapView({ ds }: { ds: Dataset }) {
@@ -66,9 +67,11 @@ export function MapView({ ds }: { ds: Dataset }) {
   const selectNode = useStore((s) => s.selectNode);
   const setHover = useStore((s) => s.setHover);
   const setZoom = useStore((s) => s.setZoom);
+  const relevanceThreshold = useStore((s) => s.relevanceThreshold);
 
   const filter = useFilterMask(ds, filters);
   const relevantLabelIds = useRelevantLabels(ds, filter, selectedNode);
+  const relevance = useRelevanceScores(ds, selectedNode);
 
   useEffect(() => {
     if (selectedNode === null || selectedNode < 0 || selectedNode >= ds.points.count) return;
@@ -131,6 +134,8 @@ export function MapView({ ds }: { ds: Dataset }) {
     monthMax: filters.monthMax,
     selectedNode,
     hoverNode,
+    relevance: relevance?.score ?? null,
+    relevanceThreshold,
     zoom,
     baseZoom: base.zoom,
     onClick: selectNode,
@@ -155,6 +160,8 @@ export function MapView({ ds }: { ds: Dataset }) {
     filter: filter!,
     monthMin: filters.monthMin,
     monthMax: filters.monthMax,
+    relevance: relevance?.score ?? null,
+    relevanceThreshold,
     onSelect: selectNode,
     onHover: onHoverNode,
   });

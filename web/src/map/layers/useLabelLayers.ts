@@ -18,6 +18,9 @@ interface Args {
   zoom: number;
   base: number; // fit zoom; pipeline band offsets are measured from this
   viewport: Viewport | null;
+  // When an org/author filter is active, only labels whose region still contains matching
+  // papers are relevant (a topic name over an empty region is misleading). null = no filter.
+  relevantLabelIds: Set<number> | null;
 }
 
 interface PlacedLabel extends Label {
@@ -29,15 +32,16 @@ function labelWidth(text: string, size: number): number {
   return text.length * size * 0.55;
 }
 
-export function useLabelLayers({ labels, levels, zoom, base, viewport }: Args) {
+export function useLabelLayers({ labels, levels, zoom, base, viewport, relevantLabelIds }: Args) {
   if (!viewport) return [];
 
   const visible = visibleLabelLevels(zoom, levels, base);
   const currentBand = bandForZoom(zoom, levels, base);
 
-  // Candidate labels = those in visible bands, sorted by priority (desc).
+  // Candidate labels = those in visible bands (and, when filtering, still populated by
+  // matching papers), sorted by priority (desc).
   const candidates = labels
-    .filter((l) => visible.has(l.level))
+    .filter((l) => visible.has(l.level) && (!relevantLabelIds || relevantLabelIds.has(l.id)))
     .sort((a, b) => b.priority - a.priority);
 
   // Greedy screen-space placement.
@@ -69,6 +73,15 @@ export function useLabelLayers({ labels, levels, zoom, base, viewport }: Args) {
     seenText.add(lb.text);
   }
 
+  // deck.gl diffs a TextLayer's data by index and, for text glyph layout, caches per-datum
+  // buffers keyed by updateTriggers. When the placed set changes (e.g. a selection restricts
+  // which labels are relevant) without a matching trigger, a row can keep the PREVIOUS datum's
+  // laid-out text/position — labels show the names that were at that slot before. So the
+  // trigger below is keyed on the exact placed set (ids) + band, forcing every positional
+  // accessor to re-run whenever the set changes. The layer id stays STABLE so deck.gl updates
+  // in place (no per-frame teardown/flicker during zoom).
+  const placedKey = placed.map((p) => p.id).join(",");
+
   // One TextLayer for all placed labels (sizes vary per-datum via getSize accessor).
   return [
     new TextLayer<PlacedLabel>({
@@ -90,9 +103,10 @@ export function useLabelLayers({ labels, levels, zoom, base, viewport }: Args) {
       getBackgroundColor: [10, 12, 18, 190],
       backgroundPadding: [6, 3],
       updateTriggers: {
-        // Re-place whenever the set of placed labels changes.
-        getText: [placed.map((p) => p.id).join(","), currentBand],
-        getSize: [currentBand],
+        // Re-evaluate all positional accessors whenever the placed set or band changes.
+        getPosition: [placedKey, currentBand],
+        getText: [placedKey, currentBand],
+        getSize: [placedKey, currentBand],
       },
     }),
   ];

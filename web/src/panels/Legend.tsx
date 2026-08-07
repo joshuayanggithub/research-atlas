@@ -1,12 +1,16 @@
-// Color-mode switch + a legend of subfields (or orgs) with their palette colors.
+// Map display controls and the active point-color legend.
 
+import { Network } from "lucide-react";
 import type { Dataset } from "../data/types";
 import { useStore, type ColorMode } from "../state/store";
 import { ORG_COLORS } from "../map/colors";
+import { rootOrgKeys } from "../filters/orgHierarchy";
 
 export function Legend({ ds }: { ds: Dataset }) {
   const colorMode = useStore((s) => s.colorMode);
   const setColorMode = useStore((s) => s.setColorMode);
+  const showCitationEdges = useStore((s) => s.showCitationEdges);
+  const setShowCitationEdges = useStore((s) => s.setShowCitationEdges);
 
   // Subfield legend: derive present subfields + their color from points.arrow.
   const subfieldColors = new Map<number, [number, number, number]>();
@@ -22,10 +26,47 @@ export function Legend({ ds }: { ds: Dataset }) {
 
   return (
     <div className="legend">
-      <div className="seg small">
-        {(["subfield", "org", "recency"] as ColorMode[]).map((m) => (
-          <button key={m} className={colorMode === m ? "active" : ""} onClick={() => setColorMode(m)}>
-            {m}
+      <div className="edge-map-control">
+        <div className="edge-map-head">
+          <span>
+            <Network size={14} aria-hidden="true" />
+            Citation edges
+          </span>
+          <label className="switch">
+            <input
+              type="checkbox"
+              checked={showCitationEdges}
+              onChange={(event) => setShowCitationEdges(event.target.checked)}
+              aria-label="Show citation edges on map"
+            />
+            <span className="switch-track" aria-hidden="true" />
+          </label>
+        </div>
+        {showCitationEdges && (
+          <div className="edge-key">
+            <span><i className="edge-key-line global" /> citations</span>
+            <span><i className="edge-key-line outgoing" /> references</span>
+            <span><i className="edge-key-line incoming" /> cited by</span>
+          </div>
+        )}
+      </div>
+      <div className="color-by-label subtle">Color by</div>
+      <div className="seg small" role="group" aria-label="Color points by">
+        {(
+          [
+            ["subfield", "Subfield"],
+            ["org", "Organization"],
+            ["recency", "Recency"],
+          ] as [ColorMode, string][]
+        ).map(([m, label]) => (
+          <button
+            type="button"
+            key={m}
+            className={colorMode === m ? "active" : ""}
+            aria-pressed={colorMode === m}
+            onClick={() => setColorMode(m)}
+          >
+            {label}
           </button>
         ))}
       </div>
@@ -43,7 +84,7 @@ export function Legend({ ds }: { ds: Dataset }) {
       )}
       {colorMode === "org" && (
         <div className="legend-items">
-          {Object.keys(ds.orgs.institutions).map((k, i) => (
+          {rootOrgKeys(ds).map((k, i) => (
             <div key={k} className="legend-item">
               <span
                 className="swatch"

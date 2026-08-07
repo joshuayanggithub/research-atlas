@@ -4,9 +4,10 @@ Clustering runs in a SEPARATE ~10-D UMAP space (not the 2D layout coords) to avo
 projection artifacts UMAP's own docs warn about (false tears / density distortion). We
 then run HDBSCAN there. The result is a per-paper leaf cluster id (noise = -1).
 
-Note: the 2D map regions come from the quadtree in s06; these clusters primarily feed
-label generation (s07) and the ``cluster_leaf`` column. Clustering in high-D keeps the
-semantic groupings faithful to the embedding, not to the flattened picture.
+Note: the 2D map regions come from adaptive spatial partitioning in s06. These high-D
+clusters currently feed only the ``cluster_leaf`` column; they do not define semantic-zoom
+regions. Clustering in high-D preserves a future path to topic communities that are not
+artifacts of the flattened picture.
 
 Emits:
     data/interim/cluster_assign.npy   [N] int32 leaf cluster id (-1 = noise)

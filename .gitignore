@@ -25,6 +25,11 @@ web/node_modules/
 web/dist/
 web/.vite/
 
+# Playwright e2e artifacts
+web/test-results/
+web/playwright-report/
+web/.playwright/
+
 # OS / editor
 .DS_Store
 *.log
@@ -32,3 +37,6 @@ build.log
 playwright-responses/
 .playwright-mcp/
 *.png
+
+# TypeScript build cache
+web/tsconfig.tsbuildinfo

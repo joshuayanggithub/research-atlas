@@ -2,8 +2,8 @@
 
 You are taking over a **working MVP**. This doc gets you productive fast. Read
 `Design.md` for *why* decisions were made, `Features.md` for *what* the app does,
-`docs/ARCHITECTURE.md` for the code map, `docs/ORGANIZATION_DIRECTORY.md` for the directory
-design, and `docs/ROADMAP.md` for what to build next.
+`ARCHITECTURE.md` for the code map, `ORGANIZATION_DIRECTORY.md` for the directory
+design, and `ROADMAP.md` for what to build next.
 
 ---
 
@@ -102,7 +102,7 @@ s09 edges → s08 neighbors → s06 hierarchy → s07 label → s10 indexes → 
 | Embeddings | **SPECTER2** (768-d) from Semantic Scholar, addressed by arXiv→DOI→MAG (MAG pass recovers papers whose OpenAlex DOI S2 can't resolve, e.g. "Attention Is All You Need"); `on_uncovered: drop` keeps only papers with a real vector (89,140 fetched → 80.6% covered → **71,831 kept**) for one clean space |
 | Layout | openTSNE 768→2D; reducer and map normalization frozen in `projector.pkl` |
 | Clusters | UMAP→10D + HDBSCAN (235 clusters) — used for `cluster_leaf` |
-| Semantic zoom | **nested Leiden communities on the planar substrate** (2D-layout kNN adjacency, 768-D cosine weights) so each region is one contiguous area of the map: **11 bands, ~24,600 regions**; resolution bisected to the target child count. Deepest band resolves ~3-paper micro-clusters. (Prior fused-graph `leiden`/`louvain` and 2D `kmeans`/`quadtree` stay selectable via `hierarchy.method`. See Design.md §5 + `docs/RESEARCH_PRIOR_WORK.md` §1.4.) |
+| Semantic zoom | **nested Leiden communities on the planar substrate** (2D-layout kNN adjacency, 768-D cosine weights) so each region is one contiguous area of the map: **11 bands, ~24,600 regions**; resolution bisected to the target child count. Deepest band resolves ~3-paper micro-clusters. (Prior fused-graph `leiden`/`louvain` and 2D `kmeans`/`quadtree` stay selectable via `hierarchy.method`. See Design.md §5 + `RESEARCH_PRIOR_WORK.md` §1.4.) |
 | Labels | discriminative OpenAlex topics + representative title/abstract c-TF-IDF phrases (MathML stripped structurally), ancestor/sibling-deduped; **small leaf communities named from their shared title n-gram** (~11,700 labels) |
 | Bundle | 9 files, ~51 MB uncompressed Arrow/JSON in `web/public/data/` |
 
@@ -158,7 +158,7 @@ pipeline.run_all --only s10,s11` — no re-embed/re-project.
    `pipeline/directory/units.py` matching retained raw affiliation strings, and FAIR is a
    narrow affiliation-evidenced child (425 papers) beneath the broad `Meta` parent — not the
    whole parent. Sub-unit matching is confidence-95 exact-name only; a parent match never
-   implies a child. Follow `docs/ORGANIZATION_DIRECTORY.md` for the full target model.
+   implies a child. Follow `ORGANIZATION_DIRECTORY.md` for the full target model.
 9. **Org sub-units regenerate without a full rebuild.** Because affiliation evidence is a
    separate paper-id-keyed artifact, editing `pipeline/directory/units.py` only needs
    `--only s02,s10,s11` (or just `s10,s11` if `affiliations.parquet` already exists). The
@@ -181,4 +181,4 @@ pipeline.run_all --only s10,s11` — no re-embed/re-project.
 - After a pipeline change, re-run the affected stages and eyeball
   `web/public/data/labels.json` / `orgs.json` / `manifest.json`.
 
-See `docs/ROADMAP.md` for prioritized next work and known rough edges.
+See `ROADMAP.md` for prioritized next work and known rough edges.

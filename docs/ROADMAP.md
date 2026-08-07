@@ -5,7 +5,7 @@ MVP is useful, but presentation polish should not outrank corpus and topic corre
 
 Prior-work survey backing several items below (embedding/layout/semantic-zoom and
 org/lab/author attribution, with primary sources and adopt-now recommendations):
-[`docs/RESEARCH_PRIOR_WORK.md`](RESEARCH_PRIOR_WORK.md).
+[`RESEARCH_PRIOR_WORK.md`](RESEARCH_PRIOR_WORK.md).
 
 ## P0: organization, corpus, and semantic correctness
 
@@ -21,7 +21,7 @@ are kept today), and add normalization fixtures for messier affiliation variants
 Prior-work confirms this manual-curation approach is *correct*, not a shortcut: **ROR (and
 therefore OpenAlex) deliberately excludes departments/labs** — only ~0.06% of ROR records are
 university-child departments, so dept/lab granularity is unsourceable from registries and
-must be built. Two verified upgrades to consider (see `docs/RESEARCH_PRIOR_WORK.md` §2):
+must be built. Two verified upgrades to consider (see `RESEARCH_PRIOR_WORK.md` §2):
 - **Benchmark affiliation→institution matching against AffRo** (OpenAIRE, arXiv:2505.07577):
   it beats OpenAlex's built-in matcher (F1 ~0.937 vs 0.921) on the CC0 **AffRoDB** set and is
   production-proven — and it catches the documented "OpenAlex parser not retrained since April
@@ -48,7 +48,7 @@ authorship-backed direct paper attributions.
   resolved. (Verified: the CSRankings project as a whole is CC BY-NC-ND 4.0 — NonCommercial
   **and** NoDerivatives — while its underlying DBLP data is separately ODC-BY; its
   faculty→institution map is manually curated, not algorithmic. See
-  `docs/RESEARCH_PRIOR_WORK.md` §2A.)
+  `RESEARCH_PRIOR_WORK.md` §2A.)
 
 ### 3. Decouple corpus discovery from organizations
 
@@ -88,11 +88,11 @@ fallback) re-merging graph-disjoint groups — the raw Leiden split itself is 0%
 A **connectivity-aware post-processing pass** (split any cell whose induced subgraph is
 disconnected, or prefer graph-adjacent merges) would drive this toward 0, but trades against
 the branch-target and strict-nesting invariants, so it needs its own design. See
-`docs/RESEARCH_PRIOR_WORK.md` §1.4 and recommendation #1.
+`RESEARCH_PRIOR_WORK.md` §1.4 and recommendation #1.
 
 **Cross-check labels with a content-only signal.** A WizMap-style tile t-TF-IDF or
 hierarchical BERTopic pass (both need no citation data) gives an independent second opinion to
-validate the citation-community labels against. See `docs/RESEARCH_PRIOR_WORK.md` §1.3.
+validate the citation-community labels against. See `RESEARCH_PRIOR_WORK.md` §1.3.
 
 ## P1: reproducibility and quality gates
 

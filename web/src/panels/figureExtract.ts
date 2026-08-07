@@ -1,252 +1,268 @@
-// Extract "Figure 1" (or "Table 1") from an arXiv PDF and return the crop rectangle for it,
-// entirely client-side via pdf.js. arXiv serves PDFs with `access-control-allow-origin: *`,
-// so this needs no backend.
+// Extract "Figure 1" AND "Table 1" from an arXiv PDF and render each crop, entirely
+// client-side via pdf.js. arXiv serves PDFs with `access-control-allow-origin: *`, so this
+// needs no backend. Runs on demand when a paper is selected.
 //
-// Approach — anchor on the CAPTION, not on embedded images:
-//   1. Read the text layer of the first few pages; find the earliest real caption matching
-//      "Figure 1" / "Fig. 1" / "Table 1" (a caption starts a text block, so we ignore
-//      mid-line body-text mentions like "...see Table 1 for...").
-//   2. The caption's bounding box tells us the column and the split point. By convention a
-//      FIGURE sits ABOVE its caption and a TABLE sits ABOVE its caption too in most arXiv
-//      papers, but tables are also frequently captioned on top; we crop the block adjacent
-//      to the caption within its column, biased above, which captures the common cases.
-//   3. Return { pageNumber, rect } in PDF user-space; the caller renders that page and crops.
+// Method — the PDFFigures 2.0 / PyMuPDF pattern, ported to pdf.js's operator list (the
+// accurate replacement for the old ink-density scan, which grabbed page headers and body
+// text):
+//   1. Find the caption ("Figure 1:" / "Table 1:") in the text layer — its page, position.
+//   2. Reconstruct the page's GRAPHICAL geometry from the operator list: walk fnArray tracking
+//      the transform stack (CTM), take the bounding box of every path-construction op and every
+//      image op, then CLUSTER boxes that touch/overlap into figure-sized regions (the way
+//      PyMuPDF's cluster_drawings joins vector paths into one diagram box).
+//   3. Choose the cluster directly ABOVE the caption, overlapping its column, largest+closest.
+//   4. Borderless tables have no paths/images, so fall back to the contiguous TEXT block above
+//      the caption (row lines stacked over it), stopping at the first large vertical gap.
+//   5. Render that user-space rect to the crop canvas.
 //
-// This targets the paper's actual labeled Figure 1 (a raster OR vector figure, or a table),
-// which "grab the first embedded image" cannot do — most ML tables and many figures are
-// vector, and the first bitmap is often a logo.
+// Coordinates: pdf.js operator-list geometry and text transforms are BOTH in PDF user space
+// (origin bottom-left, y increases UP), at scale 1 — no viewport flip. "Above the caption"
+// therefore means a larger y than the caption baseline.
 
 export interface FigureCrop {
   pageNumber: number;
-  // Crop rectangle in PDF user-space (origin bottom-left, as pdf.js reports text positions).
-  rect: { x: number; y: number; width: number; height: number };
-  label: string; // e.g. "Figure 1"
+  rect: { x: number; y: number; width: number; height: number }; // PDF user space
+  label: string; // "Figure 1" | "Table 1"
 }
 
-// A caption line: "Figure 1:", "Figure 1.", "Fig. 1 ", "Table 1:" — case-insensitive, and
-// must be followed by a separator/space so "Figure 10" doesn't match "Figure 1".
-const CAPTION_RE = /^(figure|fig\.?|table)\s*1\s*([.:]\s|\s|$)/i;
+// "Figure 1:" / "Fig. 1" / "Table 1." / chapter-numbered "Figure 1.1:" — a separator must
+// follow so "Figure 10" / "Figure 2.x" don't match. Anchored so a mid-sentence "see Table 1"
+// (inside an item starting with other words) doesn't match.
+const CAPTION_RE = /^(figure|fig\.?|table)\s*1(\.\d+)?\s*([.:]\s|\s|$)/i;
 
 interface TextItem {
   str: string;
-  // pdf.js transform: [a, b, c, d, e, f]; e = x, f = y (user space, bottom-left origin).
-  transform: number[];
+  transform: number[]; // [a,b,c,d,e,f]; e=x, f=y (user space)
   width: number;
   height: number;
 }
 
 interface Caption {
-  pageNumber: number;
+  x: number; // baseline left
+  y: number; // baseline (user space, y-up)
+  width: number;
   isTable: boolean;
-  x: number; // caption baseline left
-  y: number; // caption baseline
-  pageWidth: number;
-  pageHeight: number;
 }
 
-// Find the first text item whose OWN string starts with "Figure 1"/"Table 1". The `^`
-// anchor is the real signal: pdf.js emits a caption's leading run as its own item starting
-// with the label, whereas a body-text mention ("...see Table 1...") lives inside an item
-// that starts with other words, so it won't match. (An earlier line-start heuristic based
-// on previous-item geometry wrongly rejected real captions — pdf.js often reports the
-// caption item's x equal to the previous item's right edge.)
-function findFirstCaption(
-  items: TextItem[],
-  pageNumber: number,
-  pageWidth: number,
-  pageHeight: number,
-): Caption | null {
+interface Box {
+  x0: number; y0: number; x1: number; y1: number;
+  kind: "path" | "image" | "text";
+}
+
+// --- affine helpers (pdf.js transform arrays: [a,b,c,d,e,f]) ---
+function mul(a: number[], b: number[]): number[] {
+  return [
+    a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1],
+    a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3],
+    a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5],
+  ];
+}
+function applyPt(m: number[], x: number, y: number): [number, number] {
+  return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+}
+
+// The first caption ("Figure 1"/"Table 1") on a page whose own text item starts with the
+// label. Returns the FIRST figure and the FIRST table found (either may be null).
+function findCaptions(items: TextItem[]): { figure: Caption | null; table: Caption | null } {
+  let figure: Caption | null = null;
+  let table: Caption | null = null;
   for (const it of items) {
     const s = (it.str || "").trim();
-    if (s && CAPTION_RE.test(s)) {
-      return {
-        pageNumber,
-        isTable: /^table/i.test(s),
-        x: it.transform[4],
-        y: it.transform[5],
-        pageWidth,
-        pageHeight,
-      };
+    if (!s || !CAPTION_RE.test(s)) continue;
+    const cap: Caption = { x: it.transform[4], y: it.transform[5], width: it.width || 300, isTable: /^table/i.test(s) };
+    if (cap.isTable) { if (!table) table = cap; }
+    else if (!figure) figure = cap;
+  }
+  return { figure, table };
+}
+
+// Bounding boxes of all path + image ops on a page, in user space. `OPS` is pdfjs.OPS.
+async function graphicBoxes(page: any, OPS: any): Promise<Box[]> {
+  const ops = await page.getOperatorList();
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const stack: number[][] = [];
+  const out: Box[] = [];
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i];
+    const args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm.slice());
+    else if (fn === OPS.restore) ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
+    else if (fn === OPS.transform) ctm = mul(ctm, args);
+    else if (fn === OPS.constructPath) {
+      const coords: number[] | undefined = args[1];
+      if (!coords) continue;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (let k = 0; k + 1 < coords.length; k += 2) {
+        const [X, Y] = applyPt(ctm, coords[k], coords[k + 1]);
+        if (X < x0) x0 = X; if (Y < y0) y0 = Y; if (X > x1) x1 = X; if (Y > y1) y1 = Y;
+      }
+      if (x1 > x0 && y1 > y0) out.push({ x0, y0, x1, y1, kind: "path" });
+    } else if (
+      fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject ||
+      fn === OPS.paintImageXObjectRepeat
+    ) {
+      const c = [applyPt(ctm, 0, 0), applyPt(ctm, 1, 0), applyPt(ctm, 0, 1), applyPt(ctm, 1, 1)];
+      const xs = c.map((p) => p[0]);
+      const ys = c.map((p) => p[1]);
+      out.push({ x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys), kind: "image" });
     }
   }
-  return null;
+  return out;
 }
 
-// A generous SEARCH band above the caption, within its column, to render and then trim by
-// pixel analysis. Wider/taller than the figure on purpose — findInkBounds() tightens it to
-// the actual figure box. Estimates the column from the caption's x (two-column arXiv puts a
-// right-column caption past mid-page; single-column spans the text width).
-function searchBand(cap: Caption): FigureCrop["rect"] {
-  const { x, y, pageWidth, pageHeight } = cap;
-  const margin = 0.08 * pageWidth;
-  const midX = pageWidth / 2;
-  const isRightColumn = x > midX;
-  const colLeft = isRightColumn ? midX + margin * 0.25 : margin;
-  const colRight = isRightColumn
-    ? pageWidth - margin
-    : x > margin * 1.5 && x < midX
-      ? midX - margin * 0.25
-      : pageWidth - margin;
-  const left = Math.min(x - 4, colLeft);
-  const width = Math.max(colRight - left, 0.3 * pageWidth);
-  // Start the band ABOVE the caption's own text — the caption baseline is `y`, and its glyphs
-  // rise ~1 line above it. If the band included the caption, the upward ink scan would grab
-  // the caption strip and stop at the gap between caption and figure. A ~1.4-line skip clears
-  // the caption (and any 2-line caption's first line is fine — we want the figure, not text).
-  const captionSkip = 0.026 * pageHeight; // ≈ one text line on a US-letter page
-  const bottom = y + captionSkip;
-  const maxHeight = 0.72 * pageHeight; // generous: trimmed by ink analysis
-  const top = Math.min(bottom + maxHeight, pageHeight - margin * 0.4);
-  return { x: left, y: bottom, width, height: top - bottom };
-}
-
-// Given a rendered band (device pixels, caption at the BOTTOM edge), find the tight bounding
-// box of the figure/table by ink analysis. Papers put a whitespace gap between a figure and
-// whatever sits above it (body text, a section header, the page title), so:
-//   - scan rows upward from the bottom; accumulate the figure while rows have ink, and STOP
-//     at the first sustained whitespace gap — that excludes the ICLR-style header / title;
-//   - then trim left/right to the inked columns so a narrow figure isn't boxed in whitespace.
-// Returns bounds in device px within the band, or null if the band is essentially empty.
-interface PxBounds { top: number; bottom: number; left: number; right: number; }
-function findInkBounds(data: Uint8ClampedArray, w: number, h: number): PxBounds | null {
-  // "Ink" = a pixel darker than near-white. arXiv pages are white; figures/tables/text ink.
-  const isInk = (i: number) => data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245;
-
-  const rowInk = new Float32Array(h);
-  const colInk = new Float32Array(w);
-  for (let yy = 0; yy < h; yy++) {
-    let count = 0;
-    const base = yy * w * 4;
-    for (let xx = 0; xx < w; xx++) {
-      if (isInk(base + xx * 4)) {
-        count++;
-        colInk[xx]++;
+// Join boxes that touch/overlap (within `pad`) into clusters — turns a diagram's hundreds of
+// vector strokes into one figure box, like PyMuPDF's cluster_drawings.
+function clusterBoxes(boxes: Box[], pad = 6): Box[] {
+  const out = boxes.map((b) => ({ ...b }));
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < out.length; i++) {
+      for (let j = i + 1; j < out.length; j++) {
+        const a = out[i];
+        const b = out[j];
+        if (a.x0 - pad <= b.x1 && b.x0 - pad <= a.x1 && a.y0 - pad <= b.y1 && b.y0 - pad <= a.y1) {
+          a.x0 = Math.min(a.x0, b.x0); a.y0 = Math.min(a.y0, b.y0);
+          a.x1 = Math.max(a.x1, b.x1); a.y1 = Math.max(a.y1, b.y1);
+          if (b.kind === "image") a.kind = "image";
+          out.splice(j, 1); merged = true; j--;
+        }
       }
     }
-    rowInk[yy] = count / w; // fraction of the row that is inked
   }
+  return out;
+}
 
-  const ROW_INK_MIN = 0.006; // a row with less ink than this counts as blank
-  const GAP_ROWS = Math.max(6, Math.round(h * 0.035)); // sustained-blank run that ends a block
-
-  // Walk up from the bottom (caption side). Skip a small initial blank margin, take the
-  // inked block, stop at the first GAP_ROWS-long blank run above it.
-  let bottom = h - 1;
-  while (bottom > 0 && rowInk[bottom] < ROW_INK_MIN) bottom--;
-  if (bottom <= 0) return null;
-  let top = bottom;
-  let blank = 0;
-  for (let yy = bottom; yy >= 0; yy--) {
-    if (rowInk[yy] < ROW_INK_MIN) {
-      blank++;
-      if (blank >= GAP_ROWS) break;
-    } else {
-      blank = 0;
-      top = yy;
-    }
+// The graphic cluster directly ABOVE the caption, overlapping its column, largest+closest.
+function pickBox(boxes: Box[], cap: Caption): Box | null {
+  const colLo = cap.x - 30;
+  const colHi = cap.x + cap.width + 30;
+  let best: Box | null = null;
+  let bestScore = -Infinity;
+  for (const r of boxes) {
+    const w = r.x1 - r.x0;
+    const h = r.y1 - r.y0;
+    if (w < 40 || h < 20) continue;
+    if (r.y0 < cap.y - 4) continue; // must sit above the caption baseline (user space y-up)
+    const overlap = Math.min(r.x1, colHi) - Math.max(r.x0, colLo);
+    if (overlap <= 0) continue;
+    const gap = r.y0 - cap.y; // vertical distance caption → box bottom
+    const score = w * h - gap * 50; // big + close wins
+    if (score > bestScore) { bestScore = score; best = r; }
   }
+  return best;
+}
 
-  // Trim horizontally to inked columns within [top, bottom].
-  let left = 0;
-  while (left < w - 1 && colInk[left] < 1) left++;
-  let right = w - 1;
-  while (right > left && colInk[right] < 1) right--;
+// Borderless-table fallback: the contiguous block of TEXT lines directly above the caption
+// (invisible to path/image detection). Walk text items above the caption in its column, join
+// while the vertical gap stays small, stop at the first large gap.
+function textBlockAbove(items: TextItem[], cap: Caption): Box | null {
+  const colLo = cap.x - 30;
+  const colHi = cap.x + cap.width + 30;
+  const above = items
+    .map((it) => ({ x: it.transform[4], y: it.transform[5], w: it.width || 0, h: it.height || 8 }))
+    .filter((t) => t.y > cap.y + 2 && Math.min(t.x + t.w, colHi) - Math.max(t.x, colLo) > 0)
+    .sort((a, b) => a.y - b.y); // nearest-to-caption first, going up
+  if (!above.length) return null;
+  const gapLimit = Math.max(18, (above[0].h || 8) * 3);
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  let prevY = cap.y;
+  for (const t of above) {
+    if (t.y - prevY > gapLimit) break; // sustained whitespace → top of the table
+    x0 = Math.min(x0, t.x); y0 = Math.min(y0, t.y);
+    x1 = Math.max(x1, t.x + t.w); y1 = Math.max(y1, t.y + t.h);
+    prevY = t.y;
+  }
+  if (x1 - x0 < 40 || y1 - y0 < 20) return null;
+  return { x0, y0, x1, y1, kind: "text" };
+}
 
-  if (right - left < 8 || bottom - top < 8) return null;
-  // Small padding so we don't clip antialiased edges.
-  const pad = Math.round(h * 0.008);
-  return {
-    top: Math.max(0, top - pad),
-    bottom: Math.min(h - 1, bottom + pad),
-    left: Math.max(0, left - pad),
-    right: Math.min(w - 1, right + pad),
-  };
+// Locate one caption's crop rect (graphic cluster above it, else text-block fallback).
+function locateCrop(cap: Caption, boxes: Box[], items: TextItem[]): Box | null {
+  const box = pickBox(boxes, cap) ?? (cap.isTable ? textBlockAbove(items, cap) : null);
+  if (!box) return null;
+  // Include the caption strip beneath the box, for context.
+  return { x0: Math.min(box.x0, cap.x), y0: cap.y - 4, x1: Math.max(box.x1, cap.x + cap.width), y1: box.y1, kind: box.kind };
+}
+
+async function renderRect(page: any, box: Box, canvas: HTMLCanvasElement): Promise<void> {
+  const RENDER_WIDTH = 900; // logical px; ample for a widened panel on hi-dpi screens
+  const w = box.x1 - box.x0;
+  const scale = (RENDER_WIDTH / Math.max(w, 1)) * Math.min(window.devicePixelRatio || 1, 2);
+  const full = page.getViewport({ scale });
+  const pageH = page.getViewport({ scale: 1 }).height;
+  const offsetX = box.x0 * scale;
+  // user-space y-up → device y-down: device top = (pageH - box.y1)
+  const offsetY = (pageH - box.y1) * scale;
+  const cw = Math.ceil((box.x1 - box.x0) * scale);
+  const ch = Math.ceil((box.y1 - box.y0) * scale);
+  canvas.width = cw;
+  canvas.height = ch;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("no 2d context");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, cw, ch);
+  await page.render({
+    canvasContext: ctx,
+    viewport: full,
+    transform: [1, 0, 0, 1, -offsetX, -offsetY],
+  }).promise;
+}
+
+export interface ExtractResult {
+  figure: FigureCrop | null;
+  table: FigureCrop | null;
 }
 
 /**
- * Locate Figure 1 / Table 1 in a PDF and render its crop into `canvas`, opening the ~2MB PDF
- * ONCE (find + render share the parsed doc). Prefers a figure over a table (figures usually
- * appear first and convey the gist) and the earliest page. Returns the found crop, or null if
- * no caption was located in the first `maxPages` pages (caller then renders nothing).
+ * Locate Figure 1 AND Table 1 in a PDF and render each into its canvas (pass a canvas for the
+ * one(s) you want; null skips rendering that crop). Opens the PDF once. Returns which crops
+ * were found so the caller can hide empty slots.
  */
-export async function extractFirstFigure(
+export async function extractFigures(
   pdfUrl: string,
-  canvas: HTMLCanvasElement,
+  canvases: { figure: HTMLCanvasElement | null; table: HTMLCanvasElement | null },
   signal: AbortSignal,
-  maxPages = 8,
-): Promise<FigureCrop | null> {
+  maxPages = 10,
+): Promise<ExtractResult> {
   const pdfjs = await import("pdfjs-dist");
   const worker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
   pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
+  const OPS = (pdfjs as any).OPS;
 
   const task = pdfjs.getDocument({ url: pdfUrl });
   signal.addEventListener("abort", () => task.destroy(), { once: true });
   const doc = await task.promise;
+  const result: ExtractResult = { figure: null, table: null };
   try {
-    // Pass 1: find the caption. Keep the pdf.js page around for the winner so render reuses it.
-    let chosen: { cap: Caption; label: string } | null = null;
-    let firstTable: Caption | null = null;
+    let figCap: { page: number; cap: Caption } | null = null;
+    let tblCap: { page: number; cap: Caption } | null = null;
     const pages = Math.min(maxPages, doc.numPages);
-    for (let p = 1; p <= pages && !chosen; p++) {
-      if (signal.aborted) return null;
+    for (let p = 1; p <= pages; p++) {
+      if (signal.aborted) return result;
       const page = await doc.getPage(p);
-      const vp = page.getViewport({ scale: 1 });
-      const cap = findFirstCaption((await page.getTextContent()).items as TextItem[], p, vp.width, vp.height);
-      if (cap && !cap.isTable) chosen = { cap, label: "Figure 1" };
-      else if (cap && !firstTable) firstTable = cap;
+      const items = (await page.getTextContent()).items as TextItem[];
+      const { figure, table } = findCaptions(items);
+      if (figure && !figCap) figCap = { page: p, cap: figure };
+      if (table && !tblCap) tblCap = { page: p, cap: table };
+      if (figCap && tblCap) break;
     }
-    if (!chosen && firstTable) chosen = { cap: firstTable, label: "Table 1" };
-    if (!chosen || signal.aborted) return null;
 
-    const { cap, label } = chosen;
-    const band = searchBand(cap);
-
-    // Pass 2: render the (generous) search band to an OFFSCREEN canvas, detect the figure's
-    // tight pixel bounds by ink analysis (excludes the header/title above the real figure),
-    // then blit just that region into the display canvas at high resolution. The display
-    // canvas has no inline width, so CSS width:100% scales the crisp bitmap to the panel.
-    const page = await doc.getPage(cap.pageNumber);
-    const RENDER_WIDTH = 900; // logical px; ample for a widened panel on hi-dpi screens
-    const scale = (RENDER_WIDTH / band.width) * Math.min(window.devicePixelRatio || 1, 2);
-    const full = page.getViewport({ scale });
-    const offsetX = band.x * scale;
-    const pageHeightUser = page.getViewport({ scale: 1 }).height;
-    const offsetY = (pageHeightUser - (band.y + band.height)) * scale;
-
-    const bandW = Math.ceil(band.width * scale);
-    const bandH = Math.ceil(band.height * scale);
-    const off = document.createElement("canvas");
-    off.width = bandW;
-    off.height = bandH;
-    const offCtx = off.getContext("2d", { willReadFrequently: true });
-    if (!offCtx) throw new Error("no 2d context");
-    // White backdrop so transparent PDF pixels read as page-white for the ink test.
-    offCtx.fillStyle = "#ffffff";
-    offCtx.fillRect(0, 0, bandW, bandH);
-    await page.render({
-      canvasContext: offCtx,
-      viewport: full,
-      transform: [1, 0, 0, 1, -offsetX, -offsetY],
-    }).promise;
-    if (signal.aborted) return null;
-
-    const bounds =
-      findInkBounds(offCtx.getImageData(0, 0, bandW, bandH).data, bandW, bandH) ?? {
-        top: 0,
-        bottom: bandH - 1,
-        left: 0,
-        right: bandW - 1,
-      };
-    const cw = bounds.right - bounds.left + 1;
-    const ch = bounds.bottom - bounds.top + 1;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("no 2d context");
-    canvas.width = cw;
-    canvas.height = ch;
-    ctx.drawImage(off, bounds.left, bounds.top, cw, ch, 0, 0, cw, ch);
-
-    return { pageNumber: cap.pageNumber, rect: band, label };
+    // Render each requested + found crop.
+    for (const which of ["figure", "table"] as const) {
+      const found = which === "figure" ? figCap : tblCap;
+      const canvas = canvases[which];
+      if (!found || !canvas || signal.aborted) continue;
+      const page = await doc.getPage(found.page);
+      const items = (await page.getTextContent()).items as TextItem[];
+      const boxes = clusterBoxes(await graphicBoxes(page, OPS));
+      const crop = locateCrop(found.cap, boxes, items);
+      if (!crop) continue;
+      await renderRect(page, crop, canvas);
+      const rect = { x: crop.x0, y: crop.y0, width: crop.x1 - crop.x0, height: crop.y1 - crop.y0 };
+      result[which] = { pageNumber: found.page, rect, label: which === "figure" ? "Figure 1" : "Table 1" };
+    }
+    return result;
   } finally {
     doc.destroy();
   }

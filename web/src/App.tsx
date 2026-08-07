@@ -1,9 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { loadDataset } from "./data/loadArtifacts";
 import { useStore } from "./state/store";
 import { MapView } from "./map/MapView";
 import { OrgFilterPanel } from "./filters/OrgFilterPanel";
 import { AuthorFilter } from "./filters/AuthorFilter";
+import { TopicFilter } from "./filters/TopicFilter";
 import { DateRangeSlider } from "./filters/DateRangeSlider";
 import { DetailsPanel } from "./panels/DetailsPanel";
 import { Legend } from "./panels/Legend";
@@ -17,6 +18,10 @@ export default function App() {
   const setError = useStore((s) => s.setError);
   const clearFilters = useStore((s) => s.clearFilters);
   const filters = useStore((s) => s.filters);
+  const selectedNode = useStore((s) => s.selectedNode);
+  const [filtersOpen, setFiltersOpen] = useState(() =>
+    window.matchMedia("(min-width: 721px)").matches,
+  );
 
   useEffect(() => {
     loadDataset()
@@ -24,13 +29,26 @@ export default function App() {
       .catch((e) => setError(String(e)));
   }, [setDataset, setError]);
 
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 721px)");
+    const onChange = (event: MediaQueryListEvent) => setFiltersOpen(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    if (selectedNode !== null && window.innerWidth <= 720) setFiltersOpen(false);
+  }, [selectedNode]);
+
   if (error) {
     return (
       <div className="fullscreen center">
         <div className="error">
           <h2>Failed to load data</h2>
           <p>{error}</p>
-          <p className="subtle">Run the pipeline first: <code>python -m pipeline.run_all</code></p>
+          <p className="subtle">
+            Run the pipeline first: <code>uv run python -m pipeline.run_all</code>
+          </p>
         </div>
       </div>
     );
@@ -45,41 +63,72 @@ export default function App() {
   }
 
   const m = dataset.manifest;
+  const fromYear = parseInt(m.corpus.date_from.slice(0, 4));
+  const toYear = parseInt(m.corpus.date_to.slice(0, 4));
+  const toMonth = parseInt(m.corpus.date_to.slice(5, 7)) || 12;
+  const fullMaxMonth = (toYear - fromYear) * 12 + (toMonth - 1);
   const filtersActive =
-    filters.orgKeys.length > 0 || filters.authorIds.length > 0;
+    filters.orgKeys.length > 0 ||
+    filters.authorIds.length > 0 ||
+    filters.subfieldIds.length > 0 ||
+    filters.topicIds.length > 0 ||
+    filters.monthMin !== 0 ||
+    filters.monthMax !== fullMaxMonth;
 
   return (
     <div className="app">
-      <MapView ds={dataset} />
+      <main className="map-shell" aria-label="Research map">
+        <MapView ds={dataset} />
+      </main>
 
       <header className="topbar">
         <div className="title">
-          <strong>Research Visualizer</strong>
+          <strong>Research Atlas</strong>
           <span className="subtle">
-            {m.corpus.count.toLocaleString()} CS papers · {m.corpus.date_from.slice(0, 4)}–
-            {m.corpus.date_to.slice(0, 4)} · embeddings: {m.embedding.backend}
+            {m.corpus.count.toLocaleString()} papers · {m.corpus.date_from.slice(0, 4)}–
+            {m.corpus.date_to.slice(0, 4)} · {m.embedding.backend}
           </span>
         </div>
         <SearchBox ds={dataset} />
+        <button
+          type="button"
+          className="mobile-filter-toggle"
+          aria-controls="filters-panel"
+          aria-expanded={filtersOpen}
+          onClick={() => setFiltersOpen((open) => !open)}
+        >
+          Filters
+        </button>
       </header>
 
-      <aside className="sidebar">
+      <aside
+        id="filters-panel"
+        className={`sidebar ${filtersOpen ? "open" : ""}`}
+        aria-label="Research filters"
+      >
         <div className="sidebar-head">
           <h3>Filters</h3>
-          {filtersActive && (
-            <button className="text-btn" onClick={clearFilters}>
-              clear
+          <div className="sidebar-actions">
+            {filtersActive && (
+              <button type="button" className="text-btn" onClick={clearFilters}>
+                Clear
+              </button>
+            )}
+            <button
+              type="button"
+              className="mobile-sidebar-close"
+              aria-label="Close filters"
+              onClick={() => setFiltersOpen(false)}
+            >
+              Close
             </button>
-          )}
+          </div>
         </div>
         <OrgFilterPanel ds={dataset} />
+        <TopicFilter ds={dataset} />
         <AuthorFilter ds={dataset} />
         <DateRangeSlider ds={dataset} />
         <Legend ds={dataset} />
-        <div className="hint subtle">
-          Scroll to zoom — labels sharpen from fields → topics → subtopics. Click a paper
-          for citations & related works.
-        </div>
       </aside>
 
       <DetailsPanel ds={dataset} />

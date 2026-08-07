@@ -120,15 +120,20 @@ def _build_papers(corpus: pl.DataFrame) -> pa.Table:
     }, schema=S.PAPERS_SCHEMA)
 
 
-def _build_papers_index(corpus: pl.DataFrame) -> pa.Table:
+def _build_papers_index(corpus: pl.DataFrame, figure_nodes: set[int]) -> pa.Table:
     """Resident search/list index: the fields every all-N consumer needs (search, list
-    rows, sorting, the author filter). Ships whole; heavier fields go to lazy detail."""
+    rows, sorting, the author filter). Ships whole; heavier fields go to lazy detail.
+
+    ``has_figure`` marks the papers s13 baked a first-figure crop for, so the frontend
+    fetches a crop only when one exists (no 404 probing)."""
+    node_ids = corpus["node_id"].to_list()
     return pa.table({
-        "node_id": pa.array(corpus["node_id"].to_list(), pa.int32()),
+        "node_id": pa.array(node_ids, pa.int32()),
         "title": pa.array(corpus["title"].to_list(), pa.string()),
         "author_ids": pa.array(_local_author_ids(corpus), pa.list_(pa.int32())),
         "cited_by_count": pa.array(corpus["cited_by_count"].to_list(), pa.int32()),
         "year": pa.array(corpus["year"].to_list(), pa.int16()),
+        "has_figure": pa.array([nid in figure_nodes for nid in node_ids], pa.bool_()),
     }, schema=S.PAPERS_INDEX_SCHEMA)
 
 
@@ -251,10 +256,16 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     write_arrow(points, WEB_DATA_DIR / S.POINTS)
     point_tiles = _emit_point_tiles(points, reveal_levels)
 
+    # First-figure crops baked by s13 (optional). The index tells the resident papers index
+    # which papers have a crop; the crop PNGs themselves are served on demand and are NOT
+    # tracked per-file in the manifest (there can be hundreds of thousands).
+    figures_index = INTERIM_DIR / "figures_index.json"
+    figure_nodes = set(read_json(figures_index)["node_ids"]) if figures_index.exists() else set()
+
     # Papers: resident search/list index (whole) + per-node detail (sharded, on demand).
     # The legacy whole papers.arrow is still written for reference / fallback.
     write_arrow(_build_papers(corpus), WEB_DATA_DIR / S.PAPERS)
-    write_arrow(_build_papers_index(corpus), WEB_DATA_DIR / S.PAPERS_INDEX)
+    write_arrow(_build_papers_index(corpus, figure_nodes), WEB_DATA_DIR / S.PAPERS_INDEX)
     paper_shards, paper_shard_size = _emit_paper_detail_shards(_build_paper_detail(corpus))
 
     # Neighbors are sharded for on-demand related-works loading (not shipped whole).
@@ -314,6 +325,7 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
         n_neighbor_shards=len(neighbor_shards),
         paper_shard_size=paper_shard_size,
         n_paper_shards=len(paper_shards),
+        figures=(S.FiguresMeta(count=len(figure_nodes)) if figure_nodes else None),
         palette={"background": cfg.palette.background},
     )
     write_json(manifest, WEB_DATA_DIR / S.MANIFEST)

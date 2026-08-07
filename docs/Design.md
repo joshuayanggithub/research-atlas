@@ -80,12 +80,20 @@ artifacts. This also makes hosting trivial (static files / CDN) and the UI fast.
 - **Semantic Scholar** supplies **precomputed SPECTER2 embeddings** (768-dim) via
   `/paper/batch` — so we don't run an embedding model for covered papers. Join is by
   DOI/arXiv id.
+- **arXiv-preferred dates.** OpenAlex occasionally reports a wildly wrong `publication_date`
+  for a re-registered/oddly-DOI'd work ("Attention Is All You Need" comes back as 2025). When
+  a paper has an arXiv id, `s02` overrides the date with the month the id encodes (`YYMM` in
+  `2010.11929` → Oct 2020), which is authoritative for a preprint — keeping OpenAlex's precise
+  day only when year+month already agree. Papers without an arXiv id keep OpenAlex verbatim, so
+  this only reaches the ~14% of the corpus with resolved arXiv ids (see the arXiv-id backfill
+  in `TODO.md`). Citations, cross-linking, and institution resolution still come from OpenAlex
+  — arXiv's API carries no reference edges, so it augments the spine, it doesn't replace it.
 - **CSRankings** is a useful, optional academic-directory and venue-taxonomy provider. Its
   data is CC BY-NC-ND (NonCommercial + NoDerivatives; the underlying DBLP layer is separately
   ODC-BY), so transformed data remains disabled in redistributable builds unless permission
   or compatible legal guidance is obtained. Its faculty→institution map is manually curated,
   not an automated affiliation matcher we could reuse. (Verified against the CSRankings
-  README; see `docs/RESEARCH_PRIOR_WORK.md`.)
+  README; see `RESEARCH_PRIOR_WORK.md`.)
 
 ### 2. Organizations: two-level drill-down from affiliation evidence
 
@@ -104,7 +112,7 @@ matches those strings into evidence-backed sub-units, which `s10` emits as a two
 hierarchy in `orgs.json` (root org → department/lab, each with rollup and direct counts).
 
 The matcher is deliberately conservative, matching the confidence-95 "exact unit name in
-the paper's raw affiliation" tier of `docs/ORGANIZATION_DIRECTORY.md`:
+the paper's raw affiliation" tier of `ORGANIZATION_DIRECTORY.md`:
 
 - Descriptive names ("Robotics Institute") match case-insensitively; short ambiguous
   acronyms ("FAIR", "SAIL", "EECS") match **only** as standalone uppercase tokens, so
@@ -124,7 +132,7 @@ identity). Verified prior work supports the design: **ROR/OpenAlex deliberately 
 departments** (only ~0.06% of ROR records are university-child departments), so the curated
 `units.py` matcher is state-of-practice for sub-institution granularity, not a stopgap —
 while institution-level attribution *is* fully automatable (OpenAlex/ROR/AffRo). See
-`docs/RESEARCH_PRIOR_WORK.md` §2. Supporting *arbitrary* organizations still requires decoupling corpus discovery
+`RESEARCH_PRIOR_WORK.md` §2. Supporting *arbitrary* organizations still requires decoupling corpus discovery
 (field/date based) from an independently versioned, many-to-many membership index. The
 previous `Meta AI (FAIR)` seed was specifically incorrect: its two OpenAlex IDs are broad
 Meta entities, so the config now names that aggregate `Meta`, and FAIR is a narrower
@@ -134,7 +142,7 @@ The full target — a provider-neutral directory with stable local identities, a
 temporal organization DAG, aliases, researchers, dated affiliations, direct attributions,
 and derived rollups — plus the CSRankings adapter, evidence policy, artifact-v2 contract,
 and phased migration, is specified in
-[`docs/ORGANIZATION_DIRECTORY.md`](docs/ORGANIZATION_DIRECTORY.md). This work implements
+[`ORGANIZATION_DIRECTORY.md`](ORGANIZATION_DIRECTORY.md). This work implements
 its Phase 1 (retain evidence) and a conservative slice of Phase 2/5 (curated child units +
 a hierarchical filter UI) without yet emitting the v2 artifact schema.
 
@@ -227,7 +235,7 @@ internally disconnected — up to 25% badly connected and 16% disconnected in th
 Louvain to Leiden" analysis (Traag, Waltman & van Eck, 2019) — and that worsens under
 recursive per-parent splitting. The prior fused-graph methods remain selectable for
 comparison (`hierarchy.method: "leiden" | "louvain" | "kmeans" | "quadtree"`). See
-`docs/RESEARCH_PRIOR_WORK.md` §1.4 for the evidence.
+`RESEARCH_PRIOR_WORK.md` §1.4 for the evidence.
 
 Child memberships are strict subsets of their parents, and a split's children exactly
 partition that parent. The current build has **11 bands and ~24,600 regions** (see §5's
@@ -321,6 +329,22 @@ overlay is capped. A separate **Paper** tab embeds the first page from arXiv laz
 the corpus lacks an arXiv ID, it tries an exact Semantic Scholar DOI/title resolution and
 provides explicit fallback links.
 
+**First figure (offline extraction + client fallback).** The details card shows the paper's
+Figure 1 / Table 1. Following Semantic Scholar's PDFFigures 2.0 (a *layout-structure* method,
+not vision-on-pixels), a pipeline stage (`s13_figures`, `common/figure_extract.py`) does this
+**offline** with PyMuPDF: anchor on the text-layer "Figure 1:" / "Table 1:" caption, then take
+the graphical box directly above it — `find_tables()` (tables/gridded), `cluster_drawings()`
+(vector figures — most ML diagrams), or `get_image_info()` (raster) — scored by "large + close
+above the caption, in its column". Borderless tables (no rules, invisible to `find_tables`)
+fall back to the contiguous text block above the caption. The crop renders to a PNG, sharded
+by node id (`figures/<node//4096>/<node>.png`); `s11` sets a `has_figure` flag on the resident
+papers index and a `figures` manifest block. The frontend (`FirstFigure.tsx`) serves the baked
+PNG **instantly, no PDF parse**, and only when `has_figure` is false falls back to the prior
+**client-side pdf.js** extractor (`figureExtract.ts`, caption anchor + ink-bounds on the
+CORS-open arXiv PDF). Baking is off by default (`figures.enabled`) because it downloads a PDF
+per paper under arXiv's 1-req/3s cap — a multi-hour polite batch — so a bundle can ship with
+the fallback only. PyMuPDF is AGPL-3.0, used offline to emit images (see DESIGN_DECISIONS D11).
+
 **Point level-of-detail.** At the fit (home) zoom, 71k points overlap into a solid mass
 (~90% sit within 2px of a neighbor while a dot is 2px wide). Because the home view
 auto-fits the layout to the viewport, spreading the layout apart cannot help — `fitZoom`
@@ -400,7 +424,7 @@ changing the semantics behind it:
    typed parent/child relations, aliases, source identifiers, and temporal validity. Store
    authorship-backed paper-to-org memberships separately with provenance and confidence.
    Resolve departments/labs from raw affiliation strings, official rosters, and curated
-   overrides. See [`docs/ORGANIZATION_DIRECTORY.md`](docs/ORGANIZATION_DIRECTORY.md).
+   overrides. See [`ORGANIZATION_DIRECTORY.md`](ORGANIZATION_DIRECTORY.md).
 3. **One embedding space at complete coverage.** Run the same local SPECTER2 model for
    papers missing precomputed vectors, or embed the entire corpus locally. Never blend
    unrelated embedding spaces in one map.

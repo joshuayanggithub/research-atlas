@@ -1,4 +1,10 @@
-from pipeline.stages.s02_build_corpus import _arxiv_from_ids, _clean_doi, _parse_work
+from pipeline.stages.s02_build_corpus import (
+    _arxiv_from_ids,
+    _arxiv_yyyymm,
+    _clean_doi,
+    _parse_work,
+    _prefer_arxiv_date,
+)
 
 
 def test_clean_doi_keeps_full_path():
@@ -18,6 +24,27 @@ def test_arxiv_extraction():
     assert _arxiv_from_ids({"doi": "https://doi.org/10.48550/arXiv.2203.15556"}) == "2203.15556"
     assert _arxiv_from_ids({"doi": "https://doi.org/10.1145/3641289"}) is None
     assert _arxiv_from_ids({}) is None
+
+
+def test_arxiv_yyyymm_parses_modern_and_old_ids():
+    assert _arxiv_yyyymm("2010.11929") == (2020, 10)   # ViT
+    assert _arxiv_yyyymm("1706.03762") == (2017, 6)     # Attention
+    assert _arxiv_yyyymm("cs/0611005") == (2006, 11)    # old archive/YYMMNNN form
+    assert _arxiv_yyyymm("9108.0001") == (1991, 8)      # arXiv's first month (YY>=91 -> 19YY)
+    assert _arxiv_yyyymm(None) is None
+    assert _arxiv_yyyymm("not-an-id") is None
+    assert _arxiv_yyyymm("2099.9999") is None           # month 99 invalid
+
+
+def test_prefer_arxiv_date_corrects_wrong_openalex_date():
+    # OpenAlex's mangled date (the "Attention shows 2025" class of bug) is overridden by the
+    # arXiv id's true month when the paper is on arXiv.
+    assert _prefer_arxiv_date("2010.11929", "2025-08-23", 2025) == ("2020-10-01", 2020)
+    # When OpenAlex already agrees on year+month, keep its precise day.
+    assert _prefer_arxiv_date("2010.11929", "2020-10-22", 2020) == ("2020-10-22", 2020)
+    # No arXiv id (or unparseable): OpenAlex is kept verbatim.
+    assert _prefer_arxiv_date(None, "2025-08-23", 2025) == ("2025-08-23", 2025)
+    assert _prefer_arxiv_date("garbage", "2019-03-04", 2019) == ("2019-03-04", 2019)
 
 
 def _work(authorships):

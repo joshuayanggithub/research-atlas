@@ -49,6 +49,17 @@ def neighbors_shard(shard: int) -> str:
 # Resident papers search/list index (title + author_ids + cited_by_count + year, all N).
 PAPERS_INDEX = "papers-index.arrow"
 
+# Baked "first figure" crops (s13): one PNG per paper that has a locatable Figure 1/Table 1,
+# extracted offline with PyMuPDF and served on demand. Sharded by node-id block into subdirs
+# so no single directory holds the whole corpus. The resident papers index carries a
+# `has_figure` flag, so the frontend fetches a crop only when one exists (no 404 probing).
+FIGURE_SHARD_SIZE = 4096
+FIGURES_DIR = "figures"
+
+
+def figure_path(node_id: int) -> str:
+    return f"{FIGURES_DIR}/{node_id // FIGURE_SHARD_SIZE}/{node_id}.png"
+
 # Lazy per-node paper detail, sharded by fixed node-id block (same scheme as neighbors):
 # shard = node_id // PAPER_SHARD_SIZE, fetched only for the selected paper.
 PAPER_SHARD_SIZE = 4096
@@ -105,6 +116,9 @@ PAPERS_INDEX_SCHEMA = pa.schema([
     ("author_ids", pa.list_(pa.int32())),  # for the author filter (resident until phase C)
     ("cited_by_count", pa.int32()),
     ("year", pa.int16()),
+    # True when s13 baked a first-figure crop for this paper (figure_path(node_id) exists).
+    # Lets the frontend fetch the crop only when present; absent/false ⇒ client-side fallback.
+    ("has_figure", pa.bool_()),
 ])
 
 # Lazy per-node detail, sharded by node-id block like neighbors. Fetched on selection.
@@ -299,4 +313,14 @@ class Manifest(BaseModel):
     # from shard (node_id // size) on demand.
     paper_shard_size: int = 0
     n_paper_shards: int = 0
+    # First-figure crops (s13). Present only when the figure stage ran. `count` papers have a
+    # baked crop under `dir`/<node_id // shard_size>/<node_id>.png; the resident papers index
+    # `has_figure` flag says which. Absent/empty ⇒ frontend uses the client-side pdf.js path.
+    figures: Optional["FiguresMeta"] = None
     palette: dict
+
+
+class FiguresMeta(BaseModel):
+    dir: str = FIGURES_DIR
+    shard_size: int = FIGURE_SHARD_SIZE
+    count: int = 0  # number of papers with a baked crop

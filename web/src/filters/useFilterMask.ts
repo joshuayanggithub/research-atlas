@@ -19,9 +19,15 @@ export interface FilterArrays {
   anyOrgAuthorActive: boolean;
 }
 
-// Precompute node -> org index once per dataset (independent of selection).
+// Precompute node -> ROOT-org index once per dataset (independent of selection). Only root
+// orgs get a color hue; sub-units inherit their parent's color, so color-by-org stays
+// readable regardless of how deep the user drills.
 function buildOrgOfNode(ds: Dataset): { orgOfNode: Int32Array; orgKeysAll: string[] } {
-  const orgKeysAll = Object.keys(ds.orgs.institutions);
+  // Color-by-org uses only the curated seed roots — the 2k+ directory institutions are
+  // filter-only and would exhaust the hue palette / overlap heavily.
+  const orgKeysAll = Object.keys(ds.orgs.institutions).filter(
+    (k) => ds.orgs.institutions[k].parent === null && ds.orgs.institutions[k].curated,
+  );
   const orgOfNode = new Int32Array(ds.points.count).fill(-1);
   orgKeysAll.forEach((key, idx) => {
     for (const nid of ds.orgs.institutions[key].node_ids) {
@@ -48,9 +54,11 @@ export function useFilterMask(
 
     const orgActive = filters.orgKeys.length > 0;
     const authorActive = filters.authorIds.length > 0;
+    const subfieldActive = filters.subfieldIds.length > 0;
+    const topicActive = filters.topicIds.length > 0;
     const matchValue = new Float32Array(n).fill(1);
 
-    if (orgActive || authorActive) {
+    if (orgActive || authorActive || subfieldActive || topicActive) {
       // Build the set of nodes that match orgs (union) and authors (union); a node
       // passes if it matches every ACTIVE facet (org AND author), matching the store's
       // AND-across-facets semantics.
@@ -80,10 +88,18 @@ export function useFilterMask(
         }
       }
 
+      // CS-topic facet: a node passes if its subfield ∈ selected subfields (when any) AND its
+      // topic ∈ selected topics (when any). Read straight off the point columns — no scan.
+      const wantSub = subfieldActive ? new Set(filters.subfieldIds) : null;
+      const wantTopic = topicActive ? new Set(filters.topicIds) : null;
+      const { subfieldId, topicId } = ds.points;
+
       for (let i = 0; i < n; i++) {
         const passOrg = !orgMask || orgMask[i] === 1;
         const passAuthor = !authorMask || authorMask[i] === 1;
-        matchValue[i] = passOrg && passAuthor ? 1 : 0;
+        const passSub = !wantSub || wantSub.has(subfieldId[i]);
+        const passTopic = !wantTopic || wantTopic.has(topicId[i]);
+        matchValue[i] = passOrg && passAuthor && passSub && passTopic ? 1 : 0;
       }
     }
 
@@ -91,7 +107,7 @@ export function useFilterMask(
       orgOfNode,
       orgKeysAll,
       matchValue,
-      anyOrgAuthorActive: orgActive || authorActive,
+      anyOrgAuthorActive: orgActive || authorActive || subfieldActive || topicActive,
     };
-  }, [ds, orgIndex, filters.orgKeys, filters.authorIds]);
+  }, [ds, orgIndex, filters.orgKeys, filters.authorIds, filters.subfieldIds, filters.topicIds]);
 }

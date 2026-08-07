@@ -34,6 +34,7 @@ STAGES: list[tuple[str, str]] = [
     ("s06", "pipeline.stages.s06_hierarchy"),
     ("s07", "pipeline.stages.s07_label"),
     ("s10", "pipeline.stages.s10_indexes"),
+    ("s13", "pipeline.stages.s13_figures"),
     ("s11", "pipeline.stages.s11_emit"),
 ]
 
