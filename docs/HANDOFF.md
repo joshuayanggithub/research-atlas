@@ -9,7 +9,7 @@ design, and `ROADMAP.md` for what to build next.
 
 ## TL;DR
 
-An interactive 2D "map of CS/AI research": ~28k papers as points, semantically similar
+An interactive 2D "map of CS/AI research": ~17k papers as points, semantically similar
 papers near each other, Google-Maps-style semantic zoom (fields → topics → subtopics),
 plus a drill-down organization filter (org → dept/lab → researchers), author and
 month-granularity date filters (with a publication histogram + presets), default-visible
@@ -62,7 +62,7 @@ cd web && npm install
 ```bash
 cd web && npm run dev        # http://localhost:5173
 ```
-You should see ~71,831 colored points filling the viewport, semantic-zoom labels, and a
+You should see **16,714** colored points filling the viewport, semantic-zoom labels, and a
 Filters sidebar. If you instead see "Failed to load data", the bundle is missing → rebuild.
 
 **Verified working** (headless browser, screenshots): map render, semantic zoom
@@ -97,14 +97,54 @@ s09 edges → s08 neighbors → s06 hierarchy → s07 label → s10 indexes → 
 
 | | |
 |---|---|
-| Corpus | **71,831** CS papers (OpenAlex field 17), 2015–2026 |
-| Orgs | **12 curated roots** (Google, Google DeepMind, Amazon, OpenAI, NVIDIA, Allen Institute for AI, Meta, Microsoft Research, UC Berkeley, CMU, Stanford, MIT) + **30 evidence-backed dept/lab sub-units** (CMU→Robotics Institute/LTI/MLD; Meta→FAIR/Reality Labs/Meta AI; MIT→CSAIL/RLE) + **~3,575 non-curated corpus institutions** (`curated:false`, ≥3 papers) so *any* university/company is searchable+filterable. `orgs.json` (~2.1 MB) is a 2-level hierarchy (`parent`/`children`, rollup + direct counts, `curated` flag). Curated roots drive the browse tree + color-by-org; directory entries are search+filter only. |
-| Embeddings | **SPECTER2** (768-d) from Semantic Scholar, addressed by arXiv→DOI→MAG (MAG pass recovers papers whose OpenAlex DOI S2 can't resolve, e.g. "Attention Is All You Need"); `on_uncovered: drop` keeps only papers with a real vector (89,140 fetched → 80.6% covered → **71,831 kept**) for one clean space |
+| Corpus | **16,714** retained CS papers (OpenAlex field 17), 2023–2026, scoped to the 12 curated organizations. This is the local ignored bundle built 2026-08-13; it is newer than the checked-in `config.yaml`. |
+| Orgs | **12 curated roots** (Google, Google DeepMind, Amazon, OpenAI, NVIDIA, Allen Institute for AI, Meta, Microsoft Research, UC Berkeley, CMU, Stanford, MIT) + **30 evidence-backed dept/lab sub-units** + **1,812 non-curated corpus institutions** (`curated:false`) so other universities/companies are searchable and filterable. `orgs.json` is ~0.8 MB. |
+| Embeddings | **SPECTER2** (768-d) from Semantic Scholar, addressed by arXiv→DOI→MAG. `on_uncovered: drop` retained **16,714 of 25,930 fetched papers (64.5%)**. The missing 35.5% is the immediate reason to add local SPECTER2 inference. |
 | Layout | openTSNE 768→2D; reducer and map normalization frozen in `projector.pkl` |
-| Clusters | UMAP→10D + HDBSCAN (235 clusters) — used for `cluster_leaf` |
-| Semantic zoom | **nested Leiden communities on the planar substrate** (2D-layout kNN adjacency, 768-D cosine weights) so each region is one contiguous area of the map: **11 bands, ~24,600 regions**; resolution bisected to the target child count. Deepest band resolves ~3-paper micro-clusters. (Prior fused-graph `leiden`/`louvain` and 2D `kmeans`/`quadtree` stay selectable via `hierarchy.method`. See Design.md §5 + `RESEARCH_PRIOR_WORK.md` §1.4.) |
-| Labels | discriminative OpenAlex topics + representative title/abstract c-TF-IDF phrases (MathML stripped structurally), ancestor/sibling-deduped; **small leaf communities named from their shared title n-gram** (~11,700 labels) |
-| Bundle | 9 files, ~51 MB uncompressed Arrow/JSON in `web/public/data/` |
+| Clusters | UMAP→10D + HDBSCAN (**63** `cluster_leaf` values) |
+| Semantic zoom | **Nested Leiden communities on the planar substrate** (2D-layout kNN adjacency, 768-D cosine weights): **11 bands and 5,776 labeled regions**. |
+| Labels | Discriminative OpenAlex topics + representative title/abstract c-TF-IDF phrases, with ancestor/sibling deduplication and shared title n-grams for small leaf communities. |
+| Bundle | 33 manifest files, ~13 MB total in `web/public/data/` (sharded points, neighbors and paper detail) |
+
+---
+
+## 2026-08-13 continuation checkpoint: recent arXiv at scale
+
+The product direction discussed immediately before this handoff is to make recent arXiv
+coverage nearly exhaustive, rather than sample papers across 2015–2026. No implementation
+for this direction has been committed yet; the checked-in `config.yaml` still describes the
+older 2015–2026 field build, while the ignored local bundle described above is a temporary
+2023–2026 organization-scoped build.
+
+Counts measured for sizing (category union means `cs.* OR stat.ML`):
+
+- 2025: **284,162** total arXiv papers; **144,645** in the CS/ML union.
+- 2026 through 2026-08-13: **210,772** total; **111,954** in the CS/ML union.
+- A simple full-year projection puts 2025+2026 at roughly **326k CS/ML papers** or
+  **626k papers across all arXiv categories**. Treat the 2026 full-year values as planning
+  estimates, not observed counts.
+
+The workstation available for the next build has a local **RTX 3090 (24 GB)**. The intended
+embedding path is `arXiv title + abstract -> local SPECTER2 -> normalized 768-D float32`.
+SPECTER2 is free to run locally; no paid embedding API or PDF download is needed. Raw vector
+storage is about 1.0 GB for 326k papers and 1.9 GB for 626k. Expected 3090 inference time is
+roughly 3–8 hours for 326k or 6–16 hours for 626k, but benchmark a representative batch
+before scheduling the complete run.
+
+Recommended next implementation:
+
+1. Add a true `specter2_local` backend using the same model and proximity adapter as the
+   Semantic Scholar `specter_v2` vectors; expose batch size/device/precision in config.
+2. Run an overlap compatibility test against Semantic Scholar vectors. If they are not
+   numerically compatible, embed the entire selected corpus locally rather than mixing
+   spaces.
+3. Add an arXiv-first metadata ingestion path with resumable checkpoints and polite bulk/API
+   access. Keep title, abstract, authors, categories, versions and dates; PDFs are optional
+   and should not be fetched for embedding.
+4. Decide the first production scope. **2025+2026 CS/ML** is the recommended first complete
+   build; all-category arXiv can follow after measuring layout, indexing and browser limits.
+5. Do not overwrite the currently served ignored bundle until the new pipeline completes and
+   its artifact contract, desktop/mobile browser behavior and console are verified.
 
 ---
 
@@ -177,7 +217,8 @@ pipeline.run_all --only s10,s11` — no re-embed/re-project.
 - Visual (still required for UI changes per `AGENTS.md`): `cd web && npm run dev`, then
   drive it via the Playwright MCP — navigate, screenshot at a desktop and a mobile
   viewport, exercise the changed workflow, and check the browser console for errors (a
-  favicon 404 is the only expected one).
+  favicon 404 is the only expected one). The project-scoped MCP server is configured in
+  `.codex/config.toml`; trust the project and restart Codex after cloning so it is loaded.
 - After a pipeline change, re-run the affected stages and eyeball
   `web/public/data/labels.json` / `orgs.json` / `manifest.json`.
 

@@ -73,12 +73,37 @@ test.describe("Research Visualizer", () => {
   test("hovering a point shows a preview tooltip", async ({ page }) => {
     await page.goto("/");
     await waitForMap(page);
-    // Sweep a few dense spots until the hover card appears (points are small).
+    // Derive hover candidates from colored framebuffer pixels instead of assuming a
+    // particular map layout. A rebuilt projection can move every dense region while still
+    // being perfectly valid, which made the old four hard-coded coordinates brittle.
     const canvas = page.locator("canvas").first();
     const box = (await canvas.boundingBox())!;
-    for (const [fx, fy] of [[0.55, 0.4], [0.5, 0.35], [0.6, 0.45], [0.52, 0.5]]) {
+    const candidates = await canvas.evaluate((src: HTMLCanvasElement) => {
+      const off = document.createElement("canvas");
+      off.width = src.width;
+      off.height = src.height;
+      const ctx = off.getContext("2d");
+      if (!ctx) return [];
+      ctx.drawImage(src, 0, 0);
+      const { data } = ctx.getImageData(0, 0, off.width, off.height);
+      const points: [number, number][] = [];
+      // Saturated pixels overwhelmingly belong to colored paper markers, rather than the
+      // gray labels/edges. Sampling every fourth device pixel keeps the sweep inexpensive.
+      for (let y = 2; y < off.height - 2; y += 4) {
+        for (let x = 2; x < off.width - 2; x += 4) {
+          const i = (y * off.width + x) * 4;
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          if (Math.max(r, g, b) - Math.min(r, g, b) > 35 && Math.max(r, g, b) > 70) {
+            points.push([x / off.width, y / off.height]);
+          }
+        }
+      }
+      return points.slice(0, 400);
+    });
+    expect(candidates.length).toBeGreaterThan(0);
+    for (const [fx, fy] of candidates) {
       await page.mouse.move(box.x + box.width * fx, box.y + box.height * fy);
-      await page.waitForTimeout(200);
+      await page.waitForTimeout(20);
       if (await page.locator(".node-tooltip").count()) break;
     }
     await expect(page.locator(".node-tooltip")).toBeVisible();
@@ -160,14 +185,16 @@ test.describe("Date filter", () => {
     // survives a corpus rebuild. Wait for the count to render before reading it.
     const dateCount = page.locator(".date-count");
     await expect(dateCount).toHaveText(/[1-9][\d,]* papers in range/);
-    const full = parseInt((await dateCount.innerText()).replace(/[^0-9]/g, ""));
+    // textContent is stable during the mobile filter drawer's open/close transition;
+    // innerText can briefly be empty while the element is not being laid out.
+    const full = parseInt(((await dateCount.textContent()) ?? "").replace(/[^0-9]/g, ""));
     expect(full).toBeGreaterThan(0);
 
     await page.getByRole("button", { name: "Last 24mo" }).click();
     await expect(page.getByRole("heading", { name: /Dates Jan 2025/ })).toBeVisible();
     // Range shrinks below the full corpus.
     await expect(dateCount).toHaveText(/[1-9][\d,]* papers in range/);
-    const n = parseInt((await dateCount.innerText()).replace(/[^0-9]/g, ""));
+    const n = parseInt(((await dateCount.textContent()) ?? "").replace(/[^0-9]/g, ""));
     expect(n).toBeGreaterThan(0);
     expect(n).toBeLessThan(full);
   });

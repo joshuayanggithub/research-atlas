@@ -27,7 +27,6 @@ import polars as pl
 
 from pipeline.common import log
 from pipeline.common import schema as S
-from pipeline.common.figure_extract import find_first_figure, render_crop
 from pipeline.config import (
     CACHE_DIR, CORPUS_ACTIVE, INTERIM_DIR, WEB_DATA_DIR, Config, ensure_dirs, load_config,
 )
@@ -73,6 +72,11 @@ def run(cfg: Config | None = None) -> str:
         if not OUT_INDEX.exists():
             OUT_INDEX.write_text(json.dumps({"node_ids": []}))
         return str(OUT_INDEX)
+
+    # PyMuPDF is an optional, AGPL-licensed dependency used only for the offline figure
+    # bake. Keep the import behind the feature flag so a normal bundle build does not
+    # require it when the browser-side PDF fallback is being used.
+    from pipeline.common.figure_extract import find_first_figure, render_crop
 
     corpus = pl.read_parquet(CORPUS_ACTIVE)
     # Papers with an arXiv id, most-cited first (bake the high-value figures first so a
