@@ -7,6 +7,7 @@ import { AuthorFilter } from "./filters/AuthorFilter";
 import { TopicFilter } from "./filters/TopicFilter";
 import { DateRangeSlider } from "./filters/DateRangeSlider";
 import { DetailsPanel } from "./panels/DetailsPanel";
+import { AuthorPanel } from "./panels/AuthorPanel";
 import { Legend } from "./panels/Legend";
 import { SearchBox } from "./panels/SearchBox";
 
@@ -132,6 +133,7 @@ export default function App() {
       </aside>
 
       <DetailsPanel ds={dataset} />
+      <AuthorPanel ds={dataset} />
     </div>
   );
 }

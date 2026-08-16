@@ -16,7 +16,7 @@ import type {
 } from "./types";
 
 const BASE = "data";
-const SUPPORTED_SCHEMA_VERSION = 1;
+const SUPPORTED_SCHEMA_VERSION = 3;
 let datasetPromise: Promise<Dataset> | null = null;
 
 async function fetchArrow(name: string): Promise<Table> {
@@ -61,6 +61,9 @@ function unpackPoints(table: Table): PointData {
 
 function unpackPapersIndex(table: Table): PaperMeta[] {
   const out: PaperMeta[] = new Array(table.numRows);
+  // Older bundles predate row-level availability. Preserve their global behavior while a
+  // newly emitted S2 bundle can correctly distinguish "0" from an unmatched paper.
+  const hasCitationAvailability = Boolean(table.getChild("citation_count_available"));
   for (let i = 0; i < table.numRows; i++) {
     const row = table.get(i)!;
     const year = row.year ?? 0;
@@ -68,6 +71,9 @@ function unpackPapersIndex(table: Table): PaperMeta[] {
     out[row.node_id] = {
       title: row.title,
       citedByCount: row.cited_by_count,
+      citationCountAvailable: hasCitationAvailability
+        ? Boolean(row.citation_count_available)
+        : true,
       authorIds: row.author_ids ? Array.from(row.author_ids) : [],
       publicationDate: year ? String(year) : "",
       hasFigure: row.has_figure ?? false,
@@ -80,7 +86,12 @@ function unpackAuthors(table: Table): AuthorRow[] {
   const out: AuthorRow[] = new Array(table.numRows);
   for (let i = 0; i < table.numRows; i++) {
     const row = table.get(i)!;
-    out[i] = { authorId: row.author_id, name: row.name, count: row.count };
+    out[i] = {
+      authorId: row.author_id,
+      openalexId: row.openalex_id,
+      name: row.name,
+      count: row.count,
+    };
   }
   return out;
 }

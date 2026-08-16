@@ -47,6 +47,7 @@ export interface LabelsDoc {
 
 export interface Institution {
   openalex_id: string;
+  organization_id: string | null; // canonical ROR or curated local: identity
   display_name: string;
   ror: string | null;
   type: string;
@@ -60,6 +61,7 @@ export interface Institution {
   children: string[]; // child unit keys
   direct_count: number; // size of this unit's own evidence set (node_ids list not shipped)
   curated: boolean; // curated seed org/unit (drives tree + color) vs. directory-only entry
+  membership_methods: string[]; // empty = OpenAlex affiliation; otherwise roster provenance
 }
 
 export interface OrgsDoc {
@@ -93,6 +95,12 @@ export interface Manifest {
     date_to: string;
     field: string;
     orgs: string[];
+    // Missing/null means the bundle has no provider-backed citation value. Do not render
+    // the numeric compatibility column (zero) as a factual count in that case.
+    citation_count_source?: string | null;
+    citation_graph_source?: string | null;
+    metadata_enrichment_source?: string | null;
+    metadata_enrichment_coverage?: number | null;
   };
   embedding: { backend: string; model: string; dim: number };
   projector: Record<string, unknown>;
@@ -145,6 +153,8 @@ export interface PointData {
 export interface PaperMeta {
   title: string;
   citedByCount: number;
+  // A zero count is meaningful only when the upstream citation provider matched this paper.
+  citationCountAvailable: boolean;
   authorIds: number[];
   // Publication YEAR only (from points/index). Full ISO date is in PaperDetail. Kept as a
   // string ("2017" / "") so existing `.publicationDate.slice(0,4)` call sites still work.
@@ -166,6 +176,7 @@ export interface PaperDetail {
 
 export interface AuthorRow {
   authorId: number;
+  openalexId: string;
   name: string;
   count: number;
 }

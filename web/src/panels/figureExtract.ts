@@ -25,10 +25,14 @@ export interface FigureCrop {
   label: string; // "Figure 1" | "Table 1"
 }
 
-// "Figure 1:" / "Fig. 1" / "Table 1." / chapter-numbered "Figure 1.1:" — a separator must
-// follow so "Figure 10" / "Figure 2.x" don't match. Anchored so a mid-sentence "see Table 1"
-// (inside an item starting with other words) doesn't match.
-const CAPTION_RE = /^(figure|fig\.?|table)\s*1(\.\d+)?\s*([.:]\s|\s|$)/i;
+// Figures sometimes omit punctuation, but tables require ':' or '.' so a prose line like
+// "Table 1 reports our results" cannot win over the actual caption below it. The terminal
+// punctuation may also be the LAST character of the pdf.js text run (e.g. a caption item
+// that is literally "Fig. 1." with the descriptive text in a separate run) — [.:] alone is
+// not itself a valid end, so allow it to be followed by whitespace OR the end of the string.
+// Tables also commonly use Roman numerals ("TABLE I", "TABLE II", IEEE-style) instead of
+// Arabic; figures in this corpus have not been observed to, so only tables get that alternative.
+const CAPTION_RE = /^(?:(figure|fig\.?)\s*1(?:\.\d+)?\s*(?:[.:](?:\s|$)|\s|$)|(table)\s*(?:1(?:\.\d+)?|I)\s*(?:[.:](?:\s|$)|$))/i;
 
 interface TextItem {
   str: string;
@@ -41,6 +45,7 @@ interface Caption {
   x: number; // baseline left
   y: number; // baseline (user space, y-up)
   width: number;
+  height: number;
   isTable: boolean;
 }
 
@@ -69,7 +74,13 @@ function findCaptions(items: TextItem[]): { figure: Caption | null; table: Capti
   for (const it of items) {
     const s = (it.str || "").trim();
     if (!s || !CAPTION_RE.test(s)) continue;
-    const cap: Caption = { x: it.transform[4], y: it.transform[5], width: it.width || 300, isTable: /^table/i.test(s) };
+    const cap: Caption = {
+      x: it.transform[4],
+      y: it.transform[5],
+      width: it.width || 300,
+      height: it.height || 9,
+      isTable: /^table/i.test(s),
+    };
     if (cap.isTable) { if (!table) table = cap; }
     else if (!figure) figure = cap;
   }
@@ -110,9 +121,22 @@ async function graphicBoxes(page: any, OPS: any): Promise<Box[]> {
   return out;
 }
 
+// A page densely packed with a multi-panel composite figure (e.g. "Fig. 1A-F", six separate
+// diagrams whose strokes/arrows transitively touch each other and, sometimes, unrelated
+// nearby content) can otherwise chain EVERY box on the page into one cluster spanning nearly
+// the full page — which then fails pickBox's "must sit entirely above the caption" check
+// because the blob's bottom edge extends past the caption into unrelated lower content,
+// losing the figure entirely. Empirically (arXiv 2511.03078, a 6-panel robotics figure) that
+// bad merge reached ~60% of the page area. Cap merged-box area at half the page — comfortably
+// below that failure, generous enough that a genuinely large full-width/full-column figure
+// (the common case) still merges normally.
+const MAX_CLUSTER_AREA_FRACTION = 0.5;
+
 // Join boxes that touch/overlap (within `pad`) into clusters — turns a diagram's hundreds of
-// vector strokes into one figure box, like PyMuPDF's cluster_drawings.
-function clusterBoxes(boxes: Box[], pad = 6): Box[] {
+// vector strokes into one figure box, like PyMuPDF's cluster_drawings. `pageArea` bounds how
+// large a single cluster may grow (see above); pass Infinity to disable the cap.
+function clusterBoxes(boxes: Box[], pageArea: number, pad = 6): Box[] {
+  const maxArea = pageArea * MAX_CLUSTER_AREA_FRACTION;
   const out = boxes.map((b) => ({ ...b }));
   let merged = true;
   while (merged) {
@@ -122,8 +146,10 @@ function clusterBoxes(boxes: Box[], pad = 6): Box[] {
         const a = out[i];
         const b = out[j];
         if (a.x0 - pad <= b.x1 && b.x0 - pad <= a.x1 && a.y0 - pad <= b.y1 && b.y0 - pad <= a.y1) {
-          a.x0 = Math.min(a.x0, b.x0); a.y0 = Math.min(a.y0, b.y0);
-          a.x1 = Math.max(a.x1, b.x1); a.y1 = Math.max(a.y1, b.y1);
+          const x0 = Math.min(a.x0, b.x0), y0 = Math.min(a.y0, b.y0);
+          const x1 = Math.max(a.x1, b.x1), y1 = Math.max(a.y1, b.y1);
+          if ((x1 - x0) * (y1 - y0) > maxArea) continue; // would swallow unrelated content
+          a.x0 = x0; a.y0 = y0; a.x1 = x1; a.y1 = y1;
           if (b.kind === "image") a.kind = "image";
           out.splice(j, 1); merged = true; j--;
         }
@@ -133,24 +159,60 @@ function clusterBoxes(boxes: Box[], pad = 6): Box[] {
   return out;
 }
 
-// The graphic cluster directly ABOVE the caption, overlapping its column, largest+closest.
-function pickBox(boxes: Box[], cap: Caption): Box | null {
-  const colLo = cap.x - 30;
-  const colHi = cap.x + cap.width + 30;
-  let best: Box | null = null;
-  let bestScore = -Infinity;
-  for (const r of boxes) {
-    const w = r.x1 - r.x0;
-    const h = r.y1 - r.y0;
-    if (w < 40 || h < 20) continue;
-    if (r.y0 < cap.y - 4) continue; // must sit above the caption baseline (user space y-up)
-    const overlap = Math.min(r.x1, colHi) - Math.max(r.x0, colLo);
-    if (overlap <= 0) continue;
-    const gap = r.y0 - cap.y; // vertical distance caption → box bottom
-    const score = w * h - gap * 50; // big + close wins
-    if (score > bestScore) { bestScore = score; best = r; }
+// A multi-panel results figure (e.g. a grid of small per-benchmark bar charts) is often much
+// WIDER than its own caption text, which is short and centered — a column window derived from
+// the caption's width (as below) excludes the left/right panels entirely, leaving only the
+// narrow middle strip. Panels in a grid also don't touch each other (real whitespace gutters
+// between them), so they never cluster into one box either. So: use a generous, page-relative
+// column window instead of the caption's own width, then STITCH every qualifying box above the
+// caption into one union region — walking nearest-the-caption outward, allowing a wider
+// caption→first-row gap (there's often real padding under a figure) but a tighter row→row gap
+// afterward, stopping before absorbing the page header or prose above the figure. This mirrors
+// textBlockBelow's caption→header vs. row→row gap split, applied to graphic boxes instead of text.
+const CAPTION_TO_CONTENT_GAP = 70;
+const ROW_TO_ROW_GAP = 45;
+
+function pickFigureRegion(boxes: Box[], cap: Caption, pageWidth: number, pageArea: number): Box | null {
+  const colLo = Math.max(0, cap.x - pageWidth * 0.42);
+  const colHi = Math.min(pageWidth, cap.x + cap.width + pageWidth * 0.42);
+  const candidates = boxes
+    .filter((r) => {
+      const w = r.x1 - r.x0;
+      const h = r.y1 - r.y0;
+      if (w < 20 || h < 10) return false; // a grid's individual panels can be modest
+      if (r.y0 < cap.y - 4) return false; // must sit above the caption baseline (user space y-up)
+      const overlap = Math.min(r.x1, colHi) - Math.max(r.x0, colLo);
+      return overlap > 0;
+    })
+    .sort((a, b) => a.y0 - b.y0); // nearest-to-caption (smallest y0) first
+  if (!candidates.length) return null;
+
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  let prevTop = cap.y;
+  let first = true;
+  for (const r of candidates) {
+    const gapLimit = first ? CAPTION_TO_CONTENT_GAP : ROW_TO_ROW_GAP;
+    if (r.y0 - prevTop > gapLimit) break;
+    x0 = Math.min(x0, r.x0); y0 = Math.min(y0, r.y0);
+    x1 = Math.max(x1, r.x1); y1 = Math.max(y1, r.y1);
+    prevTop = Math.max(prevTop, r.y1);
+    first = false;
   }
-  return best;
+  if (x1 - x0 < 40 || y1 - y0 < 20) return null;
+
+  // Safety net: if the stitched union still grew implausibly large (loose thresholds chaining
+  // into unrelated content), fall back to the single best-scoring individual candidate instead
+  // of returning an obviously-wrong region.
+  if ((x1 - x0) * (y1 - y0) > pageArea * MAX_CLUSTER_AREA_FRACTION) {
+    let best: Box | null = null;
+    let bestScore = -Infinity;
+    for (const r of candidates) {
+      const score = (r.x1 - r.x0) * (r.y1 - r.y0) - (r.y0 - cap.y) * 50;
+      if (score > bestScore) { bestScore = score; best = r; }
+    }
+    return best;
+  }
+  return { x0, y0, x1, y1, kind: "path" };
 }
 
 // Borderless-table fallback: the contiguous block of TEXT lines directly above the caption
@@ -177,9 +239,70 @@ function textBlockAbove(items: TextItem[], cap: Caption): Box | null {
   return { x0, y0, x1, y1, kind: "text" };
 }
 
+// Conventional table layout: caption ABOVE, header/rows BELOW. In PDF user space this means
+// descending y. Include wrapped caption lines, then all contiguous table rows, stopping at
+// the whitespace before the following prose. This also captures borderless tables and avoids
+// pdf.js path clusters that represent only one ruled subsection of a larger table.
+function textBlockBelow(items: TextItem[], cap: Caption): Box | null {
+  const colLo = cap.x - 30;
+  const colHi = cap.x + cap.width + 30;
+  const below = items
+    .map((it) => ({ x: it.transform[4], y: it.transform[5], w: it.width || 0, h: it.height || 8 }))
+    .filter((t) => t.y < cap.y - 2 && Math.min(t.x + t.w, colHi) - Math.max(t.x, colLo) > 0)
+    .sort((a, b) => b.y - a.y); // nearest-to-caption first, going down
+  if (!below.length) return null;
+  // pdf.js text items expose baselines rather than block boxes; a normal 9–10pt table row
+  // can therefore be ~20pt from the next baseline even though their glyph boxes are close.
+  const gapLimit = 24;
+  // Caption→header padding may be wider than the regular row spacing.
+  if (cap.y - below[0].y > 30) return null;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  // The wider caption→header allowance was checked above. From the first header onward,
+  // enforce the tighter row-to-row gap so following prose is excluded.
+  let prevY = below[0].y;
+  for (const t of below) {
+    if (prevY - t.y > gapLimit) break;
+    x0 = Math.min(x0, t.x); y0 = Math.min(y0, t.y);
+    x1 = Math.max(x1, t.x + t.w); y1 = Math.max(y1, t.y + t.h);
+    prevY = t.y;
+  }
+  if (x1 - x0 < 40 || y1 - y0 < 20) return null;
+  return { x0, y0, x1, y1, kind: "text" };
+}
+
+function pickBoxBelow(boxes: Box[], cap: Caption): Box | null {
+  const colLo = cap.x - 30;
+  const colHi = cap.x + cap.width + 30;
+  let best: Box | null = null;
+  let bestScore = -Infinity;
+  for (const r of boxes) {
+    const w = r.x1 - r.x0;
+    const h = r.y1 - r.y0;
+    if (w < 40 || h < 20 || r.y1 > cap.y + 4) continue;
+    const overlap = Math.min(r.x1, colHi) - Math.max(r.x0, colLo);
+    if (overlap <= 0) continue;
+    const gap = cap.y - r.y1;
+    const score = w * h - gap * 50;
+    if (score > bestScore) { bestScore = score; best = r; }
+  }
+  return best;
+}
+
 // Locate one caption's crop rect (graphic cluster above it, else text-block fallback).
-function locateCrop(cap: Caption, boxes: Box[], items: TextItem[]): Box | null {
-  const box = pickBox(boxes, cap) ?? (cap.isTable ? textBlockAbove(items, cap) : null);
+function locateCrop(cap: Caption, boxes: Box[], items: TextItem[], pageWidth: number, pageArea: number): Box | null {
+  if (cap.isTable) {
+    const below = textBlockBelow(items, cap) ?? pickBoxBelow(boxes, cap);
+    if (below) {
+      return {
+        x0: Math.min(below.x0, cap.x),
+        y0: below.y0,
+        x1: Math.max(below.x1, cap.x + cap.width),
+        y1: Math.max(below.y1, cap.y + cap.height),
+        kind: below.kind,
+      };
+    }
+  }
+  const box = pickFigureRegion(boxes, cap, pageWidth, pageArea) ?? (cap.isTable ? textBlockAbove(items, cap) : null);
   if (!box) return null;
   // Include the caption strip beneath the box, for context.
   return { x0: Math.min(box.x0, cap.x), y0: cap.y - 4, x1: Math.max(box.x1, cap.x + cap.width), y1: box.y1, kind: box.kind };
@@ -255,8 +378,9 @@ export async function extractFigures(
       if (!found || !canvas || signal.aborted) continue;
       const page = await doc.getPage(found.page);
       const items = (await page.getTextContent()).items as TextItem[];
-      const boxes = clusterBoxes(await graphicBoxes(page, OPS));
-      const crop = locateCrop(found.cap, boxes, items);
+      const { width: pageW, height: pageH } = page.getViewport({ scale: 1 });
+      const boxes = clusterBoxes(await graphicBoxes(page, OPS), pageW * pageH);
+      const crop = locateCrop(found.cap, boxes, items, pageW, pageW * pageH);
       if (!crop) continue;
       await renderRect(page, crop, canvas);
       const rect = { x: crop.x0, y: crop.y0, width: crop.x1 - crop.x0, height: crop.y1 - crop.y0 };

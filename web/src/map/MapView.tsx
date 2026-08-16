@@ -63,6 +63,7 @@ export function MapView({ ds }: { ds: Dataset }) {
   const showCitationEdges = useStore((s) => s.showCitationEdges);
   const filters = useStore((s) => s.filters);
   const selectedNode = useStore((s) => s.selectedNode);
+  const focusedLabel = useStore((s) => s.focusedLabel);
   const hoverNode = useStore((s) => s.hoverNode);
   const selectNode = useStore((s) => s.selectNode);
   const setHover = useStore((s) => s.setHover);
@@ -97,6 +98,23 @@ export function MapView({ ds }: { ds: Dataset }) {
     });
   }, [base.zoom, maxZoomOffset, ds, selectedNode, viewportSize]);
 
+  // Label search navigates to the label centroid at the zoom band where that semantic
+  // region is meant to be read. The request id deliberately retriggers repeated choices.
+  useEffect(() => {
+    if (!focusedLabel) return;
+    const band = ds.manifest.levels.find((candidate) => candidate.level === focusedLabel.level);
+    const relativeZoom = band ? band.zoom_min + 0.35 : focusedLabel.level * 1.2;
+    const zoom = Math.min(base.zoom + maxZoomOffset, base.zoom + relativeZoom);
+    setViewState((current) => ({
+      ...current,
+      target: [focusedLabel.x, focusedLabel.y, 0],
+      zoom,
+      minZoom: base.zoom - 2,
+      maxZoom: base.zoom + maxZoomOffset,
+    }));
+    setZoom(zoom);
+  }, [base.zoom, ds.manifest.levels, focusedLabel, maxZoomOffset, setZoom]);
+
   const onViewStateChange = useCallback(
     ({ viewState: vs }: { viewState: OrthographicViewState }) => {
       setViewState(vs);
@@ -126,6 +144,13 @@ export function MapView({ ds }: { ds: Dataset }) {
     [setHover],
   );
 
+  const [hoverLabelId, setHoverLabelId] = useState<number | null>(null);
+  const [hoverLabelPos, setHoverLabelPos] = useState<{ x: number; y: number } | null>(null);
+  const onHoverLabel = useCallback((id: number | null, x: number, y: number) => {
+    setHoverLabelId(id);
+    setHoverLabelPos(id !== null ? { x, y } : null);
+  }, []);
+
   const pointsLayer = usePointsLayer({
     ds,
     colorMode,
@@ -149,6 +174,8 @@ export function MapView({ ds }: { ds: Dataset }) {
     base: base.zoom,
     viewport,
     relevantLabelIds,
+    focusedLabelId: focusedLabel?.id ?? null,
+    onHover: onHoverLabel,
   });
   const edgeLayers = useEdgeLayer({
     ds,
@@ -181,6 +208,8 @@ export function MapView({ ds }: { ds: Dataset }) {
   // Lightweight hover card: paper metadata straight from the in-memory index (no fetch).
   const hoverPaper =
     hoverNode !== null && hoverNode !== selectedNode ? ds.papers[hoverNode] : null;
+  const hoverLabel =
+    hoverLabelId !== null ? ds.labels.labels.find((l) => l.id === hoverLabelId) ?? null : null;
 
   return (
     <>
@@ -211,7 +240,23 @@ export function MapView({ ds }: { ds: Dataset }) {
               resident index (title, year, citations). Full metadata shows on selection. */}
           <div className="node-tooltip-meta">
             {hoverPaper.publicationDate?.slice(0, 4) || "—"} ·{" "}
-            {hoverPaper.citedByCount.toLocaleString()} cites
+            {ds.manifest.corpus.citation_count_source && hoverPaper.citationCountAvailable
+              ? `${hoverPaper.citedByCount.toLocaleString()} cites`
+              : "citation count unavailable"}
+          </div>
+        </div>
+      )}
+      {hoverLabel && hoverLabelPos && (
+        <div
+          className="node-tooltip"
+          style={{
+            left: Math.min(hoverLabelPos.x + 14, viewportSize.width - 312),
+            top: Math.min(hoverLabelPos.y + 14, viewportSize.height - 130),
+          }}
+        >
+          <div className="node-tooltip-title">{hoverLabel.text}</div>
+          <div className="node-tooltip-meta">
+            {hoverLabel.count.toLocaleString()} paper{hoverLabel.count === 1 ? "" : "s"}
           </div>
         </div>
       )}

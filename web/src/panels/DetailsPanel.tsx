@@ -1,7 +1,7 @@
 // Metadata and graph context for the selected paper.
 
 import { ExternalLink, FileText, Network, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dataset, PaperDetail } from "../data/types";
 import { useStore } from "../state/store";
 import { ArxivPreview } from "./ArxivPreview";
@@ -30,6 +30,9 @@ function clampWidth(px: number): number {
 export function DetailsPanel({ ds }: { ds: Dataset }) {
   const selectedNode = useStore((s) => s.selectedNode);
   const selectNode = useStore((s) => s.selectNode);
+  const selectedAuthorIds = useStore((s) => s.filters.authorIds);
+  const setAuthors = useStore((s) => s.setAuthors);
+  const authorById = useMemo(() => new Map(ds.authors.map((a) => [a.authorId, a])), [ds.authors]);
   const [view, setView] = useState<"citations" | "paper">("citations");
   const [detail, setDetail] = useState<PaperDetail | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -91,12 +94,31 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
 
   // Resident index has title/year/citations; author names, venue, links come from detail.
   const authorNames = detail?.authorNames ?? [];
+  // Resident papers-index carries author_ids; author_names load async in PaperDetail. Both
+  // derive from the same corpus row in the same order (s11_emit), so index i pairs across them.
+  const authorIds = p.authorIds;
+  // OpenAlex-matched authors get a real, cross-paper-stable id ("A...", deduplicated from
+  // same-named authors); unmatched papers fall back to a hash of the raw name string
+  // (see s02_build_arxiv_corpus._author_id), which can collide across distinct people.
+  const authorVerified = (id: number) => !authorById.get(id)?.openalexId.startsWith("arxiv-name:");
+  // Applying the filter and staying on this one paper would leave the (now-filtered) map
+  // hidden behind the still-open panel. Close it so the user lands on the filtered map —
+  // i.e. moves from "this paper" to "this author's papers" — matching how selecting an
+  // org or topic filter also drops back to the map.
+  const addAuthorFilter = (id: number) => {
+    if (!selectedAuthorIds.includes(id)) setAuthors([...selectedAuthorIds, id]);
+    selectNode(null);
+  };
   const dateText = detail?.publicationDate || p.publicationDate || "—";
   const link = detail?.doi
     ? `https://doi.org/${detail.doi}`
     : detail?.arxivId
       ? `https://arxiv.org/abs/${detail.arxivId}`
       : null;
+  const citationSource = ds.manifest.corpus.citation_count_source;
+  const citationText = citationSource && p.citationCountAvailable
+    ? `${p.citedByCount.toLocaleString()} citations · ${citationSource}`
+    : "citation count unavailable";
 
   return (
     <div
@@ -132,16 +154,43 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
         <X size={18} aria-hidden="true" />
       </button>
       <h3 ref={headingRef} tabIndex={-1}>{p.title}</h3>
-      <div className="meta">
+      <div className="meta authors">
         {authorNames.length > 0
-          ? authorNames.slice(0, 6).join(", ") +
-            (authorNames.length > 6 ? ` +${authorNames.length - 6}` : "")
+          ? authorNames.slice(0, 6).map((name, i) => {
+              const id = authorIds[i];
+              if (id === undefined) return <span key={i}>{name}</span>;
+              const verified = authorVerified(id);
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={
+                    "author-link" +
+                    (selectedAuthorIds.includes(id) ? " active" : "") +
+                    (verified ? "" : " unverified")
+                  }
+                  title={
+                    verified
+                      ? `Show other papers by ${name}`
+                      : `Show other papers by ${name} — identity not confirmed by OpenAlex, may include other authors sharing this name`
+                  }
+                  onClick={() => addAuthorFilter(id)}
+                >
+                  {name}
+                </button>
+              );
+            }).reduce<React.ReactNode[]>((acc, el, i) => {
+              if (i > 0) acc.push(", ");
+              acc.push(el);
+              return acc;
+            }, [])
           : detail === null
             ? "Loading authors…"
             : "—"}
+        {authorNames.length > 6 ? ` +${authorNames.length - 6}` : ""}
       </div>
       <div className="meta subtle">
-        {dateText} · {detail?.venue ?? "—"} · {p.citedByCount.toLocaleString()} citations
+        {dateText} · {detail?.venue ?? "—"} · {citationText}
       </div>
       {link && (
         <a className="link" href={link} target="_blank" rel="noreferrer">
@@ -206,7 +255,7 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
         </div>
       ) : (
         <div role="tabpanel" id="panel-citations" aria-labelledby="tab-citations">
-          <RelevanceSlider />
+          {ds.manifest.corpus.citation_graph_source && <RelevanceSlider />}
           <CitationExplorer ds={ds} node={selectedNode} />
           <RelatedWorksPanel ds={ds} node={selectedNode} />
         </div>

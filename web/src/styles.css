@@ -123,6 +123,10 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
   cursor: pointer; text-align: left;
   display: flex; justify-content: space-between; gap: 8px; line-height: 1.3;
 }
+.autocomplete li button > span:first-child {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
+.autocomplete li button > .count { flex: none; white-space: nowrap; }
 .autocomplete li button:hover,
 .autocomplete li[aria-selected="true"] button { background: var(--accent-dim); }
 .autocomplete .count { color: var(--subtle); font-size: 11px; }
@@ -136,17 +140,18 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
   padding: 16px 18px; backdrop-filter: blur(12px);
 }
 /* Signature: corner registration ticks, like the crop marks on a survey chart. */
-.sidebar, .panel.details { position: absolute; }
+.sidebar, .panel.details, .panel.author-view { position: absolute; }
 .chart-ticks::before, .chart-ticks::after,
 .sidebar::before, .sidebar::after,
-.panel.details::before, .panel.details::after {
+.panel.details::before, .panel.details::after,
+.panel.author-view::before, .panel.author-view::after {
   content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none;
   border-color: var(--brass-line); border-style: solid; border-width: 0; opacity: 0.9;
 }
-.sidebar::before, .panel.details::before {
+.sidebar::before, .panel.details::before, .panel.author-view::before {
   top: 6px; left: 6px; border-top-width: 1px; border-left-width: 1px;
 }
-.sidebar::after, .panel.details::after {
+.sidebar::after, .panel.details::after, .panel.author-view::after {
   bottom: 6px; right: 6px; border-bottom-width: 1px; border-right-width: 1px;
 }
 .sidebar-head { display: flex; align-items: baseline; justify-content: space-between; }
@@ -179,6 +184,15 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 .chip.active { background: var(--accent-dim); border-color: var(--accent); color: var(--brass); }
 .chip .count { color: var(--subtle); font-size: 10px; }
 
+.meta.authors { display: block; }
+.author-link {
+  background: none; border: none; padding: 0; margin: 0; font: inherit; color: var(--text);
+  cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;
+}
+.author-link:hover { color: var(--accent); }
+.author-link.active { color: var(--brass); text-decoration-style: solid; }
+.author-link.unverified { text-decoration-style: dashed; }
+
 /* Organization drill-down hierarchy ----------------------------------- */
 .org-search {
   width: 100%; margin: 2px 0 8px; padding: 6px 9px; font-size: 12px;
@@ -208,11 +222,20 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 .org-expand-spacer { width: 18px; flex-shrink: 0; }
 .org-chip { flex: 1; justify-content: space-between; border-radius: 7px; text-align: left; }
 .org-chip .org-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.org-unit-kind {
+  flex: 0 1 auto; max-width: 86px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--faint); font-family: var(--font-mono); font-size: 8px; letter-spacing: .035em;
+  text-transform: uppercase;
+}
+.org-source-badge { flex: 0 0 auto; padding: 1px 4px; border-radius: 4px;
+  color: #b8d7ff; background: rgba(99, 179, 237, 0.13); font-size: 8px;
+  letter-spacing: .04em; text-transform: uppercase; }
 .org-children {
   display: flex; flex-direction: column; gap: 3px;
   margin: 3px 0 3px 9px; padding-left: 9px; border-left: 1px solid var(--border);
 }
 .org-row-group.child .org-chip { font-size: 11px; background: rgba(255, 255, 255, 0.03); }
+.org-row-group.child .count { margin-left: auto; }
 
 .org-authors { margin: 4px 0 6px 27px; }
 .org-authors-toggle {
@@ -242,11 +265,11 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 .range-row { display: flex; flex-direction: column; gap: 6px; }
 .range-row input[type="range"] { width: 100%; accent-color: var(--accent); }
 
-/* Date filter: histogram + dual slider + presets ---------------------- */
+/* Date filter: one draggable histogram range brush + presets ---------------- */
 .date-control { margin: 2px 0 10px; }
 .date-histogram {
-  display: flex; align-items: flex-end; gap: 1px; height: 40px; margin: 0 0 6px;
-  padding: 0; overflow: hidden;
+  position: relative; display: flex; align-items: flex-end; gap: 1px; height: 44px;
+  margin: 0 0 10px; padding: 0; overflow: visible;
 }
 .hist-bar { flex: 1 1 auto; min-width: 0; border-radius: 1px 1px 0 0; transition: background 0.1s; }
 .hist-bar.in { background: var(--brass); }
@@ -264,6 +287,18 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
   touch-action: none; }
 .dual-slider-thumb:active { cursor: grabbing; }
 .dual-slider-thumb:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+/* The transparent overlay makes the chart itself draggable. The brush highlights a continuous
+   date window while the bars remain legible; there is no second track beneath the histogram. */
+.histogram-range-selector { position: absolute; inset: 0; height: auto; z-index: 1; }
+.histogram-range-selector .dual-slider-track { display: none; }
+.histogram-range-selector .dual-slider-range {
+  top: 0; bottom: 0; height: auto; transform: none; border-radius: 2px;
+  background: rgba(203, 167, 92, 0.16); border-left: 1px solid rgba(203, 167, 92, 0.7);
+  border-right: 1px solid rgba(203, 167, 92, 0.7); pointer-events: none;
+}
+.histogram-range-selector .dual-slider-thumb {
+  top: 100%; width: 16px; height: 16px; background: var(--panel-solid);
+}
 .date-presets { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 .date-preset {
   background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); color: var(--subtle);
@@ -323,13 +358,19 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
   color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Details panel (chart sheet) ------------------------------------------ */
-.panel.details {
+.panel.details, .panel.author-view {
   position: absolute; top: 74px; right: 16px; z-index: 10; width: 424px;
   max-height: calc(100vh - 94px); overflow-y: auto;
   background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--radius); box-shadow: var(--shadow);
   padding: 18px 20px; backdrop-filter: blur(12px);
 }
+.author-entry { padding: 12px 0; border-top: 1px solid var(--line); }
+.author-entry:first-of-type { border-top: none; padding-top: 2px; }
+.author-entry-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.author-entry-head strong { font-size: 14px; }
+.author-links { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; }
+.author-links .link { margin: 0; }
 /* Left-edge resize handle for the details panel (desktop). A thin hit area that widens on
    hover; the panel itself is anchored right, so dragging left grows it. */
 .details-resize { position: absolute; top: 0; left: -3px; width: 8px; height: 100%;
@@ -554,7 +595,7 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
   .chip { min-height: 34px; padding: 7px 10px; }
   .seg button { min-height: 34px; padding: 7px 10px; }
   .seg.small button { min-height: 32px; padding: 6px 10px; }
-  .panel.details {
+  .panel.details, .panel.author-view {
     top: auto;
     right: 8px;
     bottom: 8px;

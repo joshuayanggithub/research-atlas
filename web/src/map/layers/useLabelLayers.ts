@@ -21,6 +21,9 @@ interface Args {
   // When an org/author filter is active, only labels whose region still contains matching
   // papers are relevant (a topic name over an empty region is misleading). null = no filter.
   relevantLabelIds: Set<number> | null;
+  // A search-selected label wins collision ordering so it remains visible after navigation.
+  focusedLabelId: number | null;
+  onHover?: (labelId: number | null, x: number, y: number) => void;
 }
 
 interface PlacedLabel extends Label {
@@ -32,7 +35,16 @@ function labelWidth(text: string, size: number): number {
   return text.length * size * 0.55;
 }
 
-export function useLabelLayers({ labels, levels, zoom, base, viewport, relevantLabelIds }: Args) {
+export function useLabelLayers({
+  labels,
+  levels,
+  zoom,
+  base,
+  viewport,
+  relevantLabelIds,
+  focusedLabelId,
+  onHover,
+}: Args) {
   if (!viewport) return [];
 
   const visible = visibleLabelLevels(zoom, levels, base);
@@ -42,7 +54,11 @@ export function useLabelLayers({ labels, levels, zoom, base, viewport, relevantL
   // matching papers), sorted by priority (desc).
   const candidates = labels
     .filter((l) => visible.has(l.level) && (!relevantLabelIds || relevantLabelIds.has(l.id)))
-    .sort((a, b) => b.priority - a.priority);
+    .sort((a, b) => {
+      if (a.id === focusedLabelId) return -1;
+      if (b.id === focusedLabelId) return 1;
+      return b.priority - a.priority;
+    });
 
   // Greedy screen-space placement.
   const placedBoxes: [number, number, number, number][] = []; // x0,y0,x1,y1 in px
@@ -91,7 +107,8 @@ export function useLabelLayers({ labels, levels, zoom, base, viewport, relevantL
       getText: (d) => d.text,
       getSize: (d) => d.size,
       sizeUnits: "pixels",
-      getColor: [237, 240, 247, 255],
+      getColor: (d) =>
+        d.id === focusedLabelId ? [246, 173, 85, 255] : [237, 240, 247, 255],
       outlineColor: [8, 10, 16, 255],
       outlineWidth: 3,
       fontSettings: { sdf: true },
@@ -102,11 +119,16 @@ export function useLabelLayers({ labels, levels, zoom, base, viewport, relevantL
       background: true,
       getBackgroundColor: [10, 12, 18, 190],
       backgroundPadding: [6, 3],
+      pickable: !!onHover,
+      onHover: onHover
+        ? (info) => onHover(info.index >= 0 ? placed[info.index].id : null, info.x, info.y)
+        : undefined,
       updateTriggers: {
         // Re-evaluate all positional accessors whenever the placed set or band changes.
         getPosition: [placedKey, currentBand],
         getText: [placedKey, currentBand],
         getSize: [placedKey, currentBand],
+        getColor: [placedKey, focusedLabelId],
       },
     }),
   ];
