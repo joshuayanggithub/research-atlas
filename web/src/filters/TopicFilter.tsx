@@ -1,4 +1,5 @@
-// CS-topic filter over the OpenAlex taxonomy baked into the corpus. Two controls:
+// CS-topic filter over the taxonomy baked into the corpus. Enriched OpenAlex builds provide
+// human-readable subfields/topics; the arXiv snapshot currently provides category codes.
 //   - Subfield: 11 coarse CS areas (Artificial Intelligence, Computer Vision, …) as toggles.
 //   - Topic: type-ahead over the ~288 fine topics.
 // Both feed store filters (subfieldIds / topicIds); useFilterMask ANDs them with org/author/
@@ -20,6 +21,7 @@ export function TopicFilter({ ds }: { ds: Dataset }) {
   const setSubfieldIds = useStore((s) => s.setSubfieldIds);
   const setTopicIds = useStore((s) => s.setTopicIds);
   const [query, setQuery] = useState("");
+  const usesArxivCategories = ds.manifest.corpus.field.startsWith("arxiv:");
 
   // Only offer subfields/topics that actually occur in the corpus points, so the controls
   // never list an empty facet. Names come from topics.json.
@@ -59,7 +61,7 @@ export function TopicFilter({ ds }: { ds: Dataset }) {
 
   return (
     <div className="filter-section">
-      <h4>CS topic</h4>
+      <h4>{usesArxivCategories ? "arXiv category" : "CS topic"}</h4>
 
       {/* Coarse subfields as toggle chips. */}
       <div className="chips topic-subfields">
@@ -81,7 +83,7 @@ export function TopicFilter({ ds }: { ds: Dataset }) {
         <input
           className="author-input"
           aria-label="Search CS topics"
-          placeholder="Search fine topics…"
+          placeholder={usesArxivCategories ? "Search category codes…" : "Search fine topics…"}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />

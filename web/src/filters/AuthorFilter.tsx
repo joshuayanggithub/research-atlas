@@ -5,8 +5,11 @@ import { useMemo, useState } from "react";
 import { X } from "lucide-react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
+import { useAuthors } from "../data/useAuthors";
 
-export function AuthorFilter({ ds }: { ds: Dataset }) {
+export function AuthorFilter({ ds: _ds }: { ds: Dataset }) {
+  const [wantAuthors, setWantAuthors] = useState(false);
+  const authors = useAuthors(wantAuthors);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const filters = useStore((s) => s.filters);
@@ -16,17 +19,17 @@ export function AuthorFilter({ ds }: { ds: Dataset }) {
     const q = query.trim().toLowerCase();
     if (q.length < 2) return [];
     const out = [];
-    for (const a of ds.authors) {
+    for (const a of authors) {
       if (a.name.toLowerCase().includes(q)) {
         out.push(a);
         if (out.length >= 8) break; // authors are pre-sorted by paper count
       }
     }
     return out;
-  }, [query, ds.authors]);
+  }, [query, authors]);
 
   const selectedNames = new Map(
-    ds.authors.filter((a) => filters.authorIds.includes(a.authorId)).map((a) => [a.authorId, a.name]),
+    authors.filter((a) => filters.authorIds.includes(a.authorId)).map((a) => [a.authorId, a.name]),
   );
 
   const choose = (authorId: number) => {
@@ -53,6 +56,7 @@ export function AuthorFilter({ ds }: { ds: Dataset }) {
               ? `author-search-option-${matches[activeIndex].authorId}`
               : undefined
           }
+          onFocus={() => setWantAuthors(true)}
           placeholder="Search author..."
           value={query}
           onChange={(e) => {

@@ -1,7 +1,7 @@
 # Architecture — code map
 
 Companion to `Design.md` (rationale). This is the *where things live* reference for an
-agent making changes. Data flows one way: **OpenAlex/Semantic Scholar → pipeline → static
+agent making changes. Data flows one way: **arXiv/OpenAlex/Semantic Scholar → pipeline → static
 bundle → deck.gl app**.
 
 ```
@@ -21,8 +21,9 @@ pipeline/  (Python 3.11, offline)                     web/  (React + TS + Vite +
   embedding/                                                 useEdgeLayer.ts     sampled + selected directed links
     base.py          EmbeddingBackend protocol           src/filters/
     specter2_s2.py   fetch precomputed SPECTER2            OrgFilterPanel / AuthorFilter / DateRangeSlider
+    specter2_local.py local SPECTER2 + checkpoints
     scincl_local.py  local SciNCL fallback (torch)         useFilterMask.ts   filters → GPU channels + dim/hide
-  stages/ s00..s11   (see below)                         src/panels/
+  stages/ s00..s14   (see below)                         src/panels/
                                                             DetailsPanel / CitationExplorer / ArxivPreview
                                                             RelatedWorksPanel / Legend / SearchBox
        │ emits
@@ -32,25 +33,31 @@ pipeline/  (Python 3.11, offline)                     web/  (React + TS + Vite +
 
 ## Pipeline stages (`pipeline/stages/`)
 
-Run order via `run_all.py`: `s00 s01 s02 s03 s04 s05 s09 s08 s06 s07 s10 s11`.
+Run order via `run_all.py`:
+`s00 s01 s02 s15 s16 s03 s04 s12 s05 s09 s08 s06 s07 s14 s10 s13 s11`.
 Edges feed fused neighbors; both feed the semantic hierarchy.
 
 | Stage | Reads | Writes (in `data/interim/` unless noted) | Notes |
 |---|---|---|---|
 | `s00_resolve_orgs` | config orgs | `orgs_resolved.json` | pins OpenAlex institution ids (companies fragment; ids are hard-pinned in `config.yaml`) |
-| `s01_fetch_openalex` | orgs_resolved | `data/raw/works_raw.jsonl` | cursor pagination, CS field + date filter, `max_works` cap; `select`s `authorships` incl. `raw_affiliation_strings` |
-| `s02_build_corpus` | works_raw, orgs_resolved | `corpus.parquet`, **`affiliations.parquet`**, **`institutions.json`** | reconstruct abstracts; `_clean_doi`, `_numeric_id`; dense `node_id`; **canonical full corpus**; per-org raw affiliation evidence (paper-id keyed) for drill-down; institution id→name/type registry for the full org directory |
+| `s01_fetch_openalex` / `s01_fetch_arxiv` | selected source | OpenAlex JSONL or append-only OAI delta JSONL | arXiv mode uses the Cornell snapshot baseline and resumable OAI-PMH pages as daily id-upsert deltas |
+| `s02_build_corpus` / `s02_build_arxiv_corpus` | selected raw source | `corpus.parquet`, **`affiliations.parquet`**, **`institutions.json`** | arXiv mode streams the 5 GB JSON, filters on v1 date + any category position, applies OAI upserts/deletes, and assigns deterministic dense ids |
+| `s15_enrich_openalex` | arXiv corpus, exact arXiv/DOI filters | `openalex_enrichment.parquet`, enriched corpus + affiliations/institutions | resumable 100-id bulk crosswalk over 12 bounded workers; arXiv identity/text/date/categories remain canonical; OpenAlex citation fields stay secondary provenance |
+| `s16_apply_openalex_citations` | exact OpenAlex fields already in arXiv corpus | enriched corpus, `openalex_citation_stats.parquet`, `openalex_citation_meta.json` | local/default materialization of OpenAlex totals and corpus→corpus edges; unmatched rows remain unavailable |
+| `s16_enrich_s2_citations` (manual) | arXiv spine, S2 `paper/batch`, S2AG `paper-ids` + `citations` releases | enriched corpus, `s2_citation_matches.parquet`, `s2_citation_stats.parquet`, `s2_citation_meta.json` | cached/paced reconciliation scan; it preserves OpenAlex fields and never adds provider counts |
 | `s03_embed` | corpus.parquet | `embeddings.npy`, `embed_meta.json`, **`corpus_active.parquet`** | backend dispatch; `on_uncovered: drop` compacts corpus → active corpus; L2-normalizes |
 | `s04_project` | embeddings | `coords2d.npy`, `projector.pkl` | openTSNE 768→2D; frozen reducer plus fit-time map normalization |
 | `s05_cluster` | embeddings | `cluster_assign.npy` | separate UMAP→10D + HDBSCAN; emitted as `cluster_leaf`, not used for zoom regions |
 | `s09_edges` | corpus_active | `edges.npz` | intra-corpus citation edge list (both endpoints in corpus) |
 | `s08_neighbors` | embeddings, edges | `neighbors.npz` | union semantic/direct/coupling/co-citation candidates, then fused ranking |
 | `s06_hierarchy` | coords2d, embeddings, neighbors, edges | `tiles.json` | nested Leiden communities (Louvain selectable); embedding fallback; 2D label placement only |
-| `s07_label` | corpus_active, embeddings, tiles | `clusters.json`, `labels.json` (in `data/artifacts/`) | discriminative OpenAlex topics + representative c-TF-IDF phrases |
-| `s10_indexes` | corpus_active, orgs_resolved, affiliations, institutions | `orgs.json`, `authors.arrow`, `topics.json` (in `data/artifacts/`) | curated org→node_ids + **evidence-backed dept/lab sub-units** (`pipeline/directory/`) as a 2-level hierarchy with rollup/direct counts, PLUS every corpus institution with ≥`DIRECTORY_MIN_PAPERS` papers as flat `curated:false` directory entries; author index; topic id→name |
-| `s11_emit` | all of the above | `web/public/data/*` + `manifest.json` | builds points/papers Arrow, copies JSON, writes integrity manifest |
+| `s07_label` | corpus_active, embeddings, tiles | `clusters.json`, `labels.json` (in `data/artifacts/`) | topic + representative c-TF-IDF phrases; expensive phrase scoring is capped to browser-emittable cells per band |
+| `s14_rosters` | corpus_active, `org_rosters.yaml` | `roster_memberships.parquet`, `roster_orgs.json` | exact OpenAlex-author-id join for curated neolabs; retains member/provenance/date-bound evidence; numbered after existing stages but dependency-ordered before s10 |
+| `s10_indexes` | corpus_active, orgs_resolved, affiliations, institutions, roster outputs | `orgs.json`, `authors.arrow`, `topics.json` (in `data/artifacts/`) | curated org→node_ids + **evidence-backed dept/lab sub-units** (`pipeline/directory/`) + curated roster-backed neolab roots, PLUS every corpus institution with ≥`DIRECTORY_MIN_PAPERS` papers as flat `curated:false` directory entries; author index; topic id→name |
+| `s11_emit` | all of the above | `web/public/data/*` + `manifest.json` | builds points/papers Arrow, copies JSON, writes integrity manifest. Splits everything the first paint does not need: `points-L*.arrow` per reveal level, `papers-titles-N` (progressive), `papers-detail-N` / `neighbors-N` / `author-papers-N` (sharded on demand), `authors-N` (chunked name index, D32) and `import-index.arrow` (arXiv id → node_id for reading-list import, fetched only on import, D38) |
 
-**Two corpus files** (important): `corpus.parquet` = full (s02 output);
+**Two corpus files** (important): `corpus.parquet` = full (s02 output, optionally enriched
+in place by s15 without changing row identity/content);
 `corpus_active.parquet` = what s04–s11 consume (compacted in `drop` mode, identical in
 `fill_local`). `s03` derives active from full, so re-running s03 is idempotent. Paths are
 `CORPUS_FULL` / `CORPUS_ACTIVE` in `pipeline/config.py`.
@@ -60,12 +67,13 @@ Edges feed fused neighbors; both feed the semantic hierarchy.
 `base.py` defines `EmbeddingBackend` (`embed(corpus) -> EmbeddingResult{vectors, covered}`).
 - `specter2_s2.py` — POST `/paper/batch` (500 ids), `embedding.specter_v2`, on-disk cache,
   backoff, per-batch skip on non-retryable errors. Addresses papers by DOI/arXiv id.
+- `specter2_local.py` — official `specter2_base` plus proximity adapter on CUDA/MPS/CPU;
+  fp16/bf16/fp32 controls and corpus-fingerprinted row checkpoints.
 - `scincl_local.py` — `malteos/scincl` via sentence-transformers, MPS/CUDA/CPU. Lazy torch
   import so the base env loads without it.
 
-`s03_embed` picks the backend and applies `embedding.on_uncovered` (`drop` | `fill_local`).
-To add a backend (e.g. `specter2_local`, see ROADMAP), implement the protocol and wire it
-in `s03_embed.run`.
+`s03_embed` picks the backend and applies `embedding.on_uncovered` (`drop` | `fill_local`)
+to the Semantic Scholar route. Local SPECTER2 covers every valid title/abstract row.
 
 ## Frontend (`web/src/`)
 

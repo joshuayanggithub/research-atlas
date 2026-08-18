@@ -62,3 +62,21 @@ export function importanceWeight(
   const rank = count > 1 ? 1 - index / (count - 1) : 1;
   return MAGNITUDE_WEIGHT * magnitude + RANK_WEIGHT * rank;
 }
+
+
+/**
+ * Score cutoff for a relevance-slider position, by quantile.
+ *
+ * `t` is the slider in [0,1] and means "hide the least-relevant t of the network", which is what
+ * the label has always claimed. Reading the cutoff out of the sorted score list makes that true
+ * regardless of how skewed the underlying scores are — and they are very skewed, because a score
+ * is a small integer count divided by the network's maximum.
+ */
+export function relevanceCutoff(sorted: Float32Array | null | undefined, t: number): number {
+  if (t <= 0) return 0;               // 0 means "show everything", including score-0 members
+  if (!sorted || sorted.length === 0) return t;
+  const idx = Math.min(sorted.length - 1, Math.floor(t * sorted.length));
+  // Nudge above the quantile value so papers exactly AT it are hidden, otherwise a tie-heavy
+  // distribution (many papers sharing one raw count) ignores the slider entirely.
+  return sorted[idx] + 1e-6;
+}

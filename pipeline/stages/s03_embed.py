@@ -112,6 +112,22 @@ def run(cfg: Config | None = None) -> str:
                 backend_name = "specter2_s2+scincl_local"
                 model_used = f"{model_used or 'specter_v2'}+{local.model}"
 
+    elif cfg.embedding.backend == "specter2_local":
+        from pipeline.embedding.specter2_local import Specter2LocalBackend
+
+        local = Specter2LocalBackend(
+            model=cfg.embedding.specter2_model,
+            adapter=cfg.embedding.specter2_adapter,
+            dim=cfg.embedding.dim,
+            batch_size=cfg.embedding.local_batch_size,
+            device=cfg.embedding.local_device,
+            precision=cfg.embedding.local_precision,
+            checkpoint_every=cfg.embedding.checkpoint_every,
+        )
+        res = local.embed(corpus)
+        vectors, covered, model_used = res.vectors, res.covered, res.model
+        backend_name = local.name
+
     else:  # scincl_local
         local = _local_backend(cfg)
         res = local.embed(corpus)

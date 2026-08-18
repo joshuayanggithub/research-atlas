@@ -14,6 +14,7 @@ interface Props {
   ariaLabelLow?: string;
   ariaLabelHigh?: string;
   formatValue?: (v: number) => string; // for aria-valuetext
+  className?: string;
 }
 
 export function DualRangeSlider({
@@ -25,6 +26,7 @@ export function DualRangeSlider({
   ariaLabelLow = "Range start",
   ariaLabelHigh = "Range end",
   formatValue,
+  className = "",
 }: Props) {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragging = useRef<null | "low" | "high">(null);
@@ -57,15 +59,21 @@ export function DualRangeSlider({
   };
 
   const endDrag = (e: React.PointerEvent) => {
-    if (dragging.current) (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+    if (dragging.current && e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
     dragging.current = null;
   };
 
-  // Click on the track (not a thumb) moves the nearer thumb to that spot.
+  // Click/drag anywhere on the track moves the nearer thumb. When this slider overlays a
+  // histogram, the bars become the range-selection surface rather than a second control.
   const onTrackPointerDown = (e: React.PointerEvent) => {
     if (dragging.current) return;
     const v = valueAt(e.clientX);
-    if (Math.abs(v - low) <= Math.abs(v - high)) onChange(Math.min(v, high), high);
+    const thumb = Math.abs(v - low) <= Math.abs(v - high) ? "low" : "high";
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragging.current = thumb;
+    if (thumb === "low") onChange(Math.min(v, high), high);
     else onChange(low, Math.max(v, low));
   };
 
@@ -83,7 +91,7 @@ export function DualRangeSlider({
 
   return (
     <div
-      className="dual-slider"
+      className={`dual-slider ${className}`.trim()}
       ref={trackRef}
       onPointerDown={onTrackPointerDown}
       onPointerMove={onPointerMove}

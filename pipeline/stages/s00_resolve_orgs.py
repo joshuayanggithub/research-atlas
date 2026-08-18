@@ -46,7 +46,11 @@ def run(cfg: Config | None = None) -> dict:
     ensure_dirs()
     log.stage("s00_resolve_orgs")
 
-    client = OpenAlexClient(cfg.secrets.openalex_mailto, cfg.secrets.openalex_api_key)
+    client = OpenAlexClient(
+        cfg.secrets.openalex_mailto,
+        cfg.secrets.openalex_api_key,
+        api_keys=cfg.secrets.openalex_api_keys,
+    )
     resolved: dict[str, dict] = {}
     try:
         for org in cfg.corpus.orgs:

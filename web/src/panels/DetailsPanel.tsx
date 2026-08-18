@@ -4,6 +4,8 @@ import { ExternalLink, FileText, Network, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dataset, PaperDetail } from "../data/types";
 import { useStore } from "../state/store";
+import { useAuthors } from "../data/useAuthors";
+import { addAuthorToSelection } from "../data/authorIdentity";
 import { ArxivPreview } from "./ArxivPreview";
 import { CitationExplorer } from "./CitationExplorer";
 import { FirstFigure } from "./FirstFigure";
@@ -17,6 +19,9 @@ function bakedFigureUrl(ds: Dataset, node: number): string | null {
   return `data/${fig.dir}/${Math.floor(node / fig.shard_size)}/${node}.png`;
 }
 
+// Authors shown before the list collapses behind a "+N more" toggle.
+const AUTHOR_PREVIEW = 6;
+
 // Draggable panel width (desktop only), persisted so it survives re-selects and reloads.
 const WIDTH_KEY = "detailsPanelWidth";
 const MIN_WIDTH = 360;
@@ -29,11 +34,13 @@ function clampWidth(px: number): number {
 
 export function DetailsPanel({ ds }: { ds: Dataset }) {
   const selectedNode = useStore((s) => s.selectedNode);
+  const authors = useAuthors(selectedNode !== null);
   const selectNode = useStore((s) => s.selectNode);
   const selectedAuthorIds = useStore((s) => s.filters.authorIds);
   const setAuthors = useStore((s) => s.setAuthors);
-  const authorById = useMemo(() => new Map(ds.authors.map((a) => [a.authorId, a])), [ds.authors]);
+  const authorById = useMemo(() => new Map(authors.map((a) => [a.authorId, a])), [authors]);
   const [view, setView] = useState<"citations" | "paper">("citations");
+  const [showAllAuthors, setShowAllAuthors] = useState(false);
   const [detail, setDetail] = useState<PaperDetail | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -67,7 +74,10 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
     window.addEventListener("pointerup", onUp);
   };
 
-  useEffect(() => setView("citations"), [selectedNode]);
+  useEffect(() => {
+    setView("citations");
+    setShowAllAuthors(false); // a new paper starts collapsed
+  }, [selectedNode]);
 
   // Fetch the selected paper's full detail (author names, venue, ids, full date) on demand.
   useEffect(() => {
@@ -96,17 +106,22 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
   const authorNames = detail?.authorNames ?? [];
   // Resident papers-index carries author_ids; author_names load async in PaperDetail. Both
   // derive from the same corpus row in the same order (s11_emit), so index i pairs across them.
-  const authorIds = p.authorIds;
+  // Author ids moved into the per-paper detail shard (which this panel already fetches on
+  // selection), so they are empty for the instant before `detail` resolves — the same window in
+  // which authorNames is empty, so the two stay in step.
+  const authorIds = detail?.authorIds ?? [];
   // OpenAlex-matched authors get a real, cross-paper-stable id ("A...", deduplicated from
   // same-named authors); unmatched papers fall back to a hash of the raw name string
   // (see s02_build_arxiv_corpus._author_id), which can collide across distinct people.
-  const authorVerified = (id: number) => !authorById.get(id)?.openalexId.startsWith("arxiv-name:");
+  const authorVerified = (id: number) => authorById.get(id)?.verified !== false;
   // Applying the filter and staying on this one paper would leave the (now-filtered) map
   // hidden behind the still-open panel. Close it so the user lands on the filtered map —
   // i.e. moves from "this paper" to "this author's papers" — matching how selecting an
   // org or topic filter also drops back to the map.
   const addAuthorFilter = (id: number) => {
-    if (!selectedAuthorIds.includes(id)) setAuthors([...selectedAuthorIds, id]);
+    // Select the whole identity, not just the row this paper happens to reference: OpenAlex
+    // splits one person across multiple author rows, so a single id often yields one dot.
+    setAuthors(addAuthorToSelection(id, authors, selectedAuthorIds));
     selectNode(null);
   };
   const dateText = detail?.publicationDate || p.publicationDate || "—";
@@ -156,7 +171,7 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
       <h3 ref={headingRef} tabIndex={-1}>{p.title}</h3>
       <div className="meta authors">
         {authorNames.length > 0
-          ? authorNames.slice(0, 6).map((name, i) => {
+          ? (showAllAuthors ? authorNames : authorNames.slice(0, AUTHOR_PREVIEW)).map((name, i) => {
               const id = authorIds[i];
               if (id === undefined) return <span key={i}>{name}</span>;
               const verified = authorVerified(id);
@@ -187,7 +202,23 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
           : detail === null
             ? "Loading authors…"
             : "—"}
-        {authorNames.length > 6 ? ` +${authorNames.length - 6}` : ""}
+        {/* Large collaborations run to 100+ authors (Kimi K3 lists 99). A bare "+94" hid them
+            with no way to look, so the overflow is a control that reveals the rest in place. */}
+        {authorNames.length > AUTHOR_PREVIEW && (
+          <>
+            {showAllAuthors ? " " : " "}
+            <button
+              type="button"
+              className="author-more"
+              aria-expanded={showAllAuthors}
+              onClick={() => setShowAllAuthors((open) => !open)}
+            >
+              {showAllAuthors
+                ? "show fewer"
+                : `+${authorNames.length - AUTHOR_PREVIEW} more`}
+            </button>
+          </>
+        )}
       </div>
       <div className="meta subtle">
         {dateText} · {detail?.venue ?? "—"} · {citationText}
@@ -256,7 +287,7 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
       ) : (
         <div role="tabpanel" id="panel-citations" aria-labelledby="tab-citations">
           {ds.manifest.corpus.citation_graph_source && <RelevanceSlider />}
-          <CitationExplorer ds={ds} node={selectedNode} />
+          <CitationExplorer ds={ds} node={selectedNode} referenceCount={detail?.referenceCount ?? -1} />
           <RelatedWorksPanel ds={ds} node={selectedNode} />
         </div>
       )}

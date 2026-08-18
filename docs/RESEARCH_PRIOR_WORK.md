@@ -131,6 +131,114 @@ own inference rather than a directly sourced fact, it says so.
 > verification as Topic 1 — **23/23 confirmed, 0 refuted, 0 votes against**. They are marked
 > **[VERIFIED]**.
 
+### 2Z. How everyone else actually gets affiliations (survey, 2026-08-17)
+
+Added after D35 established that **no metadata API carries affiliations for arXiv preprints** —
+OpenAlex, Semantic Scholar, arXiv's own API and DataCite all return zero for the papers we lack.
+The literature splits the job into two problems that are usually conflated:
+
+**(1) EXTRACTION — obtaining a raw affiliation string at all.** This is our blocker; arXiv does
+not require an affiliation at submission, so nothing downstream can inherit one.
+
+| Approach | Who does it | Measured quality | Notes |
+|---|---|---|---|
+| Manual roster keyed to an author id | **CSRankings** (`faculty-affiliations.csv`, keyed to DBLP names, updated by pull request) | human-level | The same shape as our `org_rosters.yaml` / s14. Precise, unbounded labour. |
+| Publisher metadata | Crossref / DataCite | n/a | Only helps once a preprint is published: **1.7%** of our post-2021 unaffiliated papers have a non-arXiv DOI. |
+| PDF layout parsing | **GROBID** | **~80% precision / ~50% recall** on arXiv affiliations (COMET's measurement) — strong on author *names*, weak on affiliations | Apache-2.0. The obvious route, and measurably not good enough alone. |
+| LaTeX source | **unarXive** (1.9M sources) | n/a | Higher fidelity than PDF for structure, but affiliations are not a first-class field in the release. |
+| Closed LLM over full documents | Epoch AI (prompted LLM for structured metadata); COMET's Claude baseline | "quite well" | COMET priced full-arXiv extraction at **$60k–$100k**. |
+| **Distilled small open model** | **COMET** — Qwen3-8B LoRA distilled from GLM-4.5-Air, teacher–student with curriculum by model surprisal | **91% precision / 81% recall** on affiliations (97% / 86% on authors) | State of the art for arXiv, open weights. |
+
+**(2) LINKING — mapping a raw string to a canonical organisation (ROR).** Solved, several ways,
+all open. Benchmarked in *From raw affiliations to organization identifiers* (arXiv:2505.07577):
+
+| System | Approach | Precision / Recall / F1 (AffRoDB) |
+|---|---|---|
+| **AffRo** | rule-based keyword framework: preprocess → match → disambiguate | **0.965 / 0.910 / 0.937** |
+| **OpenAlex ROR predictor** | ensemble of two models trained on historical MAG data + synthetic strings | 0.914 / 0.929 / 0.921 |
+| **S2AFF** (Allen AI) | NER-parse into main/child/address → Jaccard retrieval of top-100 → LightGBM pairwise re-rank | 0.964 / 0.846 / 0.901 |
+| **AffilGood** (SIRIS) | modular span → language → translate → NER → link → geocode; multilingual XLM-R fine-tunes | — (not in this table) |
+| **ROR affiliation API** | curated registry + algorithmic matching, free | — (ROR reports no public figure) |
+
+**The punchline: the extraction half is already done and given away.** COMET ran their distilled
+model over the whole arXiv corpus and released the output as **CC0**:
+`cometadata/arxiv-author-affiliations-matched-ror-ids` on HuggingFace — **2,799,088 papers keyed
+on `arxiv_id`**, per-author `{name, affiliations: [{affiliation, ror_id}]}`, **2.44 GB**,
+**12.1M affiliation entries of which 9.2M (75.8%) carry a ROR id at ~97% matching precision**.
+Verified by sampling rows from the datasets server, not just reading the card.
+
+**How COMET's pipeline actually works** (worth borrowing; six stages):
+
+1. **PDF → markdown** with **dots.ocr**, a vision-language OCR model, over ~2.8M arXiv PDFs.
+   This is the expensive step; it ran on **Marlowe, Stanford's GPU instrument**.
+2. **Ground truth**: 2,491 hand-annotated arXiv papers (1,400 train / 1,092 test), released CC0.
+3. **Off-policy distillation with rejection sampling.** A large teacher (**GLM-4.5-Air**) produces
+   several extraction rollouts per paper *including reasoning traces*; only rollouts whose answer
+   matches the annotation are kept. The training set is therefore teacher reasoning that
+   provably reached the right answer — no label noise inherited from the teacher. They ran this
+   with several teachers and published each rollout set (GLM-4.5-Air, GLM-4.6, Claude Sonnet 4,
+   gpt-oss-120b, Gemini 2.5 Flash, Qwen3-235B).
+4. **Curriculum by surprisal.** Kept examples are ordered by the *student's own* surprisal — how
+   unlikely each example is under its current predictions — and trained easiest-first. Free
+   difficulty ranking: the student is its own oracle, no extra annotation.
+5. **Student**: **Qwen3-8B + LoRA**, supervised fine-tuning on that filtered, ordered set.
+   Result **91% P / 81% R** on affiliations (**97% / 86%** on authors); the model card reports
+   **F1 83.37**. GROBID on the same task: ~80% P / ~50% R.
+6. **Inference at scale**: vLLM serving the LoRA on H100s, emitting JSON per paper. Then a
+   separate **string → ROR linking** step, using a matcher designed by Crossref's Dominika
+   Tkaczyk, at **~97% precision** — 9.2M of 12.1M affiliations matched.
+
+The shape of the idea: **use the expensive model once, not 2.8M times.** A frontier model buys
+training signal; an 8B model does the volume. Extraction and linking stay separate, so the
+linking half reuses Crossref/ROR work instead of being reinvented.
+
+**Consequence for us.** Our 1,000,490 papers are a subset of arXiv, so #9 reduces from "buy
+86–289 GB of requester-pays S3 egress and run GROBID for weeks" to **a 2.44 GB download and a
+join on `arxiv_id`**. Their snapshot is December 2025, so our ~118k 2026 papers fall outside it;
+the model is open-weight, so that tail can be run locally on a 3090 if it matters.
+
+**Citing it / is there a paper?** No peer-reviewed paper. The citable artifact is the Zenodo
+record **10.5281/zenodo.18663775** — *"COMET arXiv preprint author affiliation extraction and ROR
+ID matching results"*, **Parth Sarin (Stanford)** and **Adam Buttrick (California Digital
+Library / ROR)**, published 2026-02-16, CC0, 2.4 GB JSONL. Methods are written up in the blog
+post; code is `cometadata/arxiv-preprint-parsing` (MIT). Worth noting one author works at ROR
+itself, which is why the linking half is as strong as it is.
+
+**Extending past their December-2025 snapshot.** Their run covers **870,385 of our 1,000,490
+papers (87%)**. Of the **730,148** papers we are missing affiliations for, **608,578 (83%) fall
+inside their snapshot** and need only a join; the remaining **121,570** are 2025-12 or later.
+Doing that tail ourselves is cheaper than COMET's own run for two reasons:
+
+- **PDFs are free.** `gs://arxiv-dataset` on Google Cloud Storage is a public mirror of all arXiv
+  PDFs (~1.1 TB, weekly updates) — no requester-pays S3 bill. COMET's own repo pulls from GCS or
+  Kaggle. 121,570 papers ≈ 180-240 GB, streamable (fetch → extract → delete) against 262 GB free.
+- **The OCR stage is skippable for us.** COMET ran dots.ocr over everything because 2.8M papers
+  span 1991-2025 including scanned and unusual PDFs. We need only recent CS papers, which
+  essentially all carry an embedded text layer — and **PyMuPDF is already a dependency** (s13
+  figure extraction). Affiliations live on page 1, so this is `page.get_text()` on one page
+  rather than a vision model over ten. That removes the largest GPU cost outright.
+
+What remains is the 8B student itself (short page-1 inputs, so vLLM batching makes this order
+hours, not days, on a single 24 GB card) plus free ROR linking. **Blocker as of 2026-08-17: this
+box's GPU is unusable** — `nvidia-smi` reports a driver/library mismatch (kernel module
+580.159.03 vs NVML 580.173) and `torch.cuda.is_available()` is `False`. Clearing it without a
+reboot needs root and an idle GPU:
+`sudo rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia && sudo modprobe nvidia`.
+
+Sensible order: **ingest their dataset first** (free, one join, the large majority of the win),
+measure the coverage jump, *then* decide whether the 2026 tail earns GPU time — those papers are
+also the least-cited, so their marginal value to an influence-weighted map is lowest.
+
+**Licences.** COMET dataset CC0; GROBID Apache-2.0; S2AFF and AffilGood open; ROR data CC0.
+CSRankings is CC BY-NC-ND — usable as a reference, not ingestible.
+
+Sources: <https://www.cometadata.org/blog/unlocking-author-affiliation-metadata-for-all-of-arxiv/>,
+<https://huggingface.co/datasets/cometadata/arxiv-author-affiliations-matched-ror-ids>,
+<https://arxiv.org/abs/2505.07577>, <https://github.com/allenai/S2AFF>,
+<https://github.com/sirisacademic/affilgood>, <https://ror.readme.io/docs/matching>,
+<https://help.openalex.org/hc/en-us/articles/24831328396311-Institutions-and-Raw-Affiliation-String-Parsing>,
+<https://github.com/emeryberger/CSrankings>, <https://github.com/IllDepence/unarXive>.
+
 ### 2A. Existing structures you can ingest (instead of hand-building)
 
 | Source | Sub-institution (dept/lab) granularity | Hierarchy support | License | Automated ingestion |

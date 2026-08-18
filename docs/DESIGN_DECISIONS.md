@@ -30,7 +30,7 @@ Status legend: **ACTIVE** (in force) · **PROPOSED** (agreed, not yet built) · 
   a query service for what tiles can't answer (see `ROADMAP.md` P2). Reverting the whole
   "no backend" stance means adding infra + ops that the MVP deliberately avoids.
 
-## D2. SPECTER2-only space via `on_uncovered: drop` — ACTIVE
+## D2. SPECTER2-only space via `on_uncovered: drop` — SUPERSEDED by D15
 
 - **Decision.** Keep only papers with a real SPECTER2 vector from Semantic Scholar; compact
   the corpus to fresh dense `node_id`s (`corpus_active.parquet`).
@@ -115,9 +115,9 @@ Status legend: **ACTIVE** (in force) · **PROPOSED** (agreed, not yet built) · 
 - **Revert.** Legacy whole-table path still exists (shard size 0 in the manifest). Reverting
   is a manifest flag; costs initial-download size at large N.
 
-## D9. Organization membership for neolabs: **curated author-roster join**, not document parsing — PROPOSED
+## D9. Organization membership for neolabs: **curated author-roster join**, not document parsing — ACTIVE
 
-- **Decision (agreed, not yet built).** Attribute neolab papers (Redwood, Anthropic-preprints,
+- **Decision.** Attribute neolab papers (Redwood, Anthropic-preprints,
   DeepSeek, …) by an **author-id roster** joined against the OpenAlex author ids already on
   every paper — *not* by parsing affiliation text from PDFs/HTML/LaTeX.
 - **Alternatives, with evidence gathered this session:**
@@ -139,6 +139,12 @@ Status legend: **ACTIVE** (in force) · **PROPOSED** (agreed, not yet built) · 
   arbitrary long-tail affiliation and stays on the table for that separate goal — but is
   explicitly **not** on the neolab critical path. Anchor to ROR id where it exists; mint
   `local:<org>` ids where it doesn't (and never let a wrong ROR hit contaminate a local id).
+- **Implementation (2026-08).** `org_rosters.yaml` holds reviewed exact-id claims;
+  `s14_rosters` joins them to `corpus_active.parquet`, applies inclusive date bounds, and
+  retains a paper/member/provenance evidence row in `roster_memberships.parquet`. `s10`
+  emits those organizations as curated `neolab` roots with a canonical `organization_id`
+  and `membership_methods`. Redwood is the first seed. Registry and reviewed co-authorship
+  expansion remain optional roster-authoring inputs; neither silently runs during a build.
 
 ## D10. Author granularity: OpenAlex author id primary, ORCID validation, S2AND last — PROPOSED
 
@@ -156,6 +162,23 @@ Status legend: **ACTIVE** (in force) · **PROPOSED** (agreed, not yet built) · 
 - **Revert.** If OpenAlex error rate proves too high, the override map grows first; only then
   consider self-hosting S2AND (open, cuts AND error >50% vs S2 production). Scholar/SerpApi
   usable only as a **manual curation eyeball**, never a redistributable feed.
+- **2026-08-15 addendum — reconsider "S2AND last."** This decision assumed S2 involvement
+  meant self-hosting an S2AND disambiguation *model* for the OpenAlex-id-less residual, which
+  is why it was ranked last. That's no longer the only option: Semantic Scholar's own hosted
+  Graph API (`/graph/v1/paper/arXiv:<id>`) already ships resolved author ids per paper, same as
+  OpenAlex — no model-building required, just another API to join against. Empirically checked
+  8 papers sampled from the 26,636-paper OpenAlex-unmatched residual (arXiv 2505.18134
+  "VideoGameBench" + 7 random draws): S2 found **8/8**, every author resolved to a non-null id,
+  and it correctly assigned author "Alex L. Zhang" the **same** S2 id (`2324917699`) on both
+  2505.18134 and arXiv 2512.24601 ("Recursive Language Models") — exactly the cross-paper
+  identity case OpenAlex fails on for this pair (OpenAlex has never matched 2505.18134 as a
+  work at all, and separately returns a `null` per-authorship author id for this person even
+  when a work lookup succeeds). Sample is small (n=8) and S2's disambiguation error rate at
+  scale is still unverified, so this isn't a decision reversal yet — but it demotes "S2AND last"
+  from "build our own model" to "just also query S2's existing API for the residual," which is
+  far cheaper than this decision originally priced in. See `TODO.md` for the deferred
+  follow-up (blocked on the in-flight `s2-citations` job finishing, to avoid API-quota
+  contention).
 
 ## D11. First-figure extraction: **offline PyMuPDF baked crops, client-side pdf.js fallback** — ACTIVE
 
@@ -197,9 +220,13 @@ Status legend: **ACTIVE** (in force) · **PROPOSED** (agreed, not yet built) · 
 - **Decision.** The on-selection client-side extractor (`figureExtract.ts`) reconstructs
   figure/table boxes from the **pdf.js operator list** (walk `fnArray` tracking the transform
   stack; bound every `constructPath`/`paintImage` op; cluster touching boxes) and takes the
-  cluster directly above each caption — the PyMuPDF/PDFFigures method ported to the browser.
-  It extracts **both Figure 1 and Table 1** (each when present), with a text-block fallback for
-  borderless tables.
+  cluster directly above figure captions — the PyMuPDF/PDFFigures method ported to the browser.
+  It extracts **both Figure 1 and Table 1** (each when present). Because table captions are
+  conventionally above the table, tables instead collect contiguous text rows below the real
+  punctuated caption, stopping before following prose; an upward fallback covers unusual
+  templates. This direction-aware rule fixed RLM Table 1, whose ruling lines appeared as two
+  partial clusters and whose preceding sentence began with the misleading words "Table 1
+  reports…".
 - **Alternatives.** The prior **ink-density scan** — grabbed page headers/body text and
   over-trimmed ("much more of the page"); failed on the Transformer paper. Replaced.
 - **Why.** Accurate, runs on-selection with no backend (PyMuPDF can't run in-browser), and
@@ -237,3 +264,801 @@ Status legend: **ACTIVE** (in force) · **PROPOSED** (agreed, not yet built) · 
 - **Why.** Fixes stale labels without per-frame layer churn.
 - **Revert.** None wanted; this is a bug fix. No dedicated test yet (frontend has no JS unit
   runner — noted in TODO).
+
+## D15. Snapshot-first arXiv corpus + full local SPECTER2 space — ACTIVE
+
+- **Decision.** Build the comprehensive recent corpus from Cornell's weekly arXiv metadata
+  snapshot, apply append-only OAI-PMH deltas by arXiv-id upsert, and embed every selected
+  title+abstract locally with `specter2_base` plus the proximity adapter. Use v1 creation
+  timestamps and any-position `cs.* OR stat.ML` category membership. Checkpoint local
+  inference against the ordered corpus fingerprint.
+- **Alternatives.** (a) arXiv Atom API per paper/query — free but capped at one request per
+  three seconds and unsuitable for hundreds of thousands of records. (b) OAI for all history
+  — bulk-capable but slower than the snapshot and cannot select by submission date. (c)
+  Semantic Scholar-only embeddings with `drop` — biased/incomplete. (d) SciNCL fill — a
+  different vector space.
+- **Why.** The snapshot parsed 3.13M records in about 70 seconds and had complete required
+  metadata. Ten OAI pages caught the weekly lag. The resulting 271,366-paper corpus has 100%
+  abstracts. Local RTX 3090 inference completed in 9m48s with 100% coverage; overlap cosine
+  against S2 `specter_v2` was 0.9994–1.0000. There is no metadata or embedding API charge.
+- **Limit.** arXiv metadata has no references, disambiguated people, or institutions. Those
+  must be bulk-enriched before citation and organization features are rebuilt; provisional
+  name-hash ids are explicitly not person identity claims.
+- **Revert.** Switch `corpus.source` back to `openalex` and/or `embedding.backend` to
+  `specter2_s2`; stage and artifact seams remain unchanged. Reverting the corpus invalidates
+  the embedding checkpoint fingerprint and requires re-embedding/re-projecting.
+
+## D16. arXiv identity spine + provenance-preserving OpenAlex sidecar — ACTIVE
+
+- **Decision.** Keep every selected paper keyed and dated by arXiv, then run `s15` as a
+  resumable exact-id left join. OpenAlex supplies structured author/institution identity,
+  affiliation evidence, venue/identifier gaps, topics, and secondary citation/reference
+  fields. Provider conflicts remain in `openalex_*` columns; arXiv title, abstract, v1 date,
+  categories, `paper_id`, and `node_id` are never overwritten.
+- **Alternatives.** (a) Make OpenAlex the corpus spine — loses recent arXiv coverage and lets
+  provider duplicates define nodes. (b) Fetch one API record per paper — needlessly slow.
+  (c) Merge citation counts across duplicate OpenAlex works — double-counts evidence.
+- **Why.** Authors submit to arXiv, while OpenAlex is a downstream probabilistic index. Exact
+  DOI/landing-page filters can batch 100 values, and 12 bounded workers plus checkpointed
+  routes completed the 271k join in about five minutes for $0.4371, with 90.2% exact-match
+  coverage. A live audit found recent duplicate/split records, so OpenAlex values must carry
+  provenance and cannot silently replace source metadata or Semantic Scholar citation truth.
+- **Revert.** Disable `openalex_enrichment.enabled`; s02's arXiv corpus and existing semantic
+  artifacts remain valid. Removing the sidecar only removes organization/provider metadata,
+  not papers, embeddings, or coordinates.
+
+## D17. Semantic Scholar bulk graph for canonical citations; OpenAlex as a sidecar — SUPERSEDED by D18
+
+- **Decision.** Use the S2AG bulk `citations` dataset as the source of canonical citation
+  counts and directed relationships for the arXiv spine. Resolve arXiv→S2 identity with cached,
+  paced `paper/batch` requests, map hashes through the bulk `paper-ids` crosswalk, then stream
+  and delete each citation shard locally. Keep only corpus-internal edges in the static browser
+  graph, but count every S2 edge that targets a matched corpus paper.
+- **Alternatives.** (a) Crawl per-paper S2 citation/reference endpoints — the granted key is
+  cumulative 1 RPS, so this is too slow and fragile. (b) Use OpenAlex as citation truth — its
+  records can be split/lag and its own documentation permits incomplete reference lists. (c)
+  union providers — duplicates become un-auditable double counts.
+- **Why.** This supplies both in- and out-edges from one snapshot, preserves a verifiable
+  release date/license, and gives recent arXiv papers the best available identity path. It
+  separates global counts from the deliberately finite rendered graph.
+- **Revert.** Replacing S2 requires a source with downloadable, directed, full-graph data and
+  a stable crosswalk from arXiv ids. The migration cost is rebuilding counts, edges, related
+  works, hierarchy, labels, and the static bundle; preserve `s2_*` provenance columns so old
+  artifacts remain auditable.
+
+## D18. OpenAlex immediate citation materialization; Semantic Scholar retained for reconciliation — ACTIVE
+
+- **Decision.** Materialize OpenAlex citation totals and exact-match corpus-internal outgoing
+  references in `s16_apply_openalex_citations` immediately after the completed `s15` crosswalk.
+  Keep every `openalex_*` and `s2_*` provider column and both provider metadata sidecars. A full
+  S2AG scan remains an explicit later operation; when complete it overrides canonical values for
+  S2-matched rows without adding provider counts, while OpenAlex remains the fallback.
+- **Alternatives.** (a) Wait for S2's full bulk release scan before showing citations — the
+  introductory key's 1 RPS identity crosswalk makes that unusably slow for the interactive build.
+  (b) Delete S2 support — loses a useful independent graph audit. (c) Sum or union provider
+  counts — double-counts and makes provenance irrecoverable.
+- **Why.** The existing exact OpenAlex join covers 244,730/271,366 arXiv records (90.2%) and
+  already contains both `cited_by_count` and `referenced_works`; local materialization therefore
+  makes the app useful in minutes, not after a long S2 run. Provider disagreement is presented as
+  provenance rather than hidden arithmetic.
+- **Revert.** Restore D17's ordering in `run_all.py` and set S2 enabled by default. This again
+  makes a full rebuild wait on the S2 release scan; keeping the two sidecars means no identity or
+  citation data migration is required.
+
+## D19. Reveal level gated by a global importance floor, over an age-discounted signal — ACTIVE
+
+- **Decision.** `assign_reveal_levels` admits a paper at level L only if it clears *both* the
+  spatial separation radius and a global importance floor (`top_fraction`, 0.2% at level 0,
+  quadrupling per level until it saturates). The ordering signal is
+  `cited_by_count / age**0.5` (`tiling.importance = age_adjusted_citations`), not raw citations.
+- **Alternatives.** (a) Pure spatial thinning (the prior behaviour) — admits whichever paper
+  tops each empty region, so with 42.7% of the merged corpus at zero citations and a median of
+  1, the home view seeded itself with 5-citation papers. (b) Raise `base_divisor` instead —
+  makes the map sparser everywhere without making it more *influential*; the local maximum of a
+  sparse region is still admitted first. (c) Raw citations as importance — measured: 89% of the
+  top 2,000 predate 2022, turning the all-years home view into a museum. (d) Pure
+  citations-per-year — over-corrects, 42% of the top 2,000 is 2025 alone.
+- **Why.** Separation and influence are independent properties, and only the first was being
+  enforced. Gating on a global quantile lets a thinly-populated region stay *empty* at coarse
+  zoom rather than promoting its best-of-a-weak-field. Measured on the 912k corpus: level 0 now
+  requires >=144 citations (median 805) and leads with BERT, XGBoost, ViT, BatchNorm, while
+  keeping every year represented (136 papers from 2015 ... 223 from 2025).
+- **Revert.** Set `tiling.top_fraction = 1.0` to disable the gate (covered by
+  `test_importance_gate_disabled_restores_pure_spatial_thinning`) and
+  `tiling.importance = cited_by_count` for the raw signal. Both are config-only; no data
+  migration, though `s12` must be re-run to regenerate `reveal_levels.npy`.
+
+## D20. Citation direction lives on the node's colour, not on an overlay ring — ACTIVE
+
+- **Decision.** With a paper selected, the connected papers are tinted by their relation to it —
+  teal = a reference that influenced the selection, amber = a paper influenced by it, white =
+  the selection — using the shared palette in `web/src/map/citationColors.ts`, which the edge
+  layer imports for the matching link hue. Encoding rule: hue = direction, alpha = strength,
+  geometry constant (size already means citation count).
+- **Alternatives.** (a) The previous overlay: a `ScatterplotLayer` drew a disc filled with the
+  *background* colour `[12,14,20,220]` over each connected paper, ringed 1.4px in the direction
+  colour. It occluded the very node it highlighted — it read as a black dot inside a blue one —
+  and the ring was too thin to carry the signal; it also stole hover from the point beneath,
+  which is why it had to re-route `onHover`. Deleted. (b) Encode direction with size or arrow
+  count — size is already citation count, and doubling it up made a well-connected paper an
+  unreadable thicket. (c) Leave the topic hue on connected nodes — with a selection active,
+  channel 2 culls everything except the network, so the whole visible set shares one topic hue
+  and the colour conveys nothing.
+- **Why.** Once a paper is selected the visible points *are* its citation network, so the node
+  itself is the highest-bandwidth place to say which direction it sits in, and it costs no extra
+  geometry. Legend wording moved from "outgoing/incoming" to influence language, which is the
+  question a reader actually has.
+- **Revert.** Restore the `citation-selected-endpoints` layer in `useEdgeLayer` and drop the
+  `refs`/`citers` branch of `getFillColor` in `usePointsLayer`. Both are self-contained; no data
+  or pipeline change is involved.
+
+## D21. Gzip the static artifact bundle in the Vite server — ACTIVE
+
+- **Decision.** A `compressArtifacts` plugin in `web/vite.config.ts` gzips `/data/*` on the fly
+  (level 6) and caches bodies in memory keyed by path+mtime+size. Google Fonts moved from a
+  render-blocking `<link rel="stylesheet">` to `rel="preload"` + `onload` promotion.
+- **Alternatives.** (a) No compression (prior state) — invisible on localhost, where the whole
+  eager bundle transfers in ~0.1 s, but it is 49 MB and dominates over an SSH tunnel or LAN,
+  which is exactly how this is viewed. (b) Brotli — measured only **4% smaller than gzip**
+  (19.1 MB vs 19.8 MB) at quality 5, not worth the extra negotiation path. (c) Pre-compress
+  `.gz` files in the pipeline — adds an artifact-lifecycle step that must re-run on every s11.
+- **Why.** Measured 49.0 MB -> 20.9 MB served, a 57% cut in bytes on the startup path, for one
+  dependency-free plugin. The mtime-keyed cache means papers-index.arrow (31 MB) is gzipped
+  once per emit rather than per reload, so it does not compete with the pipeline for CPU.
+- **Revert.** Drop the plugin from the `plugins` array; the dev server falls back to raw bytes.
+
+## D22. Citation edges capped per paper before they reach the browser — ACTIVE
+
+- **Decision.** `emit.max_edges_per_paper` (default 4) keeps each paper's strongest N links in
+  EACH direction — ranked by the citation count of the paper at the other end — before writing
+  `edges.arrow`. On the 912k corpus this is 13,006,390 -> 4,174,891 edges (32.1%). 0 disables it.
+- **Alternatives.** (a) Ship the full graph — measured: `edges.arrow` 99.3 MB (74.7 MB gzipped;
+  it barely compresses because node ids are near-random int32), eager bundle 240 MB / 134 MB
+  gzipped, time-to-first-map 7.9s -> **27.7s**, JS heap **1,020 MB**. Unusable, and far worse over
+  a tunnel. (b) A GLOBAL "top N edges" cut — strips the long tail entirely, so sparsely-cited
+  papers lose their whole network; the per-paper cap instead leaves the same **811,364** papers
+  connected at every K tested and only thins hubs. (c) Lazy per-node adjacency shards — the
+  architecturally correct answer, but `useRelevanceScores` needs 2-hop adjacency and ten files
+  read `citesOut`/`citedBy`, so it is a real refactor rather than a config change.
+- **Why.** The browser fetches `edges.arrow` eagerly and builds `citesOut`/`citedBy` Maps from
+  it, so graph size is paid on every load. Capping per paper preserves the shape a reader
+  actually looks at (a paper's most significant links) while making size proportional to the
+  corpus rather than to the square of its connectivity. Filtering is unaffected: `CitationFilter`
+  and `useFilterMask` read `points.citedByCount`, the stored global count, not the edge list.
+- **Cost to be honest about.** `CitationExplorer` builds its in/out lists FROM the adjacency, so
+  its "References N / Cited by N" now reflects the capped graph, not every in-corpus link.
+- **Revert.** Set `emit.max_edges_per_paper = 0` and re-run s11 (~1 min); no upstream stage is
+  invalidated.
+
+## D23. Only point tiles L0-L4 are on the critical path; titles and edges stream in after — ACTIVE
+
+- **Decision.** Startup fetches `points-L0..L4` (2.66 MB), `labels/orgs/topics.json`, and nothing
+  else. `papers-index.arrow` (titles) and `edges.arrow` (citation graph) are fetched AFTER first
+  paint and filled into pre-existing structures in place; deeper point tiles load on demand as
+  the user zooms (`ensurePointTiles`). A measured progress bar reports byte progress from the
+  sizes s11 records in the manifest.
+- **Alternatives.** (a) Fetch everything eagerly (prior behaviour) — 173 MB, and the user's link
+  measured **~1 MB/s** over an SSH tunnel (server serves at 2.7 GB/s warm; `ss` showed 2.9-3.8 MB
+  stuck in Send-Q, the signature of a slow consumer). That is minutes of blank screen. (b) Cap
+  the corpus instead — throws away data to work around a transport problem. (c) Make consumers
+  async — `ds.papers[...]` and `ds.citesOut` are read synchronously in ten files; filling in
+  place keeps every call site unchanged.
+- **Why.** Wall-clock load was byte-bound, so the fix had to be bytes. Only three fields are ever
+  read off `ds.papers` — `citedByCount`, `title`, `publicationDate` — and counts/years already
+  ship in points, so titles were the only unique payload in a 98.8 MB artifact. `edges.arrow`
+  gzips at just 1.33x (near-random int32 ids), making it the largest thing on the wire once
+  titles moved. Neither is needed to paint a map.
+  Measured at a throttled 1 MB/s: eager **173 -> 12 MB**, map on screen **~110s -> 10.5s**.
+  Point ids stay dense because tiles scatter into arrays preallocated to the corpus size, with
+  unfetched points parked at `UNLOADED_LEVEL` so the existing reveal-level cull hides them.
+- **Revert.** Restore the single `EAGER` list containing `points.arrow`, `papers-index.arrow` and
+  `edges.arrow`, and drop `ensurePointTiles`. No pipeline change — s11 has emitted these tiles
+  all along; this decision is only about which of them the frontend chooses to fetch.
+
+## D24. Per-point attributes are precomputed typed arrays, and selection work is bounded — ACTIVE
+
+- **Decision.** `usePointsLayer` hands deck.gl BINARY attributes (`getPosition`, `getFillColor`,
+  `getRadius`, `getFilterValue`) built in one pass over typed arrays, instead of per-point
+  accessor closures with `updateTriggers`. `useRelevanceScores` returns dense `Float32Array` /
+  `Uint8Array` rather than `Map`s, caps the scored candidate set at 3,000 (ranked by citations),
+  and `useRelevantLabels` caches its selection-independent band geometry and stride-samples at
+  most 2,500 voters.
+- **Alternatives.** (a) Keep accessors — deck.gl re-invoked each of three closures 912,429 times
+  per selection; `_normalizeValue`/`updateBuffer`/`toDoublePrecisionArray` were the top JS costs
+  in a CPU profile. (b) Keep `Map`-based relevance — a `Map.get()` per point per accessor, on
+  912k points. (c) Leave the label vote loop uncapped — it cost
+  `visible x bands x labels-per-band`, about **359 million** operations for a hub selection
+  (PPO has 16,322 in-corpus citers), which blocked the main thread long enough that the citation
+  panel looked empty. That is the browser-side twin of the pipeline's `fused.hub_degree_limit`.
+- **Why.** Measured by CPU profile across a selection: `useRelevantLabels` fell from dominating
+  to 0.4%, deck.gl's attribute rebuild vanished from the profile (`bufferSubData` 0.1%), and
+  total JS dropped to ~6% — the remainder is native rendering. Sampling is safe for labels
+  because which regions light up is a coarse visual cue; the vote threshold is scaled by the
+  stride so filtered views keep the same labels.
+- **Gotcha worth keeping.** A binary colour attribute must NOT set `normalized: false`: deck.gl
+  normalises unsigned bytes to 0-1 in the shader, and forcing it off rendered every point
+  saturated white (caught by a pixel census: 0 coloured pixels).
+- **Revert.** Restore the accessor functions with their `updateTriggers`, and return `Map`s from
+  `useRelevanceScores`. Self-contained in the three files; no data or pipeline change.
+
+## D25. Label-region membership comes from the cell tree, not from centroid distance — ACTIVE
+
+- **Decision.** Clicking a map label (or picking one from search) adds a `labelIds` facet that
+  selects exactly the papers in that region. Membership is a lookup: s11 emits
+  `points.region_leaf` (the deepest hierarchy cell containing each paper) and `regions.arrow`
+  (the cell parent chain, 285,316 rows / 2.72 MB), and the UI walks a paper's leaf up to see
+  whether it passes through the clicked cell. The facet appears as a "Region" chip in the
+  active-filter bar (D-note: ActiveFilters).
+- **Alternatives.** (a) Nearest label centroid within a per-band radius — the rule
+  `useRelevantLabels` uses to decide which labels to DRAW. Tried first because it needs no new
+  artifact, but it under-selected 30x: "cs.CV: Gaussian Splatting", a region the map itself
+  labels 31,292 papers, selected **1,032**. A centroid ball is not the region's shape. (b) Ship
+  every cell's `node_idx` — exact, but 9,116,528 node ids ≈ **35 MB**, unacceptable on a 1 MB/s
+  link. (c) Ship a per-point region id for every level — 11 x 912k int32.
+- **Why.** Labels ARE cells: all 15,956 emitted labels map to a `tiles.json` cell with an
+  identical count and centroid, so the pipeline already knows the answer and guessing was never
+  necessary. The tree makes it cheap — leaf + parent chain is ~5 MB total and membership is a
+  handful of hops (observed depth 8-11). Verified end to end: the filter now reports exactly
+  **31,292**, matching the label.
+- **Gotcha this exposed.** Anything computed per-point across the whole corpus is wrong until
+  every point tile has arrived (D23), because unloaded points carry zeroed data — `region_leaf`
+  reads -1. The first exact implementation still reported 2,363 for that reason. `useFilterMask`
+  now depends on a tile epoch so masks converge as tiles land, rather than freezing at whatever
+  was loaded when the filter was applied.
+- **Revert.** Drop the `labelIds` facet and the `onClick` toggle in `MapView`/`SearchBox`;
+  `region_leaf` and `regions.arrow` are additive and harmless if unused.
+
+## D26. The filtered set describes itself with c-TF-IDF over titles — ACTIVE
+
+- **Decision.** Whenever a filter is active, a one-line "mostly: …" label names the terms that
+  are frequent in the selection and rare outside it, computed client-side over paper TITLES.
+  Background document frequency comes from a ~60k stride sample of the corpus; the selection
+  itself is stride-sampled to 2,000 papers.
+- **Alternatives.** (a) Reuse the map's region labels — they name whichever regions the papers
+  land in, not the papers. An author with seven papers gets whatever coarse areas contain them,
+  which is exactly the complaint. (b) Compute over abstracts — not shipped to the browser, and
+  adding them would be far larger than the 98.8 MB title index already being deferred.
+  (c) Precompute per-author/per-region labels in the pipeline — cannot cover arbitrary filter
+  combinations (author AND category AND date).
+- **Why.** Titles are information-dense enough for this, and c-TF-IDF is the same technique s07
+  already uses per region, so the vocabulary matches the map. Both samples are strides rather
+  than head slices because node ids correlate with publication date, so a head slice would bias
+  the label toward one era. Verified: Eliot Xing's 7 papers -> "multimodal · reinforcement";
+  the 31,292-paper Gaussian Splatting region -> "video · image · human · generation".
+- **Bias caught in verification.** The label was first computed from the LIST ROWS, which are
+  the top 500 by the active sort — so it described the most-cited papers rather than the
+  selection. It now samples the full match set.
+- **Note this exposes.** For broad regions the pipeline's own label can be misleading: a level-0
+  cell named "cs.CV: Gaussian Splatting" actually contains generic vision work, and the
+  self-computed label says so. Worth revisiting how s07 names large regions.
+- **Revert.** Delete `useSetLabel` and its one call site in `PaperListPanel`; nothing else
+  depends on it.
+
+## D27. Opacity carries relevance for the selected paper's network — ACTIVE
+
+- **Decision.** With a paper selected, connected papers are drawn with alpha ramped from the
+  Connected-Papers relevance score (70 -> 255), matching `useEdgeLayer`'s existing edge ramp so a
+  node and the edge touching it read as the same strength. The three channels stay independent:
+  **hue = direction** (D20), **alpha = relevance**, **size = citation count**.
+- **Alternatives.** (a) The previous flat alpha 235 for every connected paper — a paper sharing
+  dozens of references with the selection looked exactly as important as one with a single
+  incidental link, across a network of 69,286 papers for "Attention Is All You Need". (b) Use
+  size for relevance — already taken by citation count, and doubling up on one channel is what
+  made the old edge rendering unreadable (D20). (c) Cull the weakly related instead of dimming —
+  that is what the relevance slider already offers; dimming keeps the shape of the network
+  visible while ranking it.
+- **Why.** The score was already computed per node and used only to CULL via the slider, so the
+  information existed and was being thrown away.
+- **Honest limit.** `useRelevanceScores` scores only the top 3,000 candidates (the bound added in
+  D24 to stop hub selections freezing the tab), so on a large network the remainder score 0:
+  measured p10/p50/p90 = 0/0/0 over 69,286 connected papers, max 1. In practice this renders as
+  "the 3,000 most-related are bright, the rest sit at the alpha floor" rather than a smooth
+  gradient. That is a truthful summary — those papers ARE weakly related — but it is coarser
+  than the ramp suggests, and raising the cap would reintroduce the freeze.
+- **Revert.** Restore the constant `ca = 235` for DIR_REFERENCE/DIR_CITER in `usePointsLayer`'s
+  colour pass.
+
+## D28. The crop includes every caption LINE, not just the first — ACTIVE
+
+- **Decision.** `locateCrop`'s figure path now sets the crop's lower bound from
+  `captionBlockBottom(items, cap)` — the baseline of the caption's LAST line — instead of
+  `cap.y`, the baseline of its first.
+- **Why.** pdf.js reports a caption's position as the baseline of its opening line, and user
+  space is y-up, so every wrapped line sits BELOW `cap.y`. Cropping to `cap.y` therefore clipped
+  any caption that did not fit on one line, which is why a one-line figure caption rendered
+  correctly while a three-line table caption on the same page was cut off mid-sentence.
+- **How the block is bounded.** Walk down from the caption baseline taking lines that overlap
+  its column and sit within `CAPTION_LINE_GAP` (20pt) of the previous one — continuation lines
+  are far closer together than the gap to the next block — stopping after `CAPTION_MAX_LINES`
+  (8) so a caption-shaped paragraph cannot swallow the body text beneath it. Runs sharing a
+  baseline are skipped, since pdf.js splits one line into several items on style changes (the
+  same fact that made `captionLineWidth` necessary).
+- **Alternatives.** (a) A fixed extra padding below `cap.y` — either too small for a long caption
+  or large enough to drag in unrelated text, and it cannot adapt to font size. (b) Use the
+  caption's reported `height` — that is the height of one line, not the block.
+- **Revert.** Restore `y0: cap.y` in `locateCrop`.
+
+## D29. "No reference data" is distinguished from "no references in this map" — ACTIVE
+
+- **Decision.** `build_reference_availability.py` computes a per-paper `references_available`
+  flag from the S2AG reference table; s11 ships it in `papers-index.arrow`, and
+  `CitationExplorer` says "No reference data available for this paper" instead of the generic
+  "No references in this corpus" when it is false.
+- **Why.** Those two states render identically as an empty list but mean opposite things, and one
+  of them is a claim about the paper that is simply false. S2 supplies no reference list at all
+  for **66,936 of 912,429 papers (7.3%)**, and the gap is systematic in recent work — 2019-2022
+  ~99% covered, 2024 92.3%, 2025 92.4%, **2026 only 70.4%** — because S2's reference extraction
+  lags publication. The case that surfaced it: "Gemini 2.5" (arXiv 2507.06261) has 2,935
+  in-corpus citers and zero references, so the panel implied a landmark report cites nothing.
+  This mirrors `citation_count_available`, which already separates "unavailable" from "zero".
+- **Alternatives.** (a) Infer it in the browser from `citedByCount > 0 && refs.length === 0` —
+  wrong for a genuinely reference-free item and unable to distinguish an unmatched paper.
+  (b) Backfill from OpenAlex `referenced_works` — worth doing, but that is new data rather than
+  honesty about existing data; the flag is a prerequisite either way.
+- **Gotcha.** A few arXiv ids map to more than one S2 corpusid, so the crosswalk join fans out —
+  the first run produced 912,479 rows for a 912,429-paper corpus and s11's schema length check
+  caught it. The flag is now aggregated per `node_id` (available if ANY corpusid has refs).
+- **Revert.** Delete the flag from `PAPERS_INDEX_SCHEMA` and the `!referencesAvailable` branch in
+  `CitationExplorer`; the emitter tolerates a missing parquet by assuming availability.
+
+## D30. The author filter uses an inverted index, not per-paper author lists — ACTIVE
+
+- **Decision.** `author_ids` left `papers-index.arrow`. Per-paper lists moved into the
+  `papers-detail-N.arrow` shards (which the details panel already fetches on selection), and s11
+  additionally emits `author-papers-N.arrow` — `author_id -> node_ids`, 1,405,248 authors across
+  176 shards of ~0.6 MB. `useFilterMask` resolves a selected author by fetching that author's
+  shard instead of scanning every paper.
+- **Alternatives.** (a) Keep the per-paper lists resident — 18.2 MB of the eager bundle, and each
+  filter change walked all 912,429 rows testing set membership. (b) Move them to detail shards
+  only — fixes the bytes but breaks the filter, which needs every paper's authors at once.
+  (c) One monolithic inverted index — same total (25.6 MB) but paid entirely to answer a
+  one-author question.
+- **Why.** Inverting turns "which papers has this author written" from a corpus scan into a
+  lookup, and simultaneously removes the reason those lists had to ship eagerly. Measured:
+  `papers-index.arrow` **98.8 -> 80.6 MB raw, 42.8 -> 28.1 MB gzipped**, so titles arrive ~15s
+  sooner on the user's ~1 MB/s link; an author filter now costs one ~0.6 MB fetch, cached per
+  shard so a second author in the same block is free.
+- **Shard size.** 8,000 authors/shard. The first attempt used 50,000, giving 5.56 MB shards —
+  correct but absurd for a single-author lookup.
+- **Consequence to keep in mind.** `DetailsPanel` reads author ids from `detail`, so they are
+  empty for the instant before it resolves — the same window in which `authorNames` is empty, so
+  the two stay in step.
+- **Revert.** Restore `author_ids` to `PAPERS_INDEX_SCHEMA` and the scan in `useFilterMask`; the
+  extra artifacts are additive and harmless if unused.
+
+## D31. Citation counts are floored at the citers we can enumerate — ACTIVE
+
+- **Decision.** s11 raises every paper's `cited_by_count` to at least its in-degree in the
+  corpus citation graph, and marks a count as available whenever we can enumerate citers.
+- **Why.** A global citation count cannot be lower than the citing papers we can name, yet
+  **337,426 papers (37%)** reported exactly that, understating by **8,272,741 citations**. The
+  case that surfaced it: "Stabilizing Reinforcement Learning in Differentiable Multiphysics
+  Simulation" showed 1 citation while its Cited-by tab listed 19. Cause: the 2015-2024 half of
+  the merge carries only OpenAlex counts, and OpenAlex loses citation coverage for arXiv-only
+  preprints after the MAG shutdown — 99.9% of affected papers have no S2 count, and the split is
+  stark by year (2021-2024: 55-60% affected; 2025-2026: 0.1%).
+- **Alternatives.** (a) Leave provider counts untouched — self-contradictory in the UI, which
+  displays both numbers on the same panel. (b) Sum providers — double counts. (c) Backfill real
+  S2 counts for the historical half — the CORRECT repair, and still open (see the follow-up
+  task); this floor is what can be justified from data already on disk.
+- **Honest limit.** This is a floor, not the truth. The real count includes citers outside the
+  corpus, so these papers are still understated — just no longer provably wrong. Node radius and
+  the citation filter both read this column, so they improve with it.
+- **Revert.** Drop `_citation_floor` from `_build_points` and `_build_papers_index`.
+
+## D32. The author index ships as slim name-only chunks; ids ride with the papers — ACTIVE
+
+- **Decision.** `authors.arrow` is no longer emitted. s11 writes `authors-N.arrow`
+  (`author_id`, `name`, `count`, `verified`) in 120,000-row chunks, and `openalex_id` moves into
+  the `author-papers-N.arrow` shards. The frontend fetches the chunks sequentially after first
+  paint, each one replacing the cached array so search improves as they land; `AuthorPanel`
+  reads the profile id from the shard it already fetched to apply the filter.
+- **Why.** The old file was **58.6 MB / 21.2 MB gzipped**, fetched whole after first paint purely
+  so search could match names — over a ~1 MB/s link that is ~21 s before the first author is
+  findable. `openalex_id` was **40.3%** of those bytes and only one link in one panel reads it.
+  Measured after: **12 chunks totalling 13.5 MB gzipped** (−36%), first chunk **1.18 MB** — names
+  searchable in roughly a second instead of twenty.
+- **Alternatives.** (a) A prefix trie built at build time — smaller still, but it answers only
+  prefix queries and the box matches substrings ("xing" finds "Eliot Xing"). (b) Server-side
+  search — there is no server; the app is static files. (c) Keep one file, drop only
+  `openalex_id` — 12.8 MB gzipped, but still all-or-nothing, so search stays dead until it lands.
+- **Honest limit.** `verified` (one byte) had to stay in the resident index because the details
+  panel flags unconfirmed identities for authors whose shards are not loaded. And a name typed
+  before the last chunk arrives can miss a real author; the count in the box says how far along
+  the index is.
+- **Trap this exposed.** Chunks first accumulated by pushing into one array. Consumers memoise
+  derived maps with `[authors]`, and an array mutated in place keeps its identity forever, so
+  every such memo froze at the empty map built on the first render. The failure was silent and
+  partial: the filter applied and the map showed the right 7 papers, while the filter bar and the
+  author panel rendered *nothing*, because both look names up in that frozen map. Each chunk now
+  hands back a new array (~8.4M reference copies over the whole load — a few tens of ms).
+- **Revert.** Restore the single `write_arrow(read_arrow(ARTIFACTS_DIR / S.AUTHORS), ...)` in s11
+  and drop `n_author_chunks` from the manifest; `loadAuthors` already falls back to
+  `authors.arrow` when the manifest declares no chunks.
+
+## D33. Playwright budgets are sized for software GL, and the suite runs serially — ACTIVE
+
+- **Decision.** `timeout: 180_000`, `expect.timeout: 60_000`, `fullyParallel: false`,
+  `workers: 1`.
+- **Why.** Headless Chromium has no GPU here, so deck.gl rasterises ~900k points on the CPU
+  through SwiftShader. A CPU profile of the first 30 s of load put **94.7% of samples in
+  "(program)"** — native/GL work, not app JS — with main-thread stalls of **24 s, 12 s and 14 s**
+  back to back. Playwright polls actionability on that same thread, so a 30 s budget expired
+  during load; every action then reads as "the app ignored my click". Raising the budget makes
+  the same interactions succeed unchanged.
+- **Consequence for #10.** "deck.gl click handlers never fire in the test env" is very likely
+  this and not a deck.gl/mjolnir bug: a plain React `<button>` in the search dropdown showed the
+  identical symptom, and both started working at 120 s budgets.
+- **Alternatives.** (a) Keep 30 s and mark tests flaky — hides real regressions. (b) Force a GPU
+  in CI — not available on this box. (c) Shrink the corpus for tests — then the suite stops
+  guarding the thing that is actually shipped.
+- **Honest limit.** The suite is now slow (minutes, not seconds). It is a regression guard run
+  deliberately, not a watch-mode check.
+- **Revert.** Restore the 30 s / 10 s budgets and `fullyParallel: true`.
+
+## D34. Citation counts come from the S2 bulk snapshot, not from provider fields — ACTIVE
+
+- **Decision.** `build_s2_citation_counts.py` derives every paper's true global citation count
+  from `data/s2ag/cited_by.parquet` — one row per cited paper, and the **length of its citer list
+  IS the count** — and s11 takes `max(provider, s2_global, in_corpus_floor)`. This supersedes the
+  D31 floor as the primary source; the floor now only carries papers absent from the snapshot.
+- **Why.** D31 fixed the self-contradiction (1 shown, 19 listed) but not the understatement.
+  Measured on the merged 1,000,490-paper corpus: **744,512 papers raised, +59,079,066 citations**,
+  taking the corpus total from **9,352,609 to 68,431,675** — the app was displaying **13.7%** of
+  real citations. The user's example, "Stabilizing Reinforcement Learning in Differentiable
+  Multiphysics Simulation", goes 1 → **40**; "Gemini 2.5" goes 3,844 → **6,428**. By year the gap
+  tracks the MAG shutdown exactly: 2018-2024 raise 88-91% of papers, 2025 57%, 2026 12%.
+- **Cost.** One streaming pass, **2.3 minutes** over 109,580,699 rows / 17.7 GB. Only Arrow list
+  *lengths* are read (`value_lengths()`), so the citing ids are never materialised; peak memory is
+  one int64 per corpus paper. 991,999 of 1,000,490 papers (99.2%) resolve to an S2 corpusid,
+  775,323 of those have ≥1 citation.
+- **Alternatives.** (a) The S2 batch API (`s16_enrich_s2_citations.fetch_authoritative_counts`) —
+  correct but rate-limited across ~1M papers, and it re-fetches what is already on disk.
+  (b) Keep the D31 floor alone — leaves 744k papers understated. (c) Sum providers — double counts.
+- **Honest limit.** The count is as of the S2AG snapshot on disk (2026-08-16), so it ages; and it
+  is S2's view, which disagrees with Google Scholar. Both are stated on the panel already.
+- **Revert.** Delete `_s2_global_counts` from s11 (the `np.maximum` makes a missing file a no-op)
+  and the D31 floor resumes alone.
+
+## D35. Affiliations are NOT inferred from an author's other papers — REJECTED (measured)
+
+- **Decision.** Do not carry an author's affiliation across their papers. Post-2021 org
+  attribution stays low rather than becoming wrong. `eval_affiliation_carryover.py` keeps the
+  experiment so nobody has to re-run the reasoning.
+- **Why it was tempting.** Only **270,342 of 1,000,490 papers (27.0%)** carry `institution_ids`,
+  and the collapse tracks the MAG shutdown exactly: 50-63% before 2021, 17-21% after, **6.0% in
+  2026**. Meanwhile **558,353 of the 730,148 unaffiliated papers have at least one author we know
+  an institution for** — the rule would take attribution from 27.0% to **82.8%** coverage.
+- **Why it was rejected.** Held-out precision, scoring papers whose true affiliations we know
+  with the paper itself excluded:
+
+  | rule | precision | recall |
+  |---|---|---|
+  | nearest affiliated paper, ±1y, all authors | 34.2% | 55.7% |
+  | first author only, ±1y | 50.1% | 27.4% |
+  | agreement of ≥2 authors, ±2y | **61.6%** | 37.4% |
+  | single-author papers only, ±1y | 45.5% | 40.9% |
+
+  The best variant is wrong about **two times in five**. The existing affiliation pipeline runs
+  at 98-100% precision, and a "CMU" filter that is a third wrong is worse than one that is
+  honestly incomplete. Single-author papers — where per-paper truth is unambiguous, so
+  multi-author dilution cannot be blamed — score only 45.5%, which says the rule itself is weak:
+  authors move, hold several affiliations at once, and OpenAlex ids mix department- and
+  university-level entities.
+- **What is left.** Parsing affiliations out of the PDFs. GROBID is **Apache-2.0** (checked
+  2026-08-17), so licensing is fine. OpenAlex offers nothing else to mine: `org_affiliations_json`
+  and `institutions_json` are empty for **0.0%** — literally all — of the 730,148 unaffiliated
+  papers, so there are not even raw affiliation strings to re-map.
+- **No API has this, and it is structural.** Checked live against six 2023-2026 papers our
+  corpus lists as unaffiliated (2026-08-17): **OpenAlex** returns neither `institutions` nor
+  `raw_affiliation_strings`; **Semantic Scholar** `authors.affiliations` is empty for 0/6;
+  **arXiv's own API** returns zero `<arxiv:affiliation>` elements; **DataCite**, which holds the
+  `10.48550/arXiv.*` DOIs, has `affiliation` on 0 creators. The cause is upstream of all of them:
+  **arXiv does not require an affiliation at submission**, so it never enters the metadata chain,
+  and every aggregator either inherits publisher metadata (which a preprint has none of) or runs
+  its own PDF extraction. The published-version route is also thin — only **1.7%** (9,172) of the
+  532,003 post-2021 unaffiliated papers carry a non-arXiv DOI; 89% are recorded solely as
+  "arXiv (Cornell University)". PDF/LaTeX extraction is not one option among several; it is the
+  only remaining source. arXiv bulk PDFs are a
+  **requester-pays** S3 bucket (~500 MB monthly tars, ~6.8 TB for 2021-2026), which makes a full
+  post-2021 pass a real AWS bill and a multi-week GROBID run. Scoped by influence, using the true
+  S2 counts (D34), it becomes tractable: **≥50 citations = 57,200 papers ≈ 86 GB**, **≥25 =
+  102,690 ≈ 154 GB**. That is a cost/scope call for the project owner, not something to start
+  unilaterally.
+- **Revert.** Nothing to revert — nothing was applied. If the rule is ever wanted, it must ship
+  behind its own provenance marker (like the existing `ROSTER` badge) and never be blended into
+  evidence-backed attribution.
+
+## D36. Org-scoped "top researchers" are precomputed by s10 — ACTIVE
+
+- **Decision.** `Institution.top_authors` (20 per unit) is computed offline in s10 and shipped in
+  `orgs.json`; the browser reads it instead of counting author ids across the unit's papers.
+- **Why.** D30 moved per-paper `author_ids` out of the resident papers index into the on-demand
+  detail shards. `topAuthorsInNodes` still read `ds.papers[n].authorIds`, which is now empty until
+  a paper is selected — so every org's researcher list rendered **empty**, silently, with no
+  error. The e2e suite caught it ("selecting a lab reveals org-scoped researchers") only once the
+  D33 timeout fix let that test actually run to its assertion.
+- **Alternatives.** (a) Fetch the detail shards for a unit's papers — a large org spans thousands
+  of papers and therefore most shards, to display twelve names. (b) Put `author_ids` back in the
+  resident index — that is the 18.2 MB D30 removed, over a 1 MB/s link. (c) Invert the
+  author-papers index in the browser — it is sharded by author, so answering "who is in this org"
+  means fetching all of it.
+- **Honest limit.** The list is fixed at build time, so it does not respond to the date or
+  citation filters — it names the unit's most prolific researchers overall. Older artifacts
+  without the field keep the in-browser fallback, which stays empty; that is why the field is
+  optional rather than required.
+- **Revert.** Drop `_attach_top_authors` from s10; the frontend falls back automatically.
+
+## D37. Placeholder artifacts are merged, never overwritten — ACTIVE
+
+- **Decision.** `s02_build_arxiv_corpus` merges its empty affiliation placeholder into any
+  existing `affiliations.parquet` (keeping every row that carries evidence) and no longer
+  rewrites `institutions.json` when one is already present.
+- **Why.** The 1991-2014 backfill ran s02 over the backfill snapshot, which overwrote
+  `affiliations.parquet` with **88,061 rows and zero evidence**, destroying the OpenAlex
+  authorship evidence for **25,279 papers**. s10 read that file, found no unit evidence, and
+  emitted an `orgs.json` with **zero department/lab sub-units** — no BAIR, no CMU Robotics
+  Institute, no FAIR, no MSR Asia — while logging nothing but a normal-looking success. The
+  rebuild would have shipped it. Recovered because the evidence also lives in
+  `corpus_active.org_affiliations_json`; the recovered artifact yields **30 sub-units**.
+- **Alternatives.** (a) Re-fetch affiliations from OpenAlex — thousands of API calls to restore
+  data already on disk. (b) Rebuild it from the corpus every time — that is the recovery path,
+  but it hides the bug rather than fixing it. (c) Write the placeholder to a different filename —
+  then two stages disagree about which file s10 should read.
+- **Second casualty, found later.** The same s02 call also did `write_json({}, INSTITUTIONS_OUT)`,
+  emptying `institutions.json` — the OpenAlex id → name registry. s10 falls back to the raw id as
+  a display name, so the org directory silently listed **"I1294671590"** instead of "Centre
+  National de la Recherche Scientifique" for all **9,926** non-curated institutions, and org
+  search for "tsinghua" matched nothing. Nothing errored; the counts were all correct. Caught by
+  the e2e test `org search finds a non-curated corpus institution`, and recovered by re-merging
+  the per-paper `institutions_json` column out of `openalex_enrichment.parquet` (**10,465**
+  institutions). s02 now writes that file only when it does not already exist.
+- **Honest limit.** This protects the artifacts going forward; it does not add a check that the
+  evidence is still there. The real guard is the e2e suite — the two tests that caught both
+  casualties existed all along, and only started running once D33's budgets let them.
+- **Revert.** Restore the unconditional `write_parquet` / `write_json` pair.
+
+## D38. A reading list is imported as CSL-JSON and matched client-side — ACTIVE
+
+- **Decision.** Users import their own library (Zotero, Mendeley, Paperpile, BibTeX) and it
+  becomes a filter facet like org or author. The interchange format is **CSL-JSON inside a small
+  envelope** that adds the one thing CSL has no field for — which list each item came from.
+  `tools/zotero_export.py` produces it from a local Zotero database, Zotero's local HTTP API, or
+  the hosted Web API with a read-only key. Matching happens **in the browser**, identifier-first:
+  arXiv id, then DOI (an arXiv DOI reduces to an arXiv id), then normalised title.
+- **Why this format.** CSL-JSON is what every reference manager already exports, so a user who
+  clicks "Export Collection → CSL JSON" gets a file that imports without the script at all — it
+  just arrives without list names. Inventing a bespoke schema would have meant nobody could
+  produce it except our own tool. `custom` is CSL's sanctioned home for application data, so the
+  file stays valid CSL for anything else that reads it.
+- **Why client-side matching.** The alternative is a server, and there isn't one — the app is
+  static files. It also keeps a personal reading history on the user's machine: the library never
+  leaves the browser. The cost is one artifact, `import-index.arrow` (node_id → arXiv id for all
+  1,000,490 papers, **17.9 MB**), fetched **only when someone actually imports** — verified by
+  asserting zero requests for it before the file is chosen. Titles need no artifact at all; they
+  are already resident from the D30 chunks.
+- **Alternatives.** (a) Ship DOIs too — another ~25 MB for the **1.7%** of relevant papers that
+  have a non-arXiv DOI. (b) Match on the server — no server. (c) Store the imported file rather
+  than the resolved node ids — re-matching on every reload would re-fetch the 17.9 MB index.
+- **Honest limits.** Title matching is the only step that can be wrong (two papers can share a
+  title), so it runs last, and it needs the streamed titles — an import in the first seconds
+  resolves on identifiers alone, which is why the panel re-matches once `papersReady` fires.
+  Node ids are positions in the current build, so the persisted list records the corpus size it
+  was matched against and is discarded when a rebuild changes it; the user re-imports. Measured
+  on a real 22-paper library: **18 matched**; the four misses were GPT-1, GPT-2 and the Nature
+  DQN paper (never on arXiv) plus one paper outside the old corpus's date range.
+- **Revert.** Drop `_emit_import_index` from s11, the `readingLists` facet from the store and
+  mask, and `ReadingListPanel` from the sidebar; `tools/zotero_export.py` is standalone.
+
+## D39. Placeholder rows never claim their data is available — ACTIVE
+
+- **Decision.** `placeholderPapers` sets `citationCountAvailable` from whether that paper's point
+  tile has actually loaded, instead of hard-coding `true`; and `fillPointTile` updates the
+  resident paper row as each tile lands, so a real count appears without waiting for the separate
+  `papers-index.arrow` fetch. The filter bar likewise reports **two** numbers when they differ:
+  how many papers match, and how many of those the map can draw yet.
+- **Why.** Progressive loading (D23) means a paper can have a title before it has coordinates or
+  a citation count. The placeholder was zero-filled but flagged available, so the details panel
+  printed a confident **"0 citations · Semantic Scholar S2AG (2026-08-11)"** for a paper whose
+  artifact says **40** — indistinguishable from the genuinely-wrong counts D31 and D34 existed to
+  fix. The same silence hit an imported reading list: 17 papers matched, **6** were drawn, and
+  nothing said the other 11 were still downloading — the user reported "I was only able to see
+  like 5 papers".
+- **Alternatives.** (a) Block the panel until `papers-index.arrow` lands — that artifact is
+  deliberately deferred; blocking on it undoes D23. (b) Show a spinner per field — noisier than
+  the em-dash the panel already uses for genuinely-unavailable data. (c) Load every tile eagerly —
+  42 MB, which is exactly what D23 removed from the critical path.
+- **Honest limit.** "N on the map so far" is only shown while it is true, so it cannot become
+  background noise — but it does mean the count moves while tiles stream. That is the truth
+  moving, not the UI flickering.
+- **Revert.** Restore `citationCountAvailable: true` in `placeholderPapers`, drop the `papers`
+  argument from `fillPointTile`, and drop `drawn` from `ActiveFilters`.
+
+## D40. Point rows are also sharded by node_id, not just by reveal level — ACTIVE
+
+- **Decision.** s11 emits `points-by-node-N.arrow` (489 shards of 2,048 rows, ~89 KB each)
+  alongside the reveal-level tiles. When a filter or selection needs papers whose tiles have not
+  loaded, the frontend fetches the shards holding exactly those node ids
+  (`ensurePositionsFor`), falling back to the level tiles past 400 shards, where they are the
+  better deal because they are ordered by importance.
+- **Why.** Reveal-level tiles are ordered by **importance**, so an arbitrary selection is
+  scattered across every level: a 19-paper reading list spanned levels 0-8, meaning **43 MB had
+  to be downloaded to place 19 dots**. Measured after: **0.46 MB in 11 requests**, ~90x less.
+- **The bug this exposed.** `ensurePointTiles` computed its work list once and then did
+  `if (tilePending) return tilePending` — a request for a deeper level arriving while a fetch was
+  in flight was **silently discarded**, and since the caller is a React effect whose deps do not
+  change again, nothing ever asked twice. On a fast link the eager tiles finish before the user
+  can interact, so it never fired; on a ~1 MB/s link they are still streaming when a filter is
+  applied, so the "load every level" request that a filter triggers was lost. The user's reading
+  list drew exactly the 7 papers living in levels 0-4 and stopped, permanently. It now tracks the
+  deepest requested level and keeps pulling until it is reached, notifying per tile.
+- **Also.** Background streaming (title chunks, author chunks, edges) is gated: while an
+  interactive fetch is outstanding, no new background fetch starts. A browser Priority Hint alone
+  was not enough — it reorders queued requests but cannot preempt a multi-megabyte download
+  already holding one of the six HTTP/1.1 sockets.
+- **Honest limit.** Wall-clock could not be verified here. Under a 1 MB/s emulation the app takes
+  66 s to fetch a file that a blank page fetches in 7.5 s at the same throttle, because headless
+  Chromium rasterises 1M points through SwiftShader and starves the main thread (D33). The byte
+  counts above are environment-independent; the seconds are not, and were not quoted.
+- **Cost.** +43 MB of artifacts on disk (the same rows as `points.arrow`, re-sliced) and 489 more
+  files. Nothing extra is downloaded at startup.
+- **Revert.** Drop `_emit_position_shards` from s11 and `ensurePositionsFor` from the frontend;
+  `usePointsLayer` falls back to `ensurePointTiles(MAX)` on its own.
+
+## D41. GPU attribute memos depend on the tile epoch, and the fit avoids overlay chrome — ACTIVE
+
+- **Decision.** The three `useMemo`s in `usePointsLayer` that snapshot point arrays (`geometry`,
+  `rgb`, `attributes`) take `tileTick` as a dependency. `fitMatching` accepts `insetLeft` /
+  `insetTop` and frames the selection inside the visible rectangle. The camera fit now fires for
+  reading-list filters, not only org/author ones.
+- **Why.** `ds.points.{x,y,r,g,b,revealLevel,monthIndex}` are typed arrays that `fillPointTile`
+  **mutates in place**, so `ds` keeps its identity and a memo keyed on it never rebuilt. Papers
+  whose tile or shard arrived after first paint kept what `emptyPoints` zeroed: position
+  **(0,0)**, colour **black**, `revealLevel` **32767**. They were therefore drawn as a single
+  black dot at the world origin and GPU-culled everywhere else. An imported 19-paper reading list
+  rendered **6** dots; after the fix, **17 of 17** (measured by connected-component analysis of
+  the framebuffer, 11,904 lit pixels ÷ ~805 per dot, with two blobs being genuinely overlapping
+  papers).
+- **Third instance of one bug.** D32 (author chunks), D39 (placeholder citation counts) and this
+  are all the same shape: a shared array filled progressively while memoised consumers hold a
+  stale view. The rule is now explicit — **anything that fills `ds.points.*` in place must bump
+  a signal that every derived memo depends on.**
+- **Why the fit changed too.** Reading lists were excluded from the zoom-to-fit, so 19 papers
+  loaded and rendered correctly while remaining invisible: single pixels scattered across a
+  million-paper map at the home view. Range facets (citations, dates) stay excluded — they are
+  dragged continuously and re-framing on each step would yank the view. Labels stay excluded
+  because `focusLabel` already moves the camera.
+- **flipY.** `OrthographicView` defaults to `flipY: true`, so world y grows *downward* on screen:
+  the top inset subtracts from `target.y`. Adding moved content the wrong way, caught by
+  measuring dot positions rather than assuming.
+- **Revert.** Drop `tileTick` from the three dependency arrays (points reappear only when some
+  other dep happens to change) and pass no insets to `fitMatching`.
+
+## D42. Restriction-aware labels vote by hierarchy membership, not nearest centroid — ACTIVE
+
+- **Decision.** `useRelevantLabels` resolves each visible paper's cell in every band by walking
+  `points.regionLeaf` up the `regions.arrow` parent chain, and keeps a label when it covers
+  `max(2, 5%)` of the **visible set**. The old rule — vote for the nearest label centroid within
+  a per-band radius, keep when votes clear `2%` of the **region's** size — is gone.
+- **Why.** Filtering to Graham Neubig's papers surfaced *"Sentiment Analysis and Opinion Mining:
+  Sarcasm Detection"* and *"Spam and Phishing Detection"* while dropping *"Language Models"*. Two
+  compounding causes, measured on his 328 papers:
+  1. **Nearest centroid ≠ membership.** A small region whose centroid sits inside a dense
+     neighbourhood collects votes from papers that belong elsewhere: **76 of his papers voted for
+     a 159-paper sarcasm region** none of them are in.
+  2. **The threshold punished big regions.** At 2% of region size, *Language Models* (65,048
+     papers, **213 of his**, 65%) needed **1,301** votes and was rejected; the sarcasm region
+     needed **3** and survived. Systematically, accurate labels lost and niche ones won.
+- **Measured after.** Neubig's top labels by true membership: Language Models 65%, Machine
+  Translation 36%, Multilingual NMT 23%, Translation Quality 18%, RAG 16%, Text Generation 13%,
+  Hallucination Detection 11%, Dependency Parsing 10% — and the map draws Vision-Language Models,
+  Multimodal LLMs, cs.AI/cs.LG Large Language Models, RAG and Code Generation. No sarcasm, no spam.
+- **Small selections now work too.** The old threshold made big regions unreachable for a small
+  set, so an author with ~15 papers cleared nothing anywhere and got **no labels at all**. A share
+  of the visible set is scale-free: Tuan Anh Le's 16 papers now yield Reconfigurable Intelligent
+  Surfaces (67%), Channel Estimation (47%), RIS (27%), Massive MIMO (20%).
+- **Bonus: it is cheaper.** O(voters x depth) instead of O(voters x bands x labels-per-band), and
+  the O(labels²) per-band radius pass is gone entirely. `MAX_VOTERS` could therefore rise from
+  2,500 to 20,000.
+- **Amended: threshold AND ranking.** A share test alone empties the map for BROAD filters — an
+  org with 14,522 papers spreads them across the whole atlas, so almost no single region reaches
+  5% and the view loses its labels exactly when it most needs orientation. Each band therefore
+  also always keeps its **top 6 regions by share** (still never below 2 papers). Measured labels
+  kept: Google 11 -> 68, CMU 11 -> 69, DeepMind 13 -> 66, OpenAI 18 -> 63; a 28-paper org is
+  unaffected at 37. Thresholding answers "is this label meaningful?", ranking answers "what is
+  this view mostly about?", and a filtered map needs both.
+- **Amended again: a filtered map gets the finer bands too.** With ~6 candidates per band and
+  only bands 0-1 offered at the home view, a 5,698-paper organisation drew **five labels for the
+  whole map**. The band gate exists to stop a million-paper map drowning in text; under a filter
+  that pressure is gone while the need for orientation is higher. So a restricted view offers
+  EVERY band as a candidate (`visibleLabelLevels(..., restricted)`), coarse bands sorted first so
+  they still claim the prime space, and `TOP_PER_BAND` rose 6 -> 14. The greedy collision placer
+  already rejects overlaps, so extra candidates fill empty space and cannot clutter occupied
+  space. Amazon went from 5 labels to ~16 spread across its cloud — Object Detection, Visual
+  Search, Thompson Sampling, Automatic Speech Recognition, Federated Learning, Code Generation.
+  A label whose box leaves the viewport is now dropped rather than drawn half off-screen.
+- **Honest limit.** Membership needs `regions.arrow`, which streams in after first paint; until it
+  lands the hook returns null (every label relevant), which is the pre-filter behaviour.
+- **Revert.** Restore the centroid/radius implementation from git history. Note that doing so
+  reintroduces both failure modes; the region-size threshold in particular is not salvageable.
+
+## D43. Org attribution ingests COMET's arXiv affiliation extraction — ACTIVE
+
+- **Decision.** `build_comet_affiliations.py` joins `cometadata/arxiv-author-affiliations-matched-ror-ids`
+  (CC0, 2,799,088 papers, 2.4 GB) onto the corpus by arXiv id. ROR ids bridge to our OpenAlex
+  institutions via the `ror` field present on **99.7%** of the registry. s10 merges the result on
+  top of publisher-asserted authorship, never replacing it, and records `extracted_count` per org
+  so the UI can distinguish the two confidences.
+- **Result.** Corpus attribution **27.0% → 75.4%**. By year: 2021 47.7→90.0%, 2022 21.0→87.1%,
+  2023 18.0→87.1%, 2024 16.8→86.9%, 2025 16.9→79.6%. **2026 is unchanged (6.0%)** — COMET's
+  snapshot ends December 2025, and as of 2026-08-18 they have published no newer extraction
+  (their recent releases are ROR-matcher training data, DataCite affiliations and funding
+  extraction).
+- **ROR links universities and NOT companies.** Measured across all 2.8M rows: Google's ROR
+  (`00njsd438`) appears **zero** times and OpenAI's zero, while Carnegie Mellon's appears
+  **20,126**. COMET *extracts* the strings correctly — "Google Research", "Meta AI", "FAIR at
+  Meta" — its ROR linker just does not resolve them. Without a fix, the org tree gained 10,614
+  papers for CMU and **nothing at all** for Google, which would have quietly skewed the entire
+  industry-vs-academia picture the project exists to show.
+- **So company matching is curated by name** (`pipeline/directory/org_names.py`), for companies
+  and neolabs only. Universities stay ROR-only: they already resolve at high precision, and
+  name-matching them adds risk ("Berkeley" is also Lawrence Berkeley National Laboratory) for no
+  gain. Patterns follow `units.py` discipline — acronyms only as standalone uppercase tokens,
+  explicit vetoes (`Amazon rainforest`), and `\bMeta\b(?!-)` so "Meta-Learning Lab" is not Meta.
+- **Gains.** Google 4,633 → **14,522**; Microsoft Research 2,423 → **13,134**; Meta 1,594 →
+  **7,107**; Amazon 1,282 → **5,698**; DeepMind 569 → **4,293**; NVIDIA 705 → **3,893**; OpenAI
+  101 → **402**; AI2 251 → **1,512**. Feeding the same strings to `extract_unit_keys` finally
+  populates the sub-units this project was built to show: FAIR 479 → **2,505**, MSR Redmond 88 →
+  **1,997**, MSR Asia 369 → **1,972**, Meta AI 84 → **1,760**, Reality Labs 66 → **668**.
+- **Precision evidence.** Random newly-attributed papers carry unambiguous strings ("Google Inc,
+  Mountain View, USA", "AWS AI Labs", "NVIDIA Research", "Facebook Inc., Menlo Park"). FAIR's top
+  researchers come out as Jason Weston, Lior Wolf, Yann LeCun, Dhruv Batra, Devi Parikh.
+- **Honest limits.** This is model-extracted at **91% precision / 81% recall** (COMET's own
+  measurement), not publisher-asserted at 98-100% — hence `extracted_count`, which runs 92-98%
+  for the companies and 58-69% for the universities. **8,219 ROR ids (97,649 mentions) do not
+  bridge**, because those institutions never appear in our OpenAlex registry; among them are real
+  ones (HKUST Guangzhou, Université de Toulouse) and clear ROR mis-matches ("The Ark", an archive
+  in Ireland, 5,631 mentions). Ingesting the ROR registry to close that tail should filter by
+  type and mention count first.
+- **Revert.** Delete `data/interim/comet_affiliations.parquet`; s10 logs a warning and falls back
+  to publisher-asserted affiliations alone.
+
+## D44. The date histogram groups bars adaptively, scales by log, and ignores unplaced papers — ACTIVE
+
+- **Decision.** Months are grouped for DISPLAY into the smallest natural unit (month, quarter,
+  half, year, …) that keeps ≤56 bars; bar height is `log1p(count)/log1p(peak)`; papers whose point
+  tile has not arrived are excluded from the bins. The range control underneath stays
+  month-granular — this changes what is drawn, not what is selectable.
+- **Why, three separate faults the 1991-2026 corpus exposed at once.**
+  1. **One bar per month.** 428 months in a ~260px sidebar is **0.61px per bar against a 1px
+     gap** — the gaps were wider than the bars, so the histogram rendered as nothing.
+  2. **sqrt scale.** arXiv CS output grows ~3 orders of magnitude across the range; sqrt puts the
+     early 1990s at ~3% height, present in the DOM and invisible on screen.
+  3. **Unplaced papers counted as month 0.** `emptyPoints` zeroes `monthIndex`, so at startup
+     ~925,000 papers whose tiles had not loaded stacked into a single 1991 bar and flattened
+     every real one. The bin label read "Jan 1991 – Dec 1991: 925,713 papers" against an artifact
+     whose `month_index` never takes the value 0 at all.
+- **The third is the recurring one.** D39 (citation counts), D41 (GPU attributes) and this are all
+  a placeholder read as fact. The rule stands: anything derived from `ds.points.*` must either
+  skip `UNLOADED_LEVEL` rows or depend on the tile epoch. Here it does both.
+- **Honest limit.** The histogram therefore describes what has loaded, and fills in as tiles
+  arrive — which is why D45 exists to say so out loud.
+- **Revert.** Restore the per-month `bins.map` render and the `Math.sqrt` height.
+
+## D45. Deferred loading is stated, not implied — ACTIVE
+
+- **Decision.** A `LoadingStatus` pill (bottom-right, `role="status"`) names the streams still in
+  flight and their combined percentage, and disappears when they finish. Fed by
+  `deferredProgress()`, which reads the existing per-stream signals; no new plumbing.
+- **Why.** Painting before the data is complete (D23) is right on a ~1 MB/s link, but it makes the
+  interface quietly untruthful in three places at once: a paper with no title looks untitled, a
+  search with no hits looks like it found nothing, and a histogram bar at zero looks like a year
+  with no papers. All three are "not downloaded yet". Measured at 1 MB/s it reads
+  "loading map detail · titles · authors · citations 13%" and climbs to 55% by t+60s.
+- **Alternatives.** (a) Block until loaded — undoes D23. (b) Per-widget spinners — repeats the
+  same message in five places and still cannot explain the histogram. (c) Nothing, as before —
+  the state the user reported twice.
+- **Placement note.** It first went bottom-left and was invisible: the filter sidebar sits above
+  that corner, and the bottom-left already holds the list toggle and the set-topic label. Caught
+  by looking at the screenshot rather than at the DOM.
+- **Revert.** Remove `<LoadingStatus />` from `App.tsx`.

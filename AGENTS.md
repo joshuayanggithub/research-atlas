@@ -1,6 +1,3 @@
-This tool is a research visualizer web application. 
-
-Do not use brazil standards, aws standards. Instead treat this project as a standard open source project without internal Amazon usage. 
 
 ### Organization
 It allows one to view the research of any organization in any granularity. This includes 
@@ -26,9 +23,14 @@ You must also be able to filter works by author and date (start date - end date)
 
 ### Related Works
 
-Some ideas for organization are https://github.com/emeryberger/CSRankings. Clone this and analyze how it works for generating
+There are a lot of related websites whose underlying mechanism is listed in `docs/PRIOR_WEBSITES.md`. Please use their design decisions as reference guides whenever you make a design decision.
 
-Anothe idea is clustering related works by citations, we know that citations between works intrinsically means the works are related, even though no explicit notion of topic is defined by in/out edges. This is seen from https://www.connectedpapers.com/
+When a prior work has a public code repository, clone a shallow working copy into
+`.prior-work-repos/<project>/` and inspect the implementation rather than relying only on its
+marketing or documentation. This directory is intentionally gitignored: never vendor these
+repositories into Research Atlas or commit their contents. Record the upstream URL, checked
+commit, relevant mechanism, and licensing caveats in `docs/PRIOR_WEBSITES.md`; fetch or reclone
+when a current revision is needed, and preserve each upstream project's license.
 
 ### Logging
 Keep the project docs current. They live in `docs/` (only `AGENTS.md`, `CLAUDE.md`, and

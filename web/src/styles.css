@@ -192,6 +192,11 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 .author-link:hover { color: var(--accent); }
 .author-link.active { color: var(--brass); text-decoration-style: solid; }
 .author-link.unverified { text-decoration-style: dashed; }
+.author-more {
+  background: none; border: none; padding: 0 0 0 2px; margin: 0; font: inherit;
+  color: var(--accent); cursor: pointer; white-space: nowrap;
+}
+.author-more:hover { text-decoration: underline; }
 
 /* Organization drill-down hierarchy ----------------------------------- */
 .org-search {
@@ -267,11 +272,24 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 
 /* Date filter: one draggable histogram range brush + presets ---------------- */
 .date-control { margin: 2px 0 10px; }
+/* Tall enough to read a shape. At 44px with 140 monthly bars the distribution was a squat
+   strip where nothing appeared to reach the top, even though the peak bar was at 100%. */
 .date-histogram {
-  position: relative; display: flex; align-items: flex-end; gap: 1px; height: 44px;
+  position: relative; display: flex; align-items: flex-end; gap: 1px; height: 96px;
   margin: 0 0 10px; padding: 0; overflow: visible;
+  /* A gridline at the peak and at the half-way point, so the bars have an axis to reach.
+     The bars use a LOG height, so the 50% line is the square root of the peak count, not a
+     quarter of it — the label in .hist-scale says "log" so this is not read as linear. */
+  background-image:
+    linear-gradient(to bottom, var(--line) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(214, 224, 240, 0.10) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 50%;
+  background-repeat: no-repeat, repeat-y;
 }
-.hist-bar { flex: 1 1 auto; min-width: 0; border-radius: 1px 1px 0 0; transition: background 0.1s; }
+/* min-width guards the failure this replaced: at one bar per month over a 1991-2026 corpus each
+   bar was 0.61px against a 1px gap, so the histogram rendered as nothing at all. Display bars are
+   now grouped (see DateRangeSlider) and this is a floor, not the usual case. */
+.hist-bar { flex: 1 1 auto; min-width: 2px; border-radius: 1px 1px 0 0; transition: background 0.1s; }
 .hist-bar.in { background: var(--brass); }
 .hist-bar.out { background: rgba(214, 224, 240, 0.14); }
 
@@ -624,3 +642,121 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Date histogram scale readout: gives the bars units (peak height + current selection). */
+.hist-scale { display: flex; justify-content: space-between; align-items: baseline;
+  font-family: var(--font-mono); font-size: 10px; margin: 2px 0 4px; opacity: 0.75; }
+
+/* Startup progress. The fill width is measured byte progress (see loadArtifacts.LoadProgress),
+   so it is deliberately NOT animated with an easing that could outrun the real work. */
+.loading-panel { display: flex; flex-direction: column; gap: 10px; width: min(420px, 82vw); }
+.loading-bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.loading-bar-fill { height: 100%; background: var(--brass); border-radius: 2px;
+  transition: width 140ms linear; }
+.loading-meta { display: flex; justify-content: space-between; gap: 12px;
+  font-family: var(--font-mono); font-size: 10.5px; }
+
+/* Active-filter bar: the single place showing every constraint at once. Sits below the top
+   bar, above the map, and disappears entirely when nothing is filtered. */
+.active-filters {
+  position: absolute; top: 62px; left: 50%; transform: translateX(-50%);
+  z-index: 12; display: flex; align-items: center; gap: 10px; max-width: min(92vw, 1100px);
+  padding: 6px 10px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow); backdrop-filter: blur(10px);
+}
+.active-filters-count { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+.active-filters-chips { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.active-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px;
+  font-size: 11px; line-height: 1.2; color: var(--ink);
+  background: rgba(214, 224, 240, 0.07); border: 1px solid var(--line);
+  border-radius: 999px; cursor: pointer;
+}
+.active-chip:hover { background: rgba(214, 224, 240, 0.14); border-color: var(--brass); }
+.active-chip-kind { font-family: var(--font-mono); font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.04em; opacity: 0.6; }
+.active-chip-label { max-width: 190px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.active-filters-clear { white-space: nowrap; }
+@media (max-width: 720px) {
+  .active-filters { top: 106px; max-width: 94vw; padding: 5px 8px; gap: 6px; }
+  .active-chip-label { max-width: 110px; }
+}
+
+/* Filtered-paper list. Anchored bottom-left so it never fights the details panel (right) or
+   the active-filter bar (top); collapsed to a single button until asked for. */
+.paper-list { position: absolute; left: 16px; bottom: 16px; z-index: 14;
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.paper-list-toggle {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; font-size: 12px;
+  color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow); cursor: pointer;
+  backdrop-filter: blur(10px);
+}
+.paper-list-toggle:hover { border-color: var(--brass); }
+.paper-list-body {
+  width: min(380px, 88vw); max-height: min(52vh, 460px); display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); backdrop-filter: blur(12px); overflow: hidden;
+}
+.paper-list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 11px; }
+.paper-list-rows { list-style: none; margin: 0; padding: 4px; overflow-y: auto; }
+.paper-row { display: block; width: 100%; text-align: left; padding: 6px 8px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius);
+  color: var(--ink); }
+.paper-row:hover { background: rgba(214, 224, 240, 0.07); }
+.paper-row.active { border-color: var(--brass); background: rgba(214, 224, 240, 0.10); }
+.paper-row-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; font-size: 12px; line-height: 1.32; }
+.paper-row-meta { display: block; margin-top: 2px; font-family: var(--font-mono); font-size: 10px; }
+/* On mobile the details/author panel is a bottom sheet, so a bottom-left list is buried under
+   it (the toggle was unclickable). Dock it under the active-filter bar instead, where nothing
+   else competes for space. */
+@media (max-width: 720px) {
+  .paper-list { left: 10px; right: 10px; bottom: auto; top: 152px; align-items: stretch; }
+  .paper-list-toggle { align-self: flex-start; }
+  .paper-list-body { width: auto; max-height: 42vh; }
+}
+
+/* One-line description of the current selection (c-TF-IDF over titles). */
+.set-topic { max-width: min(380px, 88vw); padding: 5px 9px; font-size: 11px; line-height: 1.35;
+  color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow); backdrop-filter: blur(10px); }
+.set-topic-kind { font-family: var(--font-mono); font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.05em; opacity: 0.55; margin-right: 6px; }
+
+/* Reading list: importing your own library and seeing it against the map. Deliberately built
+   from the same .chip / .text-btn vocabulary as the other facets — it is one more way to
+   narrow the map, not a separate mode. */
+.reading-list h4 { display: flex; align-items: center; gap: 6px; }
+.reading-list .import-btn { display: inline-flex; align-items: center; gap: 6px; margin: 6px 0; }
+.reading-list .small { font-size: 11px; line-height: 1.45; }
+.reading-list code { font-size: 10px; background: var(--accent-dim); padding: 1px 4px; border-radius: 3px; }
+.reading-list-summary { margin: 6px 0; }
+.reading-list .warn { color: var(--brass); }
+
+/* Deferred-loading readout. Bottom-RIGHT: the left edge is the filter sidebar (which sits above
+   it) and the bottom-left corner already holds the list toggle and the set-topic label. Present
+   enough to answer "is it still coming?", quiet enough to ignore, gone once everything lands. */
+.loading-status {
+  position: absolute; right: 16px; bottom: 16px; z-index: 5;
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 10px; border-radius: 999px;
+  background: rgba(7, 9, 13, 0.82); border: 1px solid var(--line);
+  font-size: 11px; color: var(--subtle); pointer-events: none;
+  backdrop-filter: blur(3px);
+}
+.loading-spinner {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  border: 1.5px solid var(--accent-dim); border-top-color: var(--brass);
+  animation: loading-spin 0.9s linear infinite;
+}
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+/* Respect a reduced-motion preference: the text still updates, it just stops spinning. */
+@media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } }
+.loading-status-text { white-space: nowrap; }
+@media (max-width: 720px) { .loading-status { right: 10px; bottom: 10px; font-size: 10px; } }
+
+/* Why the reference list is shorter than the paper's bibliography. */
+.citation-note { margin: 6px 0 2px; font-size: 11px; line-height: 1.45; }

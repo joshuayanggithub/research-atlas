@@ -1,5 +1,3 @@
-This tool is a research visualizer web application.
-
 ## Usecases
 
 1. Understanding Individual Researchers (advisors, recruitment, etc): It allows one to view the research interest of a singular researchers at specific company, organization, neolab, or university by filtering across time periods and viewing all their published research, as well as the specific topics that research centers around.

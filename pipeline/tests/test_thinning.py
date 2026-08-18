@@ -74,6 +74,50 @@ def test_ties_broken_by_index_not_random():
     assert levels[0] <= levels[1]
 
 
+def _isolated_unimportant_case():
+    """A dense cluster of important papers plus one far-away, uncited paper.
+
+    Spatial thinning alone always admits the isolated point at level 0 — nothing is near
+    enough to block it — which is exactly how 5-citation papers reached the home view of the
+    real map. Returns (coords, importance, index_of_isolated_point).
+    """
+    rng = np.random.default_rng(7)
+    coords = np.vstack([rng.normal(size=(999, 2)) * 5.0, [[500.0, 500.0]]])
+    importance = np.concatenate([rng.uniform(0.5, 1.0, 999), [0.0]])
+    return coords, importance, 999
+
+
+def test_importance_gate_keeps_unimportant_papers_out_of_the_home_view():
+    coords, importance, isolated = _isolated_unimportant_case()
+    levels = assign_reveal_levels(
+        coords, importance, n_levels=16, base_divisor=20.0, top_fraction=0.1
+    )
+    assert levels[isolated] > 0, "an uncited outlier must not seed the coarsest zoom"
+    assert (levels >= 0).all(), "gating must still assign every paper a level"
+
+
+def test_importance_gate_disabled_restores_pure_spatial_thinning():
+    """top_fraction=1.0 is the documented escape hatch — it must reproduce the old behaviour
+    where an isolated point reaches level 0 regardless of importance."""
+    coords, importance, isolated = _isolated_unimportant_case()
+    levels = assign_reveal_levels(
+        coords, importance, n_levels=16, base_divisor=20.0, top_fraction=1.0
+    )
+    assert levels[isolated] == 0
+
+
+def test_gate_relaxes_so_deep_levels_are_unrestricted():
+    """The floor quadruples per level and must saturate, otherwise low-importance papers
+    could never be admitted and the catch-all would swallow them all at the last level."""
+    coords, importance, _ = _isolated_unimportant_case()
+    levels = assign_reveal_levels(
+        coords, importance, n_levels=16, base_divisor=20.0, top_fraction=0.002
+    )
+    assert (levels >= 0).all()
+    # Saturation happens at 0.002 * 4**5 > 1, so nothing should be pushed to the catch-all.
+    assert levels.max() < 15
+
+
 def test_empty_input():
     levels = assign_reveal_levels(np.zeros((0, 2)), np.zeros(0))
     assert levels.shape == (0,)

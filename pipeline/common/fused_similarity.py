@@ -38,10 +38,13 @@ def build_reference_sets(
 def _jaccard(a: set[int], b: set[int]) -> float:
     if not a or not b:
         return 0.0
+    # `a & b` walks the SMALLER set; `a | b` would allocate a whole new set sized |a|+|b|.
+    # With a 74k-citer hub in play that allocation dominated, so derive the union size
+    # arithmetically instead: |a ∪ b| = |a| + |b| - |a ∩ b|.
     inter = len(a & b)
     if inter == 0:
         return 0.0
-    return inter / len(a | b)
+    return inter / (len(a) + len(b) - inter)
 
 
 def citation_score(
@@ -60,22 +63,43 @@ def citation_candidates(
     out_refs: list[set[int]],
     in_citers: list[set[int]],
     overlap_limit: int,
+    hub_degree_limit: int = 0,
 ) -> set[int]:
     """Return direct and strongest second-order citation candidates for ``node``.
 
     Bibliographic-coupling candidates are other papers that cite one of ``node``'s
     references. Co-citation candidates are other papers cited alongside ``node``.
     Direct citations are never capped; only second-order candidates use ``overlap_limit``.
+
+    ``hub_degree_limit`` (0 = disabled) skips *pivots* that are too widely connected to carry
+    any similarity signal. `overlap_limit` bounds the OUTPUT, not the work: the loops below
+    cost ``sum(indeg^2) + sum(outdeg^2)`` over the whole graph regardless. On the 13M-edge
+    all-years graph that measured **30.9 billion** inner steps — a projected 21 hours, with
+    49% of it contributed by just five papers (in-degrees 74k, 69k, 49k, 34k, 32k).
+
+    This is the bibliographic analogue of a stopword. "Both papers cite *Attention Is All You
+    Need*" says nothing — every paper citing it would otherwise be coupled to every other,
+    which is both meaningless and quadratic. Papers over the limit are skipped only as
+    *pivots*; they remain candidates via ``direct`` below, which is never capped, so no
+    citation relationship is lost. Measured at limit=1000: 14x less work (~91 min), excluding
+    1,025 of 912,429 papers (0.112%) that absorb 22% of all edges.
     """
     overlap: Counter[int] = Counter()
+    cap = hub_degree_limit if hub_degree_limit > 0 else None
 
     for reference in out_refs[node]:
-        for other in in_citers[reference]:
+        citers = in_citers[reference]
+        if cap is not None and len(citers) > cap:
+            continue
+        for other in citers:
             if other != node:
                 overlap[other] += 1
 
     for citer in in_citers[node]:
-        for other in out_refs[citer]:
+        refs = out_refs[citer]
+        if cap is not None and len(refs) > cap:
+            continue
+        for other in refs:
             if other != node:
                 overlap[other] += 1
 
@@ -92,6 +116,7 @@ def fuse_candidate_neighbors(
     alpha: float,
     top_k: int,
     citation_candidate_limit: int,
+    hub_degree_limit: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Rank the union of semantic and citation candidates for every paper."""
     n = text_neighbor_ids.shape[0]
@@ -101,7 +126,9 @@ def fuse_candidate_neighbors(
     for i in range(n):
         candidates = {int(j) for j in text_neighbor_ids[i] if j >= 0 and j != i}
         candidates.update(
-            citation_candidates(i, out_refs, in_citers, citation_candidate_limit)
+            citation_candidates(
+                i, out_refs, in_citers, citation_candidate_limit, hub_degree_limit
+            )
         )
         candidates.discard(i)
         if not candidates:

@@ -5,10 +5,12 @@
 // aggregate is never mistaken for a specific lab. Units come from raw-affiliation evidence
 // (see docs/ORGANIZATION_DIRECTORY.md); a parent match never implies a child.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, Users, X } from "lucide-react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
+import { loadAuthors } from "../data/loadArtifacts";
+import type { AuthorRow } from "../data/types";
 import { buildOrgTree, searchDirectory, topAuthorsInNodes, type OrgNode } from "./orgHierarchy";
 
 export function OrgFilterPanel({ ds }: { ds: Dataset }) {
@@ -19,7 +21,8 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
 
   const tree = useMemo(() => buildOrgTree(ds), [ds]);
   const industry = tree.filter((n) => n.inst.kind === "industry");
-  const academic = tree.filter((n) => n.inst.kind !== "industry");
+  const neolabs = tree.filter((n) => n.inst.kind === "neolab");
+  const academic = tree.filter((n) => n.inst.kind !== "industry" && n.inst.kind !== "neolab");
 
   // Every other institution in the corpus (universities, companies, labs) — searchable but
   // not part of the curated browse tree. Only computed when there's a query.
@@ -33,7 +36,7 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
   const matchNode = (n: OrgNode): boolean =>
     !q ||
     n.inst.display_name.toLowerCase().includes(q) ||
-    n.children.some((c) => c.inst.display_name.toLowerCase().includes(q));
+    n.children.some(matchNode);
 
   const toggleExpand = (key: string) =>
     setExpanded((prev) => {
@@ -42,18 +45,20 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
       return next;
     });
 
-  const renderUnit = (node: OrgNode, isChild: boolean) => {
+  const unitKind = (value: string) => value.replace(/_/g, " ");
+
+  const renderUnit = (node: OrgNode, depth = 0) => {
     const { key, inst } = node;
     const active = filters.orgKeys.includes(key);
     const hasChildren = node.children.length > 0;
     const isOpen = expanded.has(key) || (q.length > 0 && matchNode(node));
     // When searching, hide a child row that doesn't match unless its parent name matched.
     const childVisible = (c: OrgNode) =>
-      !q || c.inst.display_name.toLowerCase().includes(q) ||
+      !q || matchNode(c) ||
       inst.display_name.toLowerCase().includes(q);
 
     return (
-      <div key={key} className={`org-row-group ${isChild ? "child" : ""}`}>
+      <div key={key} className={`org-row-group ${depth > 0 ? "child" : "root"}`}>
         <div className="org-row">
           {hasChildren ? (
             <button
@@ -74,7 +79,7 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
             aria-pressed={active}
             onClick={() => toggleOrg(key)}
             title={
-              isChild
+              depth > 0
                 ? `${inst.direct_count.toLocaleString()} papers in this corpus whose affiliation names this unit`
                 : hasChildren
                   ? `${inst.count.toLocaleString()} papers in this corpus (rollup incl. departments/labs)`
@@ -82,12 +87,23 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
             }
           >
             <span className="org-name">{inst.display_name}</span>
+            {depth > 0 && inst.unit_type !== "organization" && (
+              <span className="org-unit-kind">{unitKind(inst.unit_type)}</span>
+            )}
+            {inst.membership_methods.length > 0 && (
+              <span
+                className="org-source-badge"
+                title={`Membership from reviewed author roster (${inst.membership_methods.join(", ")})`}
+              >
+                roster
+              </span>
+            )}
             <span className="count">{inst.count.toLocaleString()}</span>
           </button>
         </div>
         {hasChildren && isOpen && (
           <div className="org-children">
-            {node.children.filter(childVisible).map((c) => renderUnit(c, true))}
+            {node.children.filter(childVisible).map((c) => renderUnit(c, depth + 1))}
           </div>
         )}
         {active && <OrgAuthors ds={ds} node={node} />}
@@ -100,8 +116,8 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
     if (visible.length === 0) return null;
     return (
       <div className="org-group">
-        <div className="group-title">{title}</div>
-        <div className="org-tree">{visible.map((n) => renderUnit(n, false))}</div>
+        <div className="group-title">{title} · {visible.length}</div>
+        <div className="org-tree">{visible.map((n) => renderUnit(n))}</div>
       </div>
     );
   };
@@ -141,11 +157,12 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
         </div>
       )}
       <p className="org-hint subtle">
-        Featured orgs drill into departments/labs. Search to filter by any of the
+        Browse organizations and their named units. Search to filter by any of the
         {" "}{directoryTotal.toLocaleString()} institutions in the corpus.
       </p>
-      {renderGroup("Featured · Industry", industry)}
-      {renderGroup("Featured · Academia", academic)}
+      {renderGroup("Companies", industry)}
+      {renderGroup("Independent labs", neolabs)}
+      {renderGroup("Universities & research institutions", academic)}
       {q.length >= 2 && (
         <div className="org-group">
           <div className="group-title">
@@ -155,7 +172,7 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
             <p className="org-hint subtle" style={{ margin: 0 }}>No other institutions match “{query}”.</p>
           ) : (
             <>
-              <div className="org-tree">{directory.map((n) => renderUnit(n, false))}</div>
+              <div className="org-tree">{directory.map((n) => renderUnit(n))}</div>
               <p className="org-hint subtle" style={{ marginTop: 8 }}>
                 Counts are papers <em>in this map</em> (CS, co-authored with a featured org),
                 not the institution's full output. Large orgs may appear as several regional
@@ -175,10 +192,28 @@ function OrgAuthors({ ds, node }: { ds: Dataset; node: OrgNode }) {
   const [open, setOpen] = useState(false);
   const filters = useStore((s) => s.filters);
   const setAuthors = useStore((s) => s.setAuthors);
-  const authors = useMemo(
-    () => (open ? topAuthorsInNodes(ds, node.inst.node_ids, 12) : []),
-    [open, ds, node.inst.node_ids],
-  );
+  // Precomputed by s10 (Institution.top_authors). Counting them here is no longer possible:
+  // per-paper author_ids left the resident papers index in D30, so ds.papers[n].authorIds is
+  // empty until a paper is selected — which silently emptied this list. Older artifacts have
+  // no top_authors, so the in-browser count remains as a fallback.
+  const [authorIndex, setAuthorIndex] = useState<AuthorRow[]>([]);
+  const precomputed = node.inst.top_authors ?? [];
+  const needsFallback = open && precomputed.length === 0;
+  useEffect(() => {
+    if (!needsFallback) return;
+    let live = true;
+    loadAuthors().then((rows) => { if (live) setAuthorIndex(rows); }).catch(() => {});
+    return () => { live = false; };
+  }, [needsFallback]);
+  const authors = useMemo(() => {
+    if (!open) return [];
+    if (precomputed.length > 0) {
+      return precomputed
+        .slice(0, 12)
+        .map((a) => ({ authorId: a.author_id, name: a.name, count: a.count }));
+    }
+    return topAuthorsInNodes(ds, node.inst.node_ids, authorIndex, 12);
+  }, [open, ds, node.inst.node_ids, authorIndex, precomputed]);
 
   const addAuthor = (authorId: number) => {
     if (!filters.authorIds.includes(authorId)) setAuthors([...filters.authorIds, authorId]);

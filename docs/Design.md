@@ -14,25 +14,25 @@ inspect a paper's **citations** and **related works**.
 ## Architecture re-evaluation (2026-07)
 
 The offline-pipeline/static-client split is the right MVP architecture. Projection,
-clustering, citation joins, and label generation are global batch computations, while the
-current 28k-paper bundle is small enough to load once and explore entirely in the browser.
+clustering, citation joins, and label generation are global batch computations. The current
+271k-paper preview uses sharded point/detail/neighbor artifacts and remains explorable in the
+browser without an application backend.
 Adding an application backend now would increase operating complexity without fixing the
 important product gaps.
 
-The current implementation is nevertheless a **seed-corpus demonstrator**, not yet the
-architecture described by the product goal:
+The current implementation is a **broad semantic corpus with partial organization evidence**,
+not yet the full citation architecture described by the product goal:
 
-- The corpus is fetched only for seven configured institutions. It cannot discover or
-  filter "any organization" without editing config and rebuilding the entire map.
-- OpenAlex institutions do not provide department/lab granularity. The current org index
-  is a flat aggregate, not a university -> department -> lab hierarchy.
+- Corpus discovery is independent of configured institutions. The completed OpenAlex
+  crosswalk supplies disambiguated author ids to 244,730 papers and institution evidence to
+  32,907, populating organization filters while retaining explicit missing coverage.
 - Semantic-zoom regions come from Leiden over a **planar substrate** (2D-layout kNN
   adjacency, 768-D cosine weights), so a region is one contiguous area of the map rather
   than being scattered across it. See §5 for the measured before/after. The hierarchy and
   names still need evaluation against a human-reviewed topic benchmark.
-- Semantic Scholar is queried by arXiv → DOI → MAG id (see §3); drop mode still removes the
-  remainder to keep one coherent SPECTER2 space, which biases the visible corpus toward
-  papers S2 indexes under a resolvable external id.
+- The configured build embeds every title+abstract locally with the SPECTER2 proximity
+  adapter; the older Semantic Scholar addressing/drop path remains selectable for OpenAlex
+  builds.
 - The frozen projector previously omitted the display normalization. `projector.pkl` now
   stores the reducer together with its fit-time center and scale so transformed points land
   in the same map coordinate system.
@@ -44,7 +44,7 @@ See **Re-evaluated target architecture** below.
 ## Architecture at a glance
 
 ```
-OpenAlex (works, citations, topics)         Semantic Scholar (SPECTER2 vectors)
+OpenAlex (works, topics, affiliation)      Semantic Scholar (SPECTER2, citation graph)
                 \                            /
         ┌─────────────────────────────────────────┐
         │  offline Python pipeline (pipeline/)      │   s00 … s11
@@ -69,9 +69,17 @@ artifacts. This also makes hosting trivial (static files / CDN) and the UI fast.
 
 ## Key decisions
 
-### 1. Data spine: OpenAlex + Semantic Scholar (verified against live APIs, 2026-07)
+### 1. Data spine: arXiv bulk or OpenAlex (verified 2026-08)
 
-- **OpenAlex `works`** is the spine: one record carries title, abstract (as
+- **Configured production-ingest path:** Cornell's weekly 5 GB arXiv JSON snapshot is the
+  fast baseline; OAI-PMH `arXivRaw` pages supply the small daily delta. `s01_fetch_arxiv`
+  appends pages with a durable resumption token, and `s02_build_arxiv_corpus` reduces snapshot
+  plus deltas by arXiv id (including tombstones). Scope is v1 submission date and a category
+  union in any list position. This produced 271,366 unique 2025+2026 `cs.* OR stat.ML` rows
+  through 2026-08-13 with 100% abstracts.
+
+- **OpenAlex `works`** is the enrichment graph (and remains a selectable alternative corpus
+  source): one record carries title, abstract (as
   `abstract_inverted_index`, reconstructed in `common/abstract.py`), `publication_date`,
   `authorships[]` (author + institution + ROR), `referenced_works[]` (**the directed
   citation edge list, free**), and a 4-level topic taxonomy (**Domain→Field→Subfield→
@@ -79,7 +87,30 @@ artifacts. This also makes hosting trivial (static files / CDN) and the UI fast.
   date are all supported and proven.
 - **Semantic Scholar** supplies **precomputed SPECTER2 embeddings** (768-dim) via
   `/paper/batch` — so we don't run an embedding model for covered papers. Join is by
-  DOI/arXiv id.
+  DOI/arXiv id. Its bulk **S2AG `citations`** dataset is retained as an optional reconciliation
+  source: the manual `s16_enrich_s2_citations` command resolves only selected arXiv IDs in
+  cached 500-id API batches, then streams the S2AG `paper-ids` crosswalk and citation release
+  one shard at a time. This avoids a per-paper citation crawl at the cumulative 1 RPS key limit
+  and avoids retaining the very large global graph on disk.
+- **Bulk enrichment (`s15`).** The configured arXiv build left-joins OpenAlex after `s02`.
+  It tries author-supplied DOI, arXiv DOI alias, then HTTPS/HTTP arXiv landing URLs, OR-ing up
+  to 100 exact identifiers per request across 12 bounded workers. Matches and negative route attempts are append-only
+  checkpoints. It replaces provisional name hashes with OpenAlex author ids when available,
+  fills institution/affiliation evidence and identifier/venue gaps, and stores OpenAlex
+  taxonomy/citation/reference values in explicit `openalex_*` provenance columns. `s16_apply_openalex_citations`
+  then locally materializes its citation totals and exact-match corpus-internal references as the
+  fast default. It never changes arXiv paper ids, text, v1 dates, or categories. Existing
+  `corpus_active.parquet` can be enriched in place because embedding inputs and row order are invariant.
+- **Source tradeoff.** arXiv gives comprehensive, free title/abstract/category/version
+  coverage but not citation counts, citation edges, disambiguated author identities, or institution
+  attribution. The first arXiv corpus therefore uses provisional normalized-name author ids
+  and empty reference/institution lists. The completed crosswalk covers 244,730/271,366
+  papers (90.2%); 32,907 have institution evidence. `s16` derives each matched paper's
+  `cited_by_count` and corpus-internal `referenced_works` immediately from those exact
+  OpenAlex matches (never from an API crawl). Nullable manifest `citation_count_source` and
+  `citation_graph_source`, plus row-level availability, distinguish missing data from a real
+  zero. A completed S2 bulk scan is retained as a non-additive reconciliation/override for its
+  matched rows; its release, ODC-BY license, match coverage, and scan totals are recorded.
 - **arXiv-preferred dates.** OpenAlex occasionally reports a wildly wrong `publication_date`
   for a re-registered/oddly-DOI'd work ("Attention Is All You Need" comes back as 2025). When
   a paper has an arXiv id, `s02` overrides the date with the month the id encodes (`YYMM` in
@@ -108,8 +139,21 @@ sub-unit granularity, but the *raw affiliation strings* on each authorship do
 now retains these strings, scoped per authorship to the org institution OpenAlex already
 resolved, into a separate `affiliations.parquet` (paper-id keyed, so it never perturbs the
 frozen `node_id` ordering). A curated, reviewed unit registry (`pipeline/directory/`)
-matches those strings into evidence-backed sub-units, which `s10` emits as a two-level
-hierarchy in `orgs.json` (root org → department/lab, each with rollup and direct counts).
+matches those strings into evidence-backed sub-units, which `s10` emits as a hierarchy in
+`orgs.json` (root org → named units, each with rollup and direct counts). The browser renders
+it recursively, alphabetizes peers by unit kind/name, and groups roots as companies,
+independent labs, or universities/research institutions. A unit-kind tag makes a department,
+institute, lab, division, or site distinguishable without implying that its parent claim applies
+to every child.
+
+**Neolab membership (implemented for curated rosters).** Labs missing a trustworthy
+OpenAlex/ROR institution are attributed through `org_rosters.yaml`: reviewed OpenAlex
+author IDs plus provenance and optional inclusive date bounds. `s14_rosters` performs an
+exact join against the active corpus and writes paper-level evidence before `s10` adds each
+roster organization as a curated `neolab` root. The artifact carries a canonical ROR or
+`local:` identity and the membership methods used, and the UI marks these entries as
+roster-derived. A roster match is evidence for a paper/org attribution, not an inferred
+employment claim; names, PDF text, and unreviewed co-authorship never expand it at build time.
 
 The matcher is deliberately conservative, matching the confidence-95 "exact unit name in
 the paper's raw affiliation" tier of `ORGANIZATION_DIRECTORY.md`:
@@ -148,7 +192,11 @@ a hierarchical filter UI) without yet emitting the v2 artifact schema.
 
 ### 3. Embeddings: swappable backend + one consistent space
 
-`embedding/base.py` defines an `EmbeddingBackend` protocol. `specter2_s2` fetches
+`embedding/base.py` defines an `EmbeddingBackend` protocol. `specter2_local` runs the
+official `allenai/specter2_base` model with `allenai/specter2`'s **proximity adapter** on
+CUDA/MPS/CPU. It exposes batch/device/precision controls and writes a corpus-fingerprinted
+row checkpoint plus partial `.npy`, so an interrupted full-corpus run resumes safely.
+`specter2_s2` fetches
 precomputed vectors from Semantic Scholar (batches of 500, DOI/arXiv-addressed, on-disk
 cached, backoff + per-batch skip on non-retryable errors); `scincl_local` runs
 `malteos/scincl` locally (MPS on Mac). Vectors are L2-normalized centrally so all
@@ -173,10 +221,11 @@ visible artificial "island" on the map (papers cluster by *model*, not topic). T
 - `fill_local`: fill uncovered rows with SciNCL, but if S2 coverage is below
   `s2_min_coverage`, re-embed the *whole* corpus locally (never mix at scale).
 
-**Future fix** (the user's question — "can SPECTER2 generalize to other papers?"): yes —
-SPECTER2 is an open *model* (allenai/specter2, Apache-2.0), not just S2's lookup table. A
-planned `specter2_local` backend runs the model on whatever the arXiv/DOI/MAG passes still
-miss, giving one SPECTER2 space at 100% coverage with no island and no dropped rows.
+**Complete local coverage (implemented).** SPECTER2 is an open model
+(`allenai/specter2`, Apache-2.0), not just S2's lookup table. The 2025+2026 run embedded all
+271,366 rows locally in 9m48s on an RTX 3090 (batch 128, fp16), then centrally normalized
+them. Three overlap vectors matched S2 `specter_v2` at cosine 1.0000 / 0.9994 / 1.0000.
+The matrix is finite, nonzero, unit-normalized and exactly aligned to the active corpus.
 
 ### 4. Layout vs clustering: two independent reductions
 
@@ -238,16 +287,22 @@ comparison (`hierarchy.method: "leiden" | "louvain" | "kmeans" | "quadtree"`). S
 `RESEARCH_PRIOR_WORK.md` §1.4 for the evidence.
 
 Child memberships are strict subsets of their parents, and a split's children exactly
-partition that parent. The current build has **11 bands and ~24,600 regions** (see §5's
+partition that parent. The current build has **11 bands and 89,083 regions** (see §5's
 micro-cluster note for why the hierarchy was deepened). Small terminal communities stop
 splitting, so coarse labels persist where no defensible finer partition exists. The frozen
 2D coordinates only determine each community label's centroid and bounding box.
 
 `s07_label` combines two signals at every band:
-- **discriminative OpenAlex topics**, scored by prevalence inside the community and rarity
-  across the corpus;
+- **discriminative taxonomy values**, scored by prevalence inside the community and rarity
+  across the corpus. Enriched corpora use OpenAlex topics; the current arXiv-only preview
+  uses primary category codes such as `cs.CV`;
 - **c-TF-IDF phrases** from embedding-representative papers, with titles weighted above
   abstract boilerplate and MathML/XML vocabulary removed.
+
+Phrase vectorization runs only for the top `max_labels_per_level` cells that can be emitted
+to `labels.json`; lower-priority cells retain topic/shared-title fallback names in
+`clusters.json`. This preserves every browser-visible candidate while preventing deep bands
+from scoring tens of thousands of labels the frontend can never display.
 
 MathML removal is **structural** (strip attribute pairs, then tags, then namespace
 leftovers) and applied to titles *and* abstracts before they enter the label vocabulary. A
@@ -270,6 +325,10 @@ Coarse/high-count labels win when zoomed out; finer labels' screen positions spr
 and appear as you zoom in. (We do *not* use deck.gl's `CollisionFilterExtension` — it culls
 all instances in a non-geospatial `OrthographicView`; the CPU approach is deterministic and
 cheap at ~200 labels.)
+
+The top-bar search indexes both resident paper titles and `labels.json`. Selecting a label
+centers its stored `(x, y)` centroid, moves to that label's semantic zoom band, and gives it
+first priority in screen-space decluttering so the requested destination remains visible.
 
 **Filter-aware labels + emphasis.** When an org/author filter is active, a topic name over a
 now-empty region is misleading. `useRelevantLabels` assigns every *matching* paper to its
@@ -333,15 +392,17 @@ provides explicit fallback links.
 Figure 1 / Table 1. Following Semantic Scholar's PDFFigures 2.0 (a *layout-structure* method,
 not vision-on-pixels), a pipeline stage (`s13_figures`, `common/figure_extract.py`) does this
 **offline** with PyMuPDF: anchor on the text-layer "Figure 1:" / "Table 1:" caption, then take
-the graphical box directly above it — `find_tables()` (tables/gridded), `cluster_drawings()`
-(vector figures — most ML diagrams), or `get_image_info()` (raster) — scored by "large + close
-above the caption, in its column". Borderless tables (no rules, invisible to `find_tables`)
-fall back to the contiguous text block above the caption. The crop renders to a PNG, sharded
+a figure above its caption via `cluster_drawings()` / `get_image_info()`. Tables normally put
+their caption first, so their complete contiguous text region is collected **below** the
+caption (with `find_tables()` / drawing candidates as fallback), stopping at the whitespace
+before following prose; unusual below-table captions retain an upward fallback. Requiring
+punctuation after `Table 1` prevents prose such as "Table 1 reports…" from becoming a false
+caption. The crop renders to a PNG, sharded
 by node id (`figures/<node//4096>/<node>.png`); `s11` sets a `has_figure` flag on the resident
 papers index and a `figures` manifest block. The frontend (`FirstFigure.tsx`) serves the baked
 PNG **instantly, no PDF parse**, and only when `has_figure` is false falls back to the prior
-**client-side pdf.js** extractor (`figureExtract.ts`, caption anchor + ink-bounds on the
-CORS-open arXiv PDF). Baking is off by default (`figures.enabled`) because it downloads a PDF
+**client-side pdf.js** extractor (`figureExtract.ts`, the same direction-aware caption and
+contiguous-row logic on the CORS-open arXiv PDF). Baking is off by default (`figures.enabled`) because it downloads a PDF
 per paper under arXiv's 1-req/3s cap — a multi-hour polite batch — so a bundle can ship with
 the fallback only. PyMuPDF is AGPL-3.0, used offline to emit images (see DESIGN_DECISIONS D11).
 
@@ -358,7 +419,9 @@ LOD.
 
 Date filtering, the org/author hide, the selection cull, and the LOD reveal all run on the
 GPU via a single 4-channel `DataFilterExtension`, so pan/zoom never re-evaluate JS per
-point.
+point. The publication histogram is the date-range brush itself: its selected span and
+keyboard-accessible end handles overlay the bars, and pointer drags on the distribution update
+the same month-index filter. There is no duplicate slider track below the chart.
 
 Arrow files are written **uncompressed** — the browser's `apache-arrow` cannot decode
 compressed record batches ("compression not implemented"); gzip/brotli at the HTTP/CDN
@@ -393,6 +456,24 @@ Large columnar data → **Arrow IPC** (zero-copy in the browser); small structur
 JSON. `points.arrow`'s row index **is** the `node_id`; everything else references it.
 Files: `points`, `papers`, `neighbors`, `edges`, `authors` (Arrow); `clusters`, `labels`,
 `orgs`, `topics`, `manifest` (JSON). See `pipeline/common/schema.py`.
+
+Anything the first paint does not need is **split and streamed** rather than fetched whole,
+because the binding constraint is bytes over a ~1 MB/s link, not disk or CPU:
+
+| Artifact | Shape | Why split that way |
+|---|---|---|
+| `points-N.arrow` | one file per reveal level | the map draws as soon as level 0 lands |
+| `papers-titles-N.arrow` | 16 sequential chunks | titles fill in behind the rendered map |
+| `papers-detail-N.arrow` | sharded by `node_id` | only the selected paper's shard is fetched |
+| `authors-N.arrow` | 12 chunks of 120k names | search matches whatever has arrived (D32) |
+| `author-papers-N.arrow` | sharded by `author_id` | one shard answers one author filter — and carries that author's `openalex_id` (D32) |
+| `neighbors-N.arrow` | sharded by `node_id` | related works are per-selection |
+
+Two rules follow from how these are consumed, both learned by breaking them: a chunk that
+arrives must hand consumers a **new array identity** (a mutated array freezes every
+`useMemo([rows])` downstream), and any whole-corpus computation must depend on the
+"how much has landed" signal (`usePointTilesEpoch` / `usePapersReady`) or it silently freezes
+at whatever was loaded when it first ran.
 
 ## Risks & mitigations (as built)
 

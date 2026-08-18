@@ -1,13 +1,18 @@
 import { useEffect, useState } from "react";
-import { loadDataset } from "./data/loadArtifacts";
+import { loadDataset, type LoadProgress } from "./data/loadArtifacts";
 import { useStore } from "./state/store";
 import { MapView } from "./map/MapView";
 import { OrgFilterPanel } from "./filters/OrgFilterPanel";
 import { AuthorFilter } from "./filters/AuthorFilter";
+import { CitationFilter } from "./filters/CitationFilter";
+import { ActiveFilters } from "./filters/ActiveFilters";
+import { ReadingListPanel } from "./filters/ReadingListPanel";
+import { LoadingStatus } from "./panels/LoadingStatus";
 import { TopicFilter } from "./filters/TopicFilter";
 import { DateRangeSlider } from "./filters/DateRangeSlider";
 import { DetailsPanel } from "./panels/DetailsPanel";
 import { AuthorPanel } from "./panels/AuthorPanel";
+import { PaperListPanel } from "./panels/PaperListPanel";
 import { Legend } from "./panels/Legend";
 import { SearchBox } from "./panels/SearchBox";
 
@@ -24,8 +29,10 @@ export default function App() {
     window.matchMedia("(min-width: 721px)").matches,
   );
 
+  const [progress, setProgress] = useState<LoadProgress | null>(null);
+
   useEffect(() => {
-    loadDataset()
+    loadDataset(setProgress)
       .then(setDataset)
       .catch((e) => setError(String(e)));
   }, [setDataset, setError]);
@@ -56,9 +63,33 @@ export default function App() {
   }
 
   if (loading || !dataset) {
+    // Real progress, not an animation: the percentage is uncompressed bytes received against
+    // the exact sizes s11 recorded in the manifest, so it neither races ahead nor parks at 99%.
+    const pct = Math.round((progress?.pct ?? 0) * 100);
+    const mb = (n: number) => (n / 1048576).toFixed(0);
     return (
       <div className="fullscreen center">
-        <div className="loading">Loading the research map…</div>
+        <div className="loading-panel">
+          <div className="loading">Loading the research map…</div>
+          <div
+            className="loading-bar"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={pct}
+            aria-label="Loading the research map"
+          >
+            <div className="loading-bar-fill" style={{ width: `${pct}%` }} />
+          </div>
+          <div className="loading-meta subtle">
+            <span>{progress?.detail ?? "starting"}</span>
+            <span>
+              {progress && progress.totalBytes > 0
+                ? `${pct}% · ${mb(progress.loadedBytes)}/${mb(progress.totalBytes)} MB`
+                : `${pct}%`}
+            </span>
+          </div>
+        </div>
       </div>
     );
   }
@@ -73,6 +104,8 @@ export default function App() {
     filters.authorIds.length > 0 ||
     filters.subfieldIds.length > 0 ||
     filters.topicIds.length > 0 ||
+    filters.citeMin > 0 ||
+    filters.citeMax !== null ||
     filters.monthMin !== 0 ||
     filters.monthMax !== fullMaxMonth;
 
@@ -102,6 +135,9 @@ export default function App() {
         </button>
       </header>
 
+      <ActiveFilters ds={dataset} />
+      <LoadingStatus />
+
       <aside
         id="filters-panel"
         className={`sidebar ${filtersOpen ? "open" : ""}`}
@@ -125,13 +161,16 @@ export default function App() {
             </button>
           </div>
         </div>
+        <ReadingListPanel ds={dataset} />
         <OrgFilterPanel ds={dataset} />
         <TopicFilter ds={dataset} />
         <AuthorFilter ds={dataset} />
+        <CitationFilter ds={dataset} />
         <DateRangeSlider ds={dataset} />
         <Legend ds={dataset} />
       </aside>
 
+      <PaperListPanel ds={dataset} />
       <DetailsPanel ds={dataset} />
       <AuthorPanel ds={dataset} />
     </div>

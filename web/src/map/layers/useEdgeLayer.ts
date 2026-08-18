@@ -3,13 +3,21 @@
 // Ordinary browsing gets a zoom-adaptive sample of the global directed graph.
 // Every rendered link has a screen-sized triangle pointing from the citing paper to the
 // cited paper. Selecting a paper overlays its incoming/outgoing links at full contrast.
+//
+// Direction is carried by HUE ONLY (see ../citationColors): teal = a reference that
+// influenced the selection, amber = a paper influenced by it. The connected papers
+// themselves are tinted to match in usePointsLayer, so the node and its edge agree. An
+// earlier version also drew a background-coloured disc over each connected paper to ring it
+// in the direction colour; that occluded the very node it was highlighting (it read as a
+// black dot inside a blue one) and is gone.
 
-import { LineLayer, ScatterplotLayer, SolidPolygonLayer } from "@deck.gl/layers";
+import { LineLayer, SolidPolygonLayer } from "@deck.gl/layers";
 import { useMemo } from "react";
 import type { Dataset } from "../../data/types";
 import type { FilterArrays } from "../../filters/useFilterMask";
 import type { EdgeMode } from "../../state/store";
-import { importanceWeight } from "../importance";
+import { importanceWeight, relevanceCutoff } from "../importance";
+import { CITER, GLOBAL_EDGE, REFERENCE } from "../citationColors";
 
 type Position = [number, number];
 type Color = [number, number, number, number];
@@ -38,13 +46,6 @@ interface SelectedEdge {
   rank: number;
 }
 
-interface EdgeEndpoint {
-  node: number;
-  position: Position;
-  outgoing: boolean;
-  weight: number;
-}
-
 interface Args {
   ds: Dataset;
   selectedNode: number | null;
@@ -57,7 +58,7 @@ interface Args {
   monthMax: number;
   // Connected-Papers relevance per node for the selection + the slider threshold, so selected
   // edges to papers hidden by the relevance slider are dropped too (matches the point cull).
-  relevance: Map<number, number> | null;
+  relevance: { score: Float32Array; sorted?: Float32Array } | null;
   relevanceThreshold: number;
   onSelect: (node: number) => void;
   // Hovering a connected paper's endpoint ring surfaces the same preview tooltip as
@@ -65,9 +66,25 @@ interface Args {
   onHover: (node: number | null, x: number, y: number) => void;
 }
 
-const OUTGOING = [55, 214, 199] as const;
-const INCOMING = [244, 162, 97] as const;
-const GLOBAL = [116, 151, 184] as const;
+// Edges encode exactly two things: HUE = direction (reference / citation / unrelated global
+// link) and ALPHA = strength. Geometry is deliberately constant — a dense selection used to
+// vary line width, arrowhead size, ring radius AND ring thickness by importance all at once,
+// which turned a well-connected paper into an unreadable thicket. Thin uniform strokes keep
+// the map legible and let colour carry the whole signal.
+
+const EDGE_WIDTH_PX = 1.1;      // every selected edge, regardless of importance
+const ARROW_LENGTH_PX = 7;      // constant arrowhead; direction is read from hue, not size
+const ARROW_WIDTH_PX = 4.5;
+// Alpha now carries importance alone, so it needs the full range to stay readable: a weak
+// link fades toward the background instead of merely being thinner.
+// Mirrors loadArtifacts.UNLOADED_LEVEL: a point whose tile has not arrived has no real
+// coordinates, so nothing may be drawn to it.
+const UNLOADED_LEVEL = 32767;
+
+const ALPHA_MIN = 62;
+const ALPHA_MAX = 255;
+const alphaFor = (weight: number) =>
+  Math.round(ALPHA_MIN + (ALPHA_MAX - ALPHA_MIN) * Math.max(0, Math.min(1, weight)));
 
 function edgeHash(source: number, target: number): number {
   return ((Math.imul(source + 1, 73856093) ^ Math.imul(target + 1, 19349663)) >>> 0) % 1000;
@@ -159,39 +176,60 @@ export function useEdgeLayer({
     ) => {
       const source: Position = [ds.points.x[sourceNode], ds.points.y[sourceNode]];
       const target: Position = [ds.points.x[targetNode], ds.points.y[targetNode]];
-      const directionColor = outgoing ? OUTGOING : INCOMING;
-      // Higher-importance links are more opaque; the arrowhead also grows with weight.
-      const alpha = Math.round(150 + 105 * weight);
+      const directionColor = outgoing ? REFERENCE : CITER;
+      // Importance shows up only as opacity; the arrowhead stays a fixed small size.
+      const alpha = alphaFor(weight);
       edges.push({
         source,
         target,
         sourceNode,
         targetNode,
         outgoing,
-        arrow: arrowPolygon(source, target, 0.72, screenScale, 9 + 7 * weight, 6 + 5 * weight),
+        arrow: arrowPolygon(source, target, 0.72, screenScale, ARROW_LENGTH_PX, ARROW_WIDTH_PX),
         color: [directionColor[0], directionColor[1], directionColor[2], alpha],
         weight,
         rank,
       });
     };
 
+    // ONE visibility predicate, matching what the points layer actually draws.
+    //
+    // The ambient layer already tested reveal level, month range and the org/author mask, but
+    // the selected-paper overlay tested only relevance — so with any filter or date range
+    // active, a selected paper's arrows pointed at papers the map was hiding. An arrow into
+    // empty space is worse than no arrow: it asserts a link to something invisible.
+    //
+    // The tile check matters since D23: a point whose tile has not downloaded still has zeroed
+    // coordinates, so its edge would be drawn to the map origin.
+    const { revealLevel, monthIndex } = ds.points;
+    const visible = (node: number) => {
+      if (revealLevel[node] >= UNLOADED_LEVEL) return false;        // tile not loaded yet
+      if (monthIndex[node] < monthMin || monthIndex[node] > monthMax) return false;
+      if (hideNonMatch && filter.matchValue[node] === 0) return false;
+      return true;
+    };
+
     // Relevance slider: drop links to a paper scoring below the threshold, so the edge web
     // thins together with the points the slider hides.
     const passesRelevance = (node: number) =>
-      relevanceThreshold <= 0 || (relevance?.get(node) ?? 0) >= relevanceThreshold;
+      relevanceThreshold <= 0
+      || (relevance ? relevance.score[node] : 0) >= relevanceCutoff(relevance?.sorted, relevanceThreshold);
+
+    const shown = (node: number) => visible(node) && passesRelevance(node);
 
     if (edgeMode === "out" || edgeMode === "both") {
-      const refs = prioritize(ds.citesOut.get(selectedNode) ?? []).filter(passesRelevance);
+      const refs = prioritize(ds.citesOut.get(selectedNode) ?? []).filter(shown);
       const w = weigh(refs);
       refs.forEach((target, i) => add(selectedNode, target, true, w(target, i), i));
     }
     if (edgeMode === "in" || edgeMode === "both") {
-      const citers = prioritize(ds.citedBy.get(selectedNode) ?? []).filter(passesRelevance);
+      const citers = prioritize(ds.citedBy.get(selectedNode) ?? []).filter(shown);
       const w = weigh(citers);
       citers.forEach((source, i) => add(source, selectedNode, false, w(source, i), i));
     }
     return edges;
-  }, [ds, edgeMode, screenScale, selectedNode, relevance, relevanceThreshold]);
+  }, [ds, edgeMode, screenScale, selectedNode, relevance, relevanceThreshold,
+      monthMin, monthMax, hideNonMatch, filter.matchValue]);
 
   // Match the points layer's reveal-level LOD (usePointsLayer): a global edge is only drawn
   // when BOTH endpoints are currently revealed, so the edge web thins out with the points at
@@ -244,7 +282,7 @@ export function useEdgeLayer({
         source,
         target,
         arrow: arrowPolygon(source, target, 0.68, screenScale, 6.5, 5),
-        color: [GLOBAL[0], GLOBAL[1], GLOBAL[2], alpha],
+        color: [GLOBAL_EDGE[0], GLOBAL_EDGE[1], GLOBAL_EDGE[2], alpha],
         arrowColor: [150, 186, 218, arrowAlpha],
       });
     }
@@ -299,13 +337,6 @@ export function useEdgeLayer({
     return { background: [globalLines, globalArrows], foreground: [] };
   }
 
-  const endpoints: EdgeEndpoint[] = selectedEdges.map((edge) => ({
-    node: edge.outgoing ? edge.targetNode : edge.sourceNode,
-    position: edge.outgoing ? edge.target : edge.source,
-    outgoing: edge.outgoing,
-    weight: edge.weight,
-  }));
-
   const foreground = [
     new LineLayer<SelectedEdge>({
       id: "citation-selected-lines",
@@ -313,12 +344,11 @@ export function useEdgeLayer({
       getSourcePosition: (edge) => edge.source,
       getTargetPosition: (edge) => edge.target,
       getColor: (edge) => edge.color,
-      // Width encodes the linked paper's importance (1.4px .. 4.4px) so the strongest
-      // citations read as the boldest lines, in rank order.
-      getWidth: (edge) => 1.4 + 3 * edge.weight,
+      // Constant hairline: importance is in the alpha of getColor, not the stroke weight.
+      getWidth: EDGE_WIDTH_PX,
       widthUnits: "pixels",
       widthMinPixels: 1,
-      widthMaxPixels: 5,
+      widthMaxPixels: EDGE_WIDTH_PX,
       pickable: true,
       autoHighlight: true,
       highlightColor: [255, 255, 255, 255],
@@ -328,6 +358,18 @@ export function useEdgeLayer({
         if (!info.object) return;
         onSelect(info.object.outgoing ? info.object.targetNode : info.object.sourceNode);
       },
+      // Hovering a link previews the paper at its FAR end — the one it connects the selection
+      // to — so a link is readable without having to land on its endpoint dot.
+      onHover: (info) =>
+        onHover(
+          info.object
+            ? info.object.outgoing
+              ? info.object.targetNode
+              : info.object.sourceNode
+            : null,
+          info.x,
+          info.y,
+        ),
     }),
     new SolidPolygonLayer<SelectedEdge>({
       id: "citation-selected-arrows",
@@ -342,47 +384,6 @@ export function useEdgeLayer({
         if (!info.object) return;
         onSelect(info.object.outgoing ? info.object.targetNode : info.object.sourceNode);
       },
-    }),
-    new ScatterplotLayer<EdgeEndpoint>({
-      id: "citation-selected-endpoints",
-      data: endpoints,
-      getPosition: (edge) => edge.position,
-      filled: true,
-      stroked: true,
-      getFillColor: [12, 14, 20, 220],
-      getLineColor: (edge) =>
-        [...(edge.outgoing ? OUTGOING : INCOMING), 255] as [
-          number,
-          number,
-          number,
-          number,
-        ],
-      // Ring radius AND outline thickness encode importance, so the most-important linked
-      // papers (relative to the selected one) read as the largest, boldest-outlined rings —
-      // reinforcing the width/opacity/arrowhead ranking on the lines.
-      getRadius: (endpoint) => 2.0 + 2.4 * endpoint.weight,
-      radiusUnits: "common",
-      radiusMinPixels: 3,
-      radiusMaxPixels: 11,
-      getLineWidth: (endpoint) => 1.5 + 3.0 * endpoint.weight,
-      lineWidthUnits: "pixels",
-      lineWidthMinPixels: 1.5,
-      lineWidthMaxPixels: 5,
-      pickable: true,
-      autoHighlight: true,
-      highlightColor: [255, 255, 255, 90],
-      parameters: { depthCompare: "always" },
-      updateTriggers: {
-        getRadius: [selectedNode, edgeMode],
-        getLineWidth: [selectedNode, edgeMode],
-      },
-      onClick: (info) => {
-        if (info.object) onSelect(info.object.node);
-      },
-      // The ring sits on top of the point, so route its hover to the same preview tooltip;
-      // otherwise hovering a connected paper during selection shows nothing.
-      onHover: (info) =>
-        onHover(info.object ? info.object.node : null, info.x, info.y),
     }),
   ];
 

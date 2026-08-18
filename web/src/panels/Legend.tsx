@@ -32,21 +32,28 @@ export function Legend({ ds }: { ds: Dataset }) {
             <Network size={14} aria-hidden="true" />
             Citation edges
           </span>
-          <label className="switch">
-            <input
-              type="checkbox"
-              checked={showCitationEdges}
-              onChange={(event) => setShowCitationEdges(event.target.checked)}
-              aria-label="Show citation edges on map"
-            />
-            <span className="switch-track" aria-hidden="true" />
-          </label>
+          {ds.manifest.corpus.citation_graph_source ? (
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={showCitationEdges}
+                onChange={(event) => setShowCitationEdges(event.target.checked)}
+                aria-label="Show citation edges on map"
+              />
+              <span className="switch-track" aria-hidden="true" />
+            </label>
+          ) : (
+            <span className="subtle">unavailable</span>
+          )}
         </div>
-        {showCitationEdges && (
+        {/* Phrased as influence rather than graph direction: "outgoing/incoming" tells you
+            which way an arrow points, not what it means. With a paper selected these same
+            colours tint the connected papers themselves (usePointsLayer). */}
+        {ds.manifest.corpus.citation_graph_source && showCitationEdges && (
           <div className="edge-key">
             <span><i className="edge-key-line global" /> citations</span>
-            <span><i className="edge-key-line outgoing" /> references</span>
-            <span><i className="edge-key-line incoming" /> cited by</span>
+            <span><i className="edge-key-line outgoing" /> influenced this ← references</span>
+            <span><i className="edge-key-line incoming" /> influenced by this → citations</span>
           </div>
         )}
       </div>

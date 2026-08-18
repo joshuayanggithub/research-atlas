@@ -13,32 +13,29 @@ most related papers.
 
 ![A selected paper with its citation network, first figure, and first table](docs/screenshots/02-selection.png)
 
-There is no backend. An offline Python pipeline turns OpenAlex + Semantic Scholar data into
-a static bundle of Arrow/JSON files, and a React + deck.gl app renders it.
+## Research Taste
 
-```
-OpenAlex + Semantic Scholar  →  pipeline (s00…s13)  →  web/public/data/*  →  deck.gl app
-```
+Being a good researcher means having good ["research taste"](https://www.lesswrong.com/posts/Ldrss6o3tiKT6NdMm/my-research-process-understanding-and-cultivating-research), a set of good intuitions and judgements for tackling questions that are both interesting to you and worthwhile. 
 
-## What it does
+This includes the ability to scope the bigger picture of a field: what problems are important, what approaches have been tried? While we can automate research experiments, [taste is something unique to yourself and not something AI can do well](https://www.lesswrong.com/posts/Mxsy7wYvsCRv5dGrw/tastybench-toward-measuring-research-taste-in-llm). 
 
-- **Semantic map** — positions come from SPECTER2 embeddings projected to 2D with openTSNE.
-  Nearby points are similar papers.
-- **Semantic zoom** — topic regions come from nested Leiden communities over a planar
-  substrate, so each region is one contiguous area of the map. Labels reveal finer topics as
-  you zoom in.
-- **Filters** — organization (drilling into departments/labs), author, CS topic (OpenAlex
-  subfield + fine topic), and date. Filters compose and run on the GPU.
-- **Selection** — a paper's references and citers are shown as directed edges, weighted by
-  importance. A relevance slider (bibliographic coupling + co-citation, like Connected
-  Papers) hides the least-related papers gradually.
-- **First figure & table** — Figure 1 and Table 1 are cropped from the arXiv PDF. The
-  pipeline can bake crops offline (PyMuPDF); otherwise the browser extracts them on demand
-  from the PDF operator list via pdf.js.
+The ability to build a Strategic Big Picture is the purpose of this project. 
 
-See [`docs/Features.md`](docs/Features.md) for the full feature list, [`docs/Design.md`](docs/Design.md)
-for how it's built, and [`docs/DESIGN_DECISIONS.md`](docs/DESIGN_DECISIONS.md) for the
-tradeoffs behind each choice.
+## Use Cases
+See (usecases.md)
+
+1. Understanding Individual Researchers (advisors, recruitment, etc): It allows one to view the research interest of a singular researchers at specific company, organization, neolab, or university by filtering across time periods and viewing all their published research, as well as the specific topics that research centers around.
+
+2. Organization Research Trends: It allows one to understand the general research trends of groups of reserachers in specific time periods (10 years ago or contemporary day) by visualizing what topics their published work centers around. By groups this includes groups of researchers in any granularity. This includes - Universities (Berkeley), University Departments (CMU's MLD or RI) and individual Research Labs/Groups within (Berkley's BAIR, CMU's BIG lab, Biorobotics lab) - Companies (Amazon, Google) and individual research Groups (FAIR, Meta Superintelligence, Amazon FAR, Amazon AGI, Google Deepmind, Google Brain, etc) - NeoLabs (Redwood Research, Anthropic, OpenAI, Deepseek, Kimi, Minimax).
+
+3. Finding similar work: We can visualize the relations and similarities given a specific research work to other research works based on the topic and semantic similarity of written content.
+
+4. Visualizing how fields evolve: By clustering groups of related research work together into common labels, we can view from different time periods what topic were relevant in what times and how they evolved.
+
+## Previous Approaches
+
+See (docs/prior_websites)
+
 
 ## Quick start
 
@@ -73,6 +70,24 @@ npm run dev        # http://localhost:5173
 A fresh clone has no data bundle (it's gitignored — it's large and regenerable), so run the
 pipeline once first, or the app shows "Failed to load data."
 
+### 3. (Optional) See your own reading against the map
+
+Import your library and the map filters to the papers you have actually read, so the areas you
+have worked through — and the ones you never have — become visible. Any **CSL JSON** export
+works (Zotero, Mendeley and Paperpile all offer one), as does BibTeX. To keep your Zotero
+collection names as separate toggles:
+
+```bash
+# reads a local Zotero database, or Zotero 7's local API, or the hosted API with a read-only key
+python3 tools/zotero_export.py --list                      # what collections can I see?
+python3 tools/zotero_export.py -o reading-list.json        # default: "1. Finished", "2. Understood"
+ZOTERO_API_KEY=... python3 tools/zotero_export.py -o reading-list.json   # library on another machine
+```
+
+Then **Filters → Reading list → Import**. Matching runs entirely in the browser (arXiv id, then
+DOI, then title), so your reading history never leaves your machine, and the panel reports how
+many entries matched rather than quietly dropping the rest.
+
 ## Pipeline stages
 
 | Stage | Does |
@@ -99,14 +114,16 @@ pipeline/
   common/              # artifact schema, abstract reconstruction, OpenAlex client, figure extract
   embedding/           # swappable backends (specter2_s2, scincl_local)
   directory/           # curated org/department/lab units
-  stages/              # s00 … s13
+  stages/              # s00 … s16
   tests/               # pytest
+tools/
+  zotero_export.py     # export your Zotero collections to an importable reading list
 web/
   src/
     data/              # artifact loader + TS types (mirror of schema.py)
     state/             # zustand store
     map/               # deck.gl MapView + layers (points, edges, labels) + relevance/scores
-    filters/           # org / author / topic / date + GPU filter mask
+    filters/           # org / author / topic / date / reading list + GPU filter mask
     panels/            # details, citations, figure/table, arXiv preview, related works
   public/data/         # ← pipeline output (gitignored)
 ```

@@ -66,6 +66,25 @@ function applyPt(m: number[], x: number, y: number): [number, number] {
   return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 }
 
+// pdf.js splits a caption into several runs whenever the styling changes, so the run that
+// matches CAPTION_RE is often just the label: Nemotron-H's "Table 1 | Summary of the
+// Nemotron-H hybrid Mamba-Transformer architectures." arrives as "Table 1" (35pt wide), "|",
+// and the sentence (344pt wide). Taking only the matched run's width collapses the caption to
+// its label, and every column window derived from it (see pickFigureRegion / textBlock*)
+// then covers a fraction of the real figure or table — the visible symptom is a crop cut off
+// mid-table. Re-join the runs sharing this caption's baseline to recover its true extent.
+const BASELINE_TOLERANCE = 2;
+
+function captionLineWidth(items: TextItem[], x: number, y: number, fallback: number): number {
+  let right = x + fallback;
+  for (const it of items) {
+    if (Math.abs(it.transform[5] - y) > BASELINE_TOLERANCE) continue;
+    if (it.transform[4] + 0.5 < x) continue; // a run to the LEFT belongs to another column
+    right = Math.max(right, it.transform[4] + (it.width || 0));
+  }
+  return right - x;
+}
+
 // The first caption ("Figure 1"/"Table 1") on a page whose own text item starts with the
 // label. Returns the FIRST figure and the FIRST table found (either may be null).
 function findCaptions(items: TextItem[]): { figure: Caption | null; table: Caption | null } {
@@ -74,10 +93,12 @@ function findCaptions(items: TextItem[]): { figure: Caption | null; table: Capti
   for (const it of items) {
     const s = (it.str || "").trim();
     if (!s || !CAPTION_RE.test(s)) continue;
+    const x = it.transform[4];
+    const y = it.transform[5];
     const cap: Caption = {
-      x: it.transform[4],
-      y: it.transform[5],
-      width: it.width || 300,
+      x,
+      y,
+      width: captionLineWidth(items, x, y, it.width || 300),
       height: it.height || 9,
       isTable: /^table/i.test(s),
     };
@@ -288,24 +309,93 @@ function pickBoxBelow(boxes: Box[], cap: Caption): Box | null {
   return best;
 }
 
+// A caption is often several lines, but `cap.y` is only the baseline of its FIRST line. Since
+// user space is y-up, the wrapped lines sit BELOW that value, so cropping to cap.y clipped every
+// caption that did not fit on one line — visible as a table caption cut off mid-sentence while a
+// one-line figure caption rendered fine.
+//
+// Walk down from the caption baseline collecting lines that still belong to it: overlapping its
+// column, spaced like continuation lines rather than separated by a block gap. Returns the
+// baseline of the LAST caption line (its lowest y).
+const CAPTION_LINE_GAP = 20; // continuation lines sit far closer than the next block
+const CAPTION_MAX_LINES = 8; // a caption this long is a paragraph; stop before swallowing prose
+
+function captionBlockBottom(items: TextItem[], cap: Caption): number {
+  const colLo = cap.x - 30;
+  const colHi = cap.x + cap.width + 30;
+  const below = items
+    .map((it) => ({ x: it.transform[4], y: it.transform[5], w: it.width || 0 }))
+    .filter(
+      (t) =>
+        t.y < cap.y - 1 &&
+        Math.min(t.x + t.w, colHi) - Math.max(t.x, colLo) > 0,
+    )
+    .sort((a, b) => b.y - a.y); // nearest the caption first, walking down
+
+  let bottom = cap.y;
+  let prevY = cap.y;
+  let lines = 0;
+  for (const t of below) {
+    if (Math.abs(t.y - prevY) < 1) continue; // same baseline, another run of the same line
+    if (prevY - t.y > CAPTION_LINE_GAP) break; // a real gap: next block, not this caption
+    bottom = t.y;
+    prevY = t.y;
+    if (++lines >= CAPTION_MAX_LINES) break;
+  }
+  return bottom;
+}
+
+// Crop bounds are assembled from text BASELINES, which sit above a glyph's descenders and
+// below its ascenders — cropping exactly to them shaves the top off a caption and the tails
+// off the bottom row. Pad every crop, clamped to the page, so nothing renders visually clipped.
+const CROP_PAD = 6;
+
+function padCrop(box: Box, pageWidth: number, pageHeight: number): Box {
+  return {
+    x0: Math.max(0, box.x0 - CROP_PAD),
+    y0: Math.max(0, box.y0 - CROP_PAD),
+    x1: Math.min(pageWidth, box.x1 + CROP_PAD),
+    y1: Math.min(pageHeight, box.y1 + CROP_PAD),
+    kind: box.kind,
+  };
+}
+
 // Locate one caption's crop rect (graphic cluster above it, else text-block fallback).
-function locateCrop(cap: Caption, boxes: Box[], items: TextItem[], pageWidth: number, pageArea: number): Box | null {
+function locateCrop(
+  cap: Caption, boxes: Box[], items: TextItem[], pageWidth: number, pageHeight: number,
+): Box | null {
+  const pageArea = pageWidth * pageHeight;
   if (cap.isTable) {
     const below = textBlockBelow(items, cap) ?? pickBoxBelow(boxes, cap);
     if (below) {
-      return {
+      // Caption sits ABOVE the content here, so its wrapped lines fall between cap.y and the
+      // block; y1 must clear the caption's TOP (first baseline + height), which it does, and
+      // y0 stays the content bottom.
+      return padCrop({
         x0: Math.min(below.x0, cap.x),
         y0: below.y0,
         x1: Math.max(below.x1, cap.x + cap.width),
         y1: Math.max(below.y1, cap.y + cap.height),
         kind: below.kind,
-      };
+      }, pageWidth, pageHeight);
     }
   }
+  // Nothing sits under the caption, so the content is above it — the normal layout for a
+  // figure, and also for the caption-below-table style (e.g. Nemotron-H).
   const box = pickFigureRegion(boxes, cap, pageWidth, pageArea) ?? (cap.isTable ? textBlockAbove(items, cap) : null);
   if (!box) return null;
-  // Include the caption strip beneath the box, for context.
-  return { x0: Math.min(box.x0, cap.x), y0: cap.y - 4, x1: Math.max(box.x1, cap.x + cap.width), y1: box.y1, kind: box.kind };
+  // Include the WHOLE caption strip beneath the box, not just its first line.
+  const capBottom = captionBlockBottom(items, cap);
+  return padCrop(
+    {
+      x0: Math.min(box.x0, cap.x),
+      y0: capBottom,
+      x1: Math.max(box.x1, cap.x + cap.width),
+      y1: box.y1,
+      kind: box.kind,
+    },
+    pageWidth, pageHeight,
+  );
 }
 
 async function renderRect(page: any, box: Box, canvas: HTMLCanvasElement): Promise<void> {
@@ -380,7 +470,7 @@ export async function extractFigures(
       const items = (await page.getTextContent()).items as TextItem[];
       const { width: pageW, height: pageH } = page.getViewport({ scale: 1 });
       const boxes = clusterBoxes(await graphicBoxes(page, OPS), pageW * pageH);
-      const crop = locateCrop(found.cap, boxes, items, pageW, pageW * pageH);
+      const crop = locateCrop(found.cap, boxes, items, pageW, pageH);
       if (!crop) continue;
       await renderRect(page, crop, canvas);
       const rect = { x: crop.x0, y: crop.y0, width: crop.x1 - crop.x0, height: crop.y1 - crop.y0 };

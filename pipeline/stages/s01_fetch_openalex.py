@@ -109,6 +109,10 @@ def _existing_ids(path) -> set[str]:
 
 def run(cfg: Config | None = None) -> int:
     cfg = cfg or load_config()
+    if cfg.corpus.source == "arxiv_snapshot":
+        from pipeline.stages.s01_fetch_arxiv import run as run_arxiv
+
+        return run_arxiv(cfg)
     ensure_dirs()
     log.stage("s01_fetch_openalex")
 
@@ -137,8 +141,12 @@ def run(cfg: Config | None = None) -> int:
     # A modest inter-page pause keeps a long unauthenticated pull under the rate limit; with
     # an API key the allowance is higher so no pause is needed.
     page_pause = 0.0 if cfg.secrets.openalex_api_key else 0.2
-    client = OpenAlexClient(cfg.secrets.openalex_mailto, cfg.secrets.openalex_api_key,
-                            page_pause=page_pause)
+    client = OpenAlexClient(
+        cfg.secrets.openalex_mailto,
+        cfg.secrets.openalex_api_key,
+        page_pause=page_pause,
+        api_keys=cfg.secrets.openalex_api_keys,
+    )
     quota_hit = False
     try:
         with OUT.open(mode, encoding="utf-8") as f:

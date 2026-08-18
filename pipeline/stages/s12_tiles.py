@@ -14,6 +14,8 @@ Emits:
 
 from __future__ import annotations
 
+from datetime import date
+
 import numpy as np
 import polars as pl
 
@@ -26,6 +28,32 @@ COORDS_IN = INTERIM_DIR / "coords2d.npy"
 OUT = INTERIM_DIR / "reveal_levels.npy"
 
 
+def _importance(corpus: pl.DataFrame, cfg: Config) -> np.ndarray:
+    """Reveal-ordering signal, highest revealed first.
+
+    Raw citations are strongly age-biased — a 2017 paper has had nine years to accumulate
+    what a 2026 one has had months for — so on the all-years corpus they would fill the
+    coarsest zoom with a decade of old work. Dividing by ``age ** age_alpha`` discounts that
+    head start without flipping to citations-per-year, which over-rewards brand-new papers.
+    """
+    cites = np.asarray(corpus["cited_by_count"].fill_null(0).to_list(), dtype=np.float64)
+    if cfg.tiling.importance == "cited_by_count":
+        return cites
+
+    years = np.array(
+        [int(str(v)[:4]) if v else 0 for v in corpus["publication_date"].to_list()],
+        dtype=np.float64,
+    )
+    # Papers with no usable date fall back to the corpus median year rather than year 0,
+    # which would otherwise hand them an enormous age and bury them permanently.
+    valid = years > 1900
+    years = np.where(valid, years, np.median(years[valid]) if valid.any() else 2020.0)
+    now = date.today().year + date.today().month / 12.0
+    # +0.5 puts a paper mid-year; the 0.5y floor stops this-month papers dividing by ~0.
+    age = np.maximum(now - (years + 0.5), 0.5)
+    return cites / age**cfg.tiling.age_alpha
+
+
 def run(cfg: Config | None = None) -> str:
     cfg = cfg or load_config()
     ensure_dirs()
@@ -33,25 +61,32 @@ def run(cfg: Config | None = None) -> str:
 
     coords = read_npy(COORDS_IN)
     corpus = pl.read_parquet(CORPUS_ACTIVE)
-    importance = np.asarray(corpus[cfg.tiling.importance].to_list(), dtype=np.float64)
+    importance = _importance(corpus, cfg)
 
     levels = assign_reveal_levels(
         coords,
         importance,
         n_levels=cfg.tiling.max_levels,
         base_divisor=cfg.tiling.base_divisor,
+        top_fraction=cfg.tiling.top_fraction,
     )
     write_npy(levels.astype(np.int32), OUT)
 
     n = len(levels)
     n_used = int(levels.max()) + 1
     log.info(f"{n} papers → {n_used} reveal levels (base_divisor={cfg.tiling.base_divisor})")
+    # Report the citation floor per level: the whole point of the gate is that the coarsest
+    # levels are genuinely influential, and that is only checkable by looking at the numbers.
+    cites = np.asarray(corpus["cited_by_count"].fill_null(0).to_list(), dtype=np.float64)
     cumulative = 0
     for level in range(n_used):
-        count = int((levels == level).sum())
+        mask = levels == level
+        count = int(mask.sum())
         cumulative += count
+        cl = cites[mask]
+        stats = f"cites min={cl.min():.0f} median={np.median(cl):.0f}" if count else ""
         log.info(f"  level {level:2d}: +{count:7d}  cumulative={cumulative:8d} "
-                 f"({cumulative / n * 100:5.1f}%)")
+                 f"({cumulative / n * 100:5.1f}%)  {stats}")
     log.info(f"wrote → {OUT}")
     return str(OUT)
 

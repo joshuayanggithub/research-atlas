@@ -25,6 +25,13 @@ STAGES: list[tuple[str, str]] = [
     ("s00", "pipeline.stages.s00_resolve_orgs"),
     ("s01", "pipeline.stages.s01_fetch_openalex"),
     ("s02", "pipeline.stages.s02_build_corpus"),
+    # Numbered after the original stages for compatibility, but dependency-ordered here:
+    # arXiv stays the corpus spine and OpenAlex enriches those exact ids before embedding
+    # compacts/copies the canonical corpus into corpus_active.parquet.
+    ("s15", "pipeline.stages.s15_enrich_openalex"),
+    # Materialize citation totals and corpus-internal arrows from the completed exact OpenAlex
+    # crosswalk.  This is local and fast; the paced S2 bulk reconciliation is manual/optional.
+    ("s16", "pipeline.stages.s16_apply_openalex_citations"),
     ("s03", "pipeline.stages.s03_embed"),
     ("s04", "pipeline.stages.s04_project"),
     ("s12", "pipeline.stages.s12_tiles"),
@@ -33,6 +40,9 @@ STAGES: list[tuple[str, str]] = [
     ("s08", "pipeline.stages.s08_neighbors"),
     ("s06", "pipeline.stages.s06_hierarchy"),
     ("s07", "pipeline.stages.s07_label"),
+    # Numbered after the existing stages for compatibility, but runs here because s10
+    # consumes its exact-author-id membership evidence.
+    ("s14", "pipeline.stages.s14_rosters"),
     ("s10", "pipeline.stages.s10_indexes"),
     ("s13", "pipeline.stages.s13_figures"),
     ("s11", "pipeline.stages.s11_emit"),
@@ -51,6 +61,11 @@ def main(
 
     for key, module_path in STAGES:
         if only_set is not None and key not in only_set:
+            continue
+        # OpenAlex-source corpora already contain provider fields under their native schema;
+        # s16_apply_openalex_citations is specifically for the arXiv→OpenAlex crosswalk.
+        if key == "s16" and cfg.corpus.source != "arxiv_snapshot":
+            log.info("s16 OpenAlex citation materialization skipped for non-arXiv corpus source")
             continue
         if not started:
             if key == from_:

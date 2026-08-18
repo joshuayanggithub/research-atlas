@@ -102,6 +102,10 @@ POINTS_SCHEMA = pa.schema([
     # papers at load — so month-granularity date filtering needs no paper metadata, which
     # is now fetched on demand (Phase B). Clamped >= 0.
     ("month_index", pa.int16()),
+    # Deepest hierarchy cell containing this paper (s06 tiles.json). With the cell parent chain
+    # in regions.arrow this gives EXACT region membership, so clicking a map label can select
+    # the papers that label actually covers. -1 when the paper is in no cell.
+    ("region_leaf", pa.int32()),
 ])
 
 # --- Papers: split into a resident search/list INDEX + lazy per-node DETAIL (Phase B) ----
@@ -112,10 +116,15 @@ POINTS_SCHEMA = pa.schema([
 # Resident index, one row per paper; ROW INDEX == node_id. Ships in full.
 PAPERS_INDEX_SCHEMA = pa.schema([
     ("node_id", pa.int32()),
-    ("title", pa.string()),
-    ("author_ids", pa.list_(pa.int32())),  # for the author filter (resident until phase C)
     ("cited_by_count", pa.int32()),
     ("year", pa.int16()),
+    # Whether this row has a provider-backed citation count. ``cited_by_count == 0`` is a
+    # real value only when this is true; unmatched rows must render as unavailable.
+    ("citation_count_available", pa.bool_()),
+    # False when NO provider supplied a reference list for this paper, so the UI can say
+    # "no reference data" instead of rendering an empty References tab. Distinct from "has
+    # references, none of which are in this corpus". 7.3% of the 912k corpus.
+    ("references_available", pa.bool_()),
     # True when s13 baked a first-figure crop for this paper (figure_path(node_id) exists).
     # Lets the frontend fetch the crop only when present; absent/false ⇒ client-side fallback.
     ("has_figure", pa.bool_()),
@@ -130,6 +139,14 @@ PAPER_DETAIL_SCHEMA = pa.schema([
     ("arxiv_id", pa.string()),
     ("venue", pa.string()),
     ("author_names", pa.list_(pa.string())),
+    # Moved here from papers-index: only the details panel needs a paper's author ids, and it
+    # already fetches this shard on selection. In the eager index they cost 18.2 MB.
+    ("author_ids", pa.list_(pa.int32())),
+    # How many works this paper cites IN TOTAL, per Semantic Scholar — not just the ones inside
+    # this corpus. The References tab can only draw intra-corpus edges, so without the total a
+    # paper citing 18 works of which 5 are arXiv CS reads as "5 references", which is wrong about
+    # the paper rather than honest about the map. -1 means S2 has no reference list at all.
+    ("reference_count", pa.int32()),
 ])
 
 # Legacy full papers table (kept for reference / any non-tiled fallback path).
@@ -220,8 +237,23 @@ class LabelsDoc(BaseModel):
     labels: list[Label]
 
 
+class TopAuthor(BaseModel):
+    """A prolific researcher within one org unit, precomputed by s10.
+
+    The frontend used to derive this in the browser from each paper's author_ids, but those
+    lists left the resident papers index in D30 (they now ship per-paper on demand), which left
+    the org researcher list silently empty. An org shows at most a dozen names, so the honest
+    fix is to compute them once, offline, where the author lists actually live.
+    """
+    author_id: int
+    name: str
+    count: int
+
+
 class Institution(BaseModel):
     openalex_id: str
+    # Stable identity for sources beyond OpenAlex (canonical ROR or a curated local: id).
+    organization_id: Optional[str] = None
     display_name: str
     ror: Optional[str] = None
     type: str = "education"  # education | company | facility | ...
@@ -243,6 +275,15 @@ class Institution(BaseModel):
     # Curated entries drive the hierarchy tree and color-by-org; directory entries are
     # search-and-filter only. See docs/ORGANIZATION_DIRECTORY.md.
     curated: bool = True
+    # How papers were attributed to this entry. Empty means OpenAlex institution
+    # authorship; roster-backed neolabs carry explicit reviewed claim provenance.
+    membership_methods: list[str] = Field(default_factory=list)
+    # Most prolific researchers in this unit, precomputed (see TopAuthor).
+    top_authors: list[TopAuthor] = Field(default_factory=list)
+    # Of `count`, how many papers are attributed ONLY by model extraction from the PDF (COMET,
+    # 91% precision / 81% recall) rather than by publisher-asserted authorship (98-100%). Kept
+    # separate so the UI can say which, instead of blending two very different confidences.
+    extracted_count: int = 0
 
 
 class OrgsDoc(BaseModel):
@@ -268,6 +309,15 @@ class CorpusMeta(BaseModel):
     date_to: str
     field: str
     orgs: list[str]
+    # Null means the bundle has no provider-backed data for this metric. This is distinct
+    # from a real zero and prevents arXiv metadata's missing citation fields being presented
+    # as "0 citations". Counts and the directed graph may come from different providers.
+    citation_count_source: Optional[str] = None
+    citation_graph_source: Optional[str] = None
+    # Metadata enrichment is independent from corpus discovery and citation truth. Coverage
+    # is the fraction of canonical corpus rows with an exact provider match.
+    metadata_enrichment_source: Optional[str] = None
+    metadata_enrichment_coverage: Optional[float] = None
 
 
 class EmbeddingMeta(BaseModel):
@@ -304,6 +354,9 @@ class Manifest(BaseModel):
     # Present when the corpus is shipped as fetch-on-demand reveal-level tiles. Ordered by
     # level (0 = coarsest). Empty/omitted for a legacy single-points.arrow bundle.
     point_tiles: list[PointTile] = []
+    # s12's thinning constant. The frontend derives its max dot radius from it, because the
+    # on-screen separation the thinning guarantees is viewport_width / base_divisor.
+    tiling_base_divisor: float = 40.0
     # Neighbors (related-works) shard block size; 0 means neighbors.arrow is shipped whole
     # (legacy). When >0 the frontend loads shard (node_id // size) on demand.
     neighbor_shard_size: int = 0
@@ -312,6 +365,20 @@ class Manifest(BaseModel):
     # the frontend loads the resident papers-index.arrow whole and fetches per-node detail
     # from shard (node_id // size) on demand.
     paper_shard_size: int = 0
+    # Inverted author index (author-papers-N.arrow); 0 means the bundle predates it.
+    author_papers_shard_size: int = 0
+    title_chunk_rows: int = 0
+    n_title_chunks: int = 0
+    n_author_chunks: int = 0
+    has_import_index: bool = False
+    # Papers per month over the WHOLE corpus, indexed from the corpus's first month. 428 ints,
+    # so the date histogram can show the true distribution without waiting for point tiles —
+    # which are ordered by importance, and therefore hide the sparse early years longest.
+    month_histogram: list[int] = Field(default_factory=list)
+    n_position_shards: int = 0
+    position_shard_rows: int = 0
+    author_chunk_rows: int = 0
+    n_indexed_authors: int = 0
     n_paper_shards: int = 0
     # First-figure crops (s13). Present only when the figure stage ran. `count` papers have a
     # baked crop under `dir`/<node_id // shard_size>/<node_id>.png; the resident papers index
@@ -324,3 +391,99 @@ class FiguresMeta(BaseModel):
     dir: str = FIGURES_DIR
     shard_size: int = FIGURE_SHARD_SIZE
     count: int = 0  # number of papers with a baked crop
+
+
+# Cell tree for exact region membership: one row per hierarchy cell (285,316 at 912k), ~1.4 MB.
+# Shipping this plus points.region_leaf costs ~5 MB, against ~35 MB to ship every cell's
+# node_idx list outright.
+REGIONS = "regions.arrow"
+REGIONS_SCHEMA = pa.schema([
+    ("id", pa.int32()),
+    ("parent", pa.int32()),   # -1 at the root
+    ("level", pa.int16()),
+])
+
+
+# Inverted author index: one row per author with the nodes they wrote.
+#
+# The author FILTER previously scanned every paper's author_ids — 18.2 MB shipped eagerly plus a
+# 912k-row scan per filter change. Inverting it makes selecting an author a direct lookup of the
+# few rows that matter, and the per-paper lists move to the detail shards where they are already
+# fetched lazily. Sharded by author_id // size so one author costs one small fetch.
+AUTHOR_PAPERS_SHARD_SIZE = 8000  # ~0.9 MB/shard: one author filter should not pull 5.5 MB
+
+def author_papers_shard(shard: int) -> str:
+    return f"author-papers-{shard}.arrow"
+
+AUTHOR_PAPERS_SCHEMA = pa.schema([
+    ("author_id", pa.int32()),
+    ("node_ids", pa.list_(pa.int32())),
+    # Carried here rather than in the search index: it is 22.5 MB (40.3%) of authors.arrow but
+    # is only ever needed to build one author's OpenAlex link, and the author panel only renders
+    # while an author filter is active — which means this shard is already loaded.
+    ("openalex_id", pa.string()),
+])
+
+
+# Titles, split into sequential chunks so the browser can fill them in progressively.
+#
+# Titles are 71.6 MB of papers-index (28.1 MB gzipped, ~28s on a 1 MB/s link) and they cannot be
+# sharded by node the way detail is: search needs every title, and a citation panel's papers are
+# scattered across the corpus, so node-sharding would cost ~11 MB of fetches to render one panel.
+# Chunking instead keeps the total identical but lets titles appear as each chunk lands rather
+# than all at once at the end.
+TITLE_CHUNK_ROWS = 60000
+
+def titles_chunk(chunk: int) -> str:
+    return f"papers-titles-{chunk}.arrow"
+
+TITLES_SCHEMA = pa.schema([
+    ("node_id", pa.int32()),
+    ("title", pa.string()),
+])
+
+
+# Author search index, split into chunks so name matching becomes usable progressively.
+# Dropping openalex_id (see AUTHOR_PAPERS_SCHEMA) takes the whole index from 20.1 to 12.8 MB
+# gzipped; chunking means the first names are searchable in ~1s instead of ~13s.
+AUTHOR_CHUNK_ROWS = 120000
+
+def authors_chunk(chunk: int) -> str:
+    return f"authors-{chunk}.arrow"
+
+# `verified` replaces openalex_id for the one thing the resident index still needs it for:
+# telling a real OpenAlex identity from a name-hash fallback. One byte instead of ~27.
+# Lookup for importing a personal reading list (Zotero et al.): external identifier -> node_id.
+# Fetched only when the user actually imports, never at startup, because it is ~14 MB raw.
+# arXiv id is the only external id shipped: every paper has one (the corpus is arXiv-spined;
+# 10,061 are old-style archive/YYMMNNN ids, which the matcher handles), the arXiv DOI
+# is derivable from it (10.48550/arXiv.<id>), and titles are already in the browser (D30 title
+# chunks) so title matching needs no artifact at all. Only 1.7% of the papers this feature is
+# likely to miss carry a non-arXiv DOI, which is not worth another 25 MB.
+# Point rows sharded by node_id, so a FILTER can fetch positions for the specific papers it
+# matched instead of downloading every reveal level. The reveal-level tiles are ordered by
+# importance, so an arbitrary selection (a reading list, one author) is scattered across all of
+# them — 42 MB to place 19 dots. Sharded by id, the same 19 dots cost ~19 small files.
+# 2048 rows keeps a shard around 86 KB: small enough that fetching one to place a single paper
+# is not wasteful, large enough that a few-hundred-paper filter stays a sane number of requests.
+POSITION_SHARD_ROWS = 2048
+
+
+def points_shard(shard: int) -> str:
+    return f"points-by-node-{shard}.arrow"
+
+
+IMPORT_INDEX = "import-index.arrow"
+
+IMPORT_INDEX_SCHEMA = pa.schema([
+    ("node_id", pa.int32()),
+    ("arxiv_id", pa.string()),   # version suffix stripped; "" when unknown
+])
+
+
+AUTHORS_SEARCH_SCHEMA = pa.schema([
+    ("author_id", pa.int32()),
+    ("name", pa.string()),
+    ("count", pa.int32()),
+    ("verified", pa.bool_()),
+])

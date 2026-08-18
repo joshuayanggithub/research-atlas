@@ -3,11 +3,21 @@
 // filters/useFilterMask; this store only holds the intent.
 
 import { create } from "zustand";
-import type { Dataset } from "../data/types";
+import type { Dataset, Label } from "../data/types";
+import type { ReadingItem } from "../data/readingList";
 
 export type ColorMode = "subfield" | "org" | "recency";
 export type OrgDisplayMode = "dim" | "hide";
 export type EdgeMode = "out" | "in" | "both";
+
+export interface LabelFocus {
+  id: number;
+  x: number;
+  y: number;
+  level: number;
+  // Incrementing this lets selecting the same label again retrigger map navigation.
+  requestId: number;
+}
 
 export interface Filters {
   // Date range as month indices (months since corpus start month). monthMin/monthMax are
@@ -19,11 +29,36 @@ export interface Filters {
   yearMax: number;
   orgKeys: string[]; // selected org keys (union)
   authorIds: number[]; // selected local author ids (union)
-  // CS-topic filter (OpenAlex taxonomy). A paper passes if its subfield is in subfieldIds
+  // CS-topic filter (the corpus taxonomy). A paper passes if its subfield is in subfieldIds
   // (when any selected) AND its topic is in topicIds (when any selected). Empty = no topic
   // filter. Composes with org/author/date like the other facets.
   subfieldIds: number[];
   topicIds: number[];
+  // Map regions selected by clicking their label. Membership is computed client-side from the
+  // label centroids (filters/labelMembership), so this needs no pipeline artifact.
+  labelIds: number[];
+  // Citation-count range. `citeMax: null` means "no upper bound" — kept distinct from the
+  // corpus maximum so the filter stays correct if a rebuild changes the most-cited paper.
+  citeMin: number;
+  citeMax: number | null;
+  // Names of the imported reading lists currently being shown (see data/readingList). Empty
+  // means no reading-list filter, which is different from "an imported list that matched
+  // nothing" — that one legitimately shows an empty map.
+  readingLists: string[];
+}
+
+/** An imported library, resolved against the corpus. Held outside `filters` because it is
+ *  data, not a selection: the selection is which of its lists are active. */
+export interface ReadingListState {
+  fileName: string;
+  lists: string[];
+  /** node ids by list name, already matched to this corpus. */
+  nodesByList: Record<string, number[]>;
+  total: number;
+  matched: number;
+  /** Entries that matched nothing yet. Kept so the import can be retried once titles finish
+   *  streaming — an import done in the first seconds only had identifiers to work with. */
+  unmatchedItems?: ReadingItem[];
 }
 
 interface AppState {
@@ -41,12 +76,15 @@ interface AppState {
   // interaction
   selectedNode: number | null;
   hoverNode: number | null;
+  focusedLabel: LabelFocus | null;
   // When a paper is selected, hide connected papers whose Connected-Papers relevance score is
   // below this threshold (0 = show the whole citation network, 1 = only the most relevant).
   // Reset to 0 whenever the selection changes.
   relevanceThreshold: number;
 
   filters: Filters;
+  /** The imported library, or null. Survives reloads via localStorage (see setReadingList). */
+  readingList: ReadingListState | null;
 
   setDataset: (d: Dataset) => void;
   setError: (e: string) => void;
@@ -56,16 +94,26 @@ interface AppState {
   setShowCitationEdges: (visible: boolean) => void;
   setZoom: (z: number) => void;
   selectNode: (id: number | null) => void;
+  focusLabel: (label: Label) => void;
   setHover: (id: number | null) => void;
   setRelevanceThreshold: (t: number) => void;
   setYearRange: (min: number, max: number) => void;
   setMonthRange: (min: number, max: number) => void;
   toggleOrg: (key: string) => void;
   setAuthors: (ids: number[]) => void;
+  setCitationRange: (min: number, max: number | null) => void;
   setSubfieldIds: (ids: number[]) => void;
+  setLabelIds: (ids: number[]) => void;
+  toggleLabel: (id: number) => void;
   setTopicIds: (ids: number[]) => void;
+  setReadingList: (rl: ReadingListState | null) => void;
+  setReadingLists: (names: string[]) => void;
   clearFilters: () => void;
 }
+
+// localStorage key for the imported library. Versioned: a change to what we persist should
+// invalidate old entries rather than half-load them.
+export const READING_LIST_KEY = "research-atlas.reading-list.v1";
 
 const DEFAULT_FILTERS: Filters = {
   monthMin: 0,
@@ -74,8 +122,12 @@ const DEFAULT_FILTERS: Filters = {
   yearMax: 2026,
   orgKeys: [],
   authorIds: [],
+  labelIds: [],
   subfieldIds: [],
   topicIds: [],
+  readingLists: [],
+  citeMin: 0,
+  citeMax: null,
 };
 
 // Full date range as month indices for a dataset. monthMax is the last covered month.
@@ -84,6 +136,32 @@ function datasetMonthRange(d: Dataset): { min: number; max: number; yearMin: num
   const yearMax = parseInt(d.manifest.corpus.date_to.slice(0, 4));
   const toMonth = parseInt(d.manifest.corpus.date_to.slice(5, 7)) || 12;
   return { min: 0, max: (yearMax - yearMin) * 12 + (toMonth - 1), yearMin, yearMax };
+}
+
+/**
+ * A previously imported library, if it still refers to this corpus.
+ *
+ * Node ids are positions in the current build, so a rebuild silently renumbers everything —
+ * a stale list would highlight arbitrary papers rather than the ones you read. The stored copy
+ * therefore records the corpus size it was matched against and is dropped when that changes,
+ * which is a cheap proxy for "same build" and fails safe: the user re-imports the file.
+ *
+ * The lists are restored INACTIVE. Opening onto a filtered map that the user did not ask for
+ * this session reads as a broken map; one click on the chip brings the view back.
+ */
+function restoreReadingList(corpusCount: number): ReadingListState | null {
+  try {
+    const raw = localStorage.getItem(READING_LIST_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ReadingListState & { corpusCount?: number };
+    if (parsed.corpusCount !== corpusCount) {
+      localStorage.removeItem(READING_LIST_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -99,15 +177,18 @@ export const useStore = create<AppState>((set) => ({
 
   selectedNode: null,
   hoverNode: null,
+  focusedLabel: null,
   relevanceThreshold: 0,
 
   filters: { ...DEFAULT_FILTERS },
+  readingList: null,
 
   setDataset: (d) => {
     const r = datasetMonthRange(d);
     return set({
       dataset: d,
       loading: false,
+      readingList: restoreReadingList(d.points.count),
       filters: {
         ...DEFAULT_FILTERS,
         monthMin: r.min,
@@ -125,7 +206,19 @@ export const useStore = create<AppState>((set) => ({
   setZoom: (z) => set({ currentZoom: z }),
   // Reset the relevance threshold on every selection change so a new paper always starts
   // showing its whole citation network.
-  selectNode: (id) => set({ selectedNode: id, relevanceThreshold: 0 }),
+  selectNode: (id) => set({ selectedNode: id, focusedLabel: null, relevanceThreshold: 0 }),
+  focusLabel: (label) =>
+    set((s) => ({
+      selectedNode: null,
+      relevanceThreshold: 0,
+      focusedLabel: {
+        id: label.id,
+        x: label.x,
+        y: label.y,
+        level: label.level,
+        requestId: (s.focusedLabel?.requestId ?? 0) + 1,
+      },
+    })),
   setHover: (id) => set({ hoverNode: id }),
   setRelevanceThreshold: (t) => set({ relevanceThreshold: Math.max(0, Math.min(1, t)) }),
   setYearRange: (min, max) =>
@@ -168,7 +261,43 @@ export const useStore = create<AppState>((set) => ({
       };
     }),
   setAuthors: (ids) => set((s) => ({ filters: { ...s.filters, authorIds: ids } })),
+  setCitationRange: (min, max) =>
+    set((s) => ({ filters: { ...s.filters, citeMin: min, citeMax: max } })),
   setSubfieldIds: (ids) => set((s) => ({ filters: { ...s.filters, subfieldIds: ids } })),
+  setReadingList: (rl) =>
+    set((s) => {
+      // Persist the MATCHED node ids, not the source file: they are small, already resolved,
+      // and re-matching on every reload would mean re-fetching the import index. A corpus
+      // rebuild renumbers nodes, so the stored copy carries the corpus size it was matched
+      // against and is discarded when that no longer agrees (see App's restore).
+      try {
+        if (rl) {
+          localStorage.setItem(
+            READING_LIST_KEY,
+            JSON.stringify({ ...rl, corpusCount: s.dataset?.points.count ?? 0 }),
+          );
+        } else {
+          localStorage.removeItem(READING_LIST_KEY);
+        }
+      } catch {
+        /* private mode / quota — the list still works for this session */
+      }
+      return {
+        readingList: rl,
+        filters: { ...s.filters, readingLists: rl ? rl.lists : [] },
+      };
+    }),
+  setReadingLists: (names) => set((s) => ({ filters: { ...s.filters, readingLists: names } })),
+  setLabelIds: (ids) => set((s) => ({ filters: { ...s.filters, labelIds: ids } })),
+  toggleLabel: (id) =>
+    set((s) => ({
+      filters: {
+        ...s.filters,
+        labelIds: s.filters.labelIds.includes(id)
+          ? s.filters.labelIds.filter((x) => x !== id)
+          : [...s.filters.labelIds, id],
+      },
+    })),
   setTopicIds: (ids) => set((s) => ({ filters: { ...s.filters, topicIds: ids } })),
   clearFilters: () =>
     set((s) => {

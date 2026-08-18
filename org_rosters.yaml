@@ -1,0 +1,31 @@
+# Curated organization rosters joined against exact OpenAlex author ids.
+#
+# These claims are deliberately separate from config.yaml's OpenAlex-institution seeds:
+# neolabs are often absent from ROR/OpenAlex and their arXiv papers commonly omit structured
+# affiliations. Dates are inclusive; null means the source does not establish a bound.
+version: 1
+
+organizations:
+  - key: redwood
+    display_name: Redwood Research
+    organization_id: local:redwood-research
+    kind: neolab
+    members:
+      # Seeded from the reviewed author list of Redwood's AI Control paper. This is
+      # publication-history evidence, not a claim of current employment.
+      - openalex_id: A5037548279
+        provenance: publication_history
+        valid_from: null
+        valid_to: null
+      - openalex_id: A5050408969
+        provenance: publication_history
+        valid_from: null
+        valid_to: null
+      - openalex_id: A5084231398
+        provenance: publication_history
+        valid_from: null
+        valid_to: null
+      - openalex_id: A5028042353
+        provenance: publication_history
+        valid_from: null
+        valid_to: null

@@ -84,3 +84,31 @@ def test_curated_child_units_are_subsets_of_parent(monkeypatch):
     assert insts["cmu-ri"].parent == "cmu"
     assert set(insts["cmu-ri"].node_ids) <= set(insts["cmu"].node_ids)
     assert "cmu-ri" in insts["cmu"].children
+
+
+def test_roster_backed_neolab_is_a_curated_root_with_provenance(monkeypatch):
+    rows = [
+        {"node_id": 0, "institution_ids": []},
+        {"node_id": 1, "institution_ids": ["I74973139"]},
+    ]
+    roster_orgs = {"organizations": [{
+        "key": "redwood",
+        "display_name": "Redwood Research",
+        "organization_id": "local:redwood-research",
+        "kind": "neolab",
+    }]}
+    memberships = pl.DataFrame([
+        {"org_key": "redwood", "node_id": 0, "provenance": "publication_history"},
+        # Two matching roster authors on one paper must still yield one paper membership.
+        {"org_key": "redwood", "node_id": 0, "provenance": "self_asserted"},
+    ])
+    monkeypatch.setattr(s10_indexes, "_load_unit_attribution", lambda corpus: {})
+    insts = _build_orgs(
+        _corpus(rows), RESOLVED, {}, roster_orgs, memberships,
+    ).institutions
+
+    redwood = insts["redwood"]
+    assert redwood.kind == "neolab" and redwood.curated is True
+    assert redwood.organization_id == "local:redwood-research"
+    assert redwood.node_ids == [0] and redwood.count == 1
+    assert redwood.membership_methods == ["publication_history", "self_asserted"]

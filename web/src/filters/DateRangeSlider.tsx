@@ -1,9 +1,11 @@
-// Powerful date filter: month-granularity dual-handle range, a publication histogram so
-// users can see where papers concentrate, quick presets, and an exact label. Filtering
+// Powerful date filter: a publication histogram with an integrated month-granularity range
+// brush, quick presets, and an exact label. Filtering
 // runs on the GPU (DataFilterExtension month channel), so dragging never recomputes CPU
 // masks and stays smooth across the whole corpus.
 
 import { useMemo } from "react";
+import { UNLOADED_LEVEL } from "../data/loadArtifacts";
+import { usePointTilesEpoch } from "../data/usePapersReady";
 import { useStore } from "../state/store";
 import { useFilterMask } from "./useFilterMask";
 import { DualRangeSlider } from "./DualRangeSlider";
@@ -32,19 +34,64 @@ export function DateRangeSlider({ ds }: { ds: Dataset }) {
   // (rather than misleadingly counting the whole corpus). Date is excluded here — the
   // slider itself is the date control.
   const orgAuthorActive = !!filter?.anyOrgAuthorActive;
-  const { bins, maxBin } = useMemo(() => {
+  const tilesEpoch = usePointTilesEpoch();
+  const bins = useMemo(() => {
+    // With NO org/author filter the true distribution comes from the manifest, computed by s11
+    // over the whole corpus. Deriving it from loaded points instead is not just incomplete, it is
+    // BIASED: reveal levels are ordered by importance, so the sparse early years live in the
+    // deepest tiles and are the last to arrive. At the home view that showed "0 selected" for
+    // 1991-2014, a range that genuinely holds 88,061 papers.
+    const preset = ds.manifest.month_histogram;
+    if (!orgAuthorActive && preset && preset.length > 0) {
+      const b = new Int32Array(maxMonth + 1);
+      for (let m = 0; m <= maxMonth && m < preset.length; m++) b[m] = preset[m];
+      return b;
+    }
     const b = new Int32Array(maxMonth + 1);
     const mi = ds.points.monthIndex;
+    const reveal = ds.points.revealLevel;
     const match = filter?.matchValue;
     for (let i = 0; i < ds.points.count; i++) {
+      // Skip papers whose point tile has not arrived. emptyPoints zeroes monthIndex, so an
+      // unloaded paper reads as the FIRST month of the corpus: at startup ~925,000 unplaced
+      // papers stacked into a single 1991 bar and every real bar was flattened against it.
+      // This is the histogram's version of the placeholder-as-fact bug (D39/D41).
+      if (reveal[i] === UNLOADED_LEVEL) continue;
       if (orgAuthorActive && match && match[i] === 0) continue;
       const m = mi[i];
       if (m >= 0 && m <= maxMonth) b[m]++;
     }
-    let mx = 1;
-    for (const v of b) if (v > mx) mx = v;
-    return { bins: b, maxBin: mx };
-  }, [ds, maxMonth, filter, orgAuthorActive]);
+    return b;
+    // Depend on the MASK, not the whole filter object: the filter identity changes on every
+    // citation/topic/org tweak, and re-binning 912k points for a change the histogram does not
+    // even reflect was a large part of the drag lag.
+    // tilesEpoch: the bins are only as complete as the tiles that have landed, so re-bin as
+    // more arrive rather than freezing on the eager set.
+  }, [ds, maxMonth, filter?.matchValue, orgAuthorActive, tilesEpoch]);
+
+  // Group months into DISPLAY bars. The corpus spans 1991-2026 = 428 months, and the sidebar
+  // histogram is ~260px wide: one bar per month gives each 0.61px with a 1px gap between them,
+  // so the gaps are wider than the bars and the distribution simply vanishes. Group to the
+  // smallest NATURAL unit (month, quarter, half, year, ...) that keeps bars readable. The range
+  // control underneath stays month-granular — this changes what is drawn, not what is selectable.
+  const { bars, monthsPerBar } = useMemo(() => {
+    const NATURAL = [1, 3, 6, 12, 24, 60];
+    const TARGET_BARS = 56;
+    const step = NATURAL.find((n) => Math.ceil((maxMonth + 1) / n) <= TARGET_BARS) ?? 60;
+    const out: { start: number; end: number; count: number }[] = [];
+    for (let m = 0; m <= maxMonth; m += step) {
+      const end = Math.min(m + step - 1, maxMonth);
+      let count = 0;
+      for (let k = m; k <= end; k++) count += bins[k] ?? 0;
+      out.push({ start: m, end, count });
+    }
+    return { bars: out, monthsPerBar: step };
+  }, [bins, maxMonth]);
+  const maxBar = useMemo(() => bars.reduce((m, b) => (b.count > m ? b.count : m), 1), [bars]);
+  const unit = monthsPerBar === 1 ? "mo"
+    : monthsPerBar === 3 ? "quarter"
+      : monthsPerBar === 12 ? "yr"
+        : `${monthsPerBar}mo`;
 
   // Count inside the selected window (updates live as the user drags).
   const inRange = useMemo(() => {
@@ -70,31 +117,53 @@ export function DateRangeSlider({ ds }: { ds: Dataset }) {
         </span>
       </h4>
 
-      {/* Histogram + single dual-handle slider stacked as one control: the thumbs ride the
-          bottom of the distribution and the selected span is highlighted across both. */}
+      {/* Without a stated maximum the bars are a shape with no units — you can see that later
+          years are taller but not what any of it means. One peak label turns it into a scale. */}
+      {/* Labels the gridline the bars rise to, so "how tall is tall" has an answer. The
+          half-height line sits at 25% of the peak because the bars use a sqrt scale. */}
+      <div className="hist-scale subtle">
+        <span>
+          {maxBar.toLocaleString()}/{unit} peak · log
+        </span>
+        <span>{inRange.toLocaleString()} selected</span>
+      </div>
+
+      {/* The histogram is the range control: its selected brush and two handles live directly
+          on the bars, so dragging the distribution updates the map's time filter. */}
       <div className="date-control">
-        <div className="date-histogram" aria-hidden="true">
-          {Array.from(bins).map((count, m) => {
-            const selected = m >= filters.monthMin && m <= filters.monthMax;
+        <div className="date-histogram" role="group" aria-label="Publication date range histogram">
+          {bars.map((bar) => {
+            // A display bar is selected when the brush overlaps ANY of its months, so the
+            // highlight still tracks a month-granular selection under a yearly bar.
+            const selected = bar.end >= filters.monthMin && bar.start <= filters.monthMax;
+            const from = labelForMonth(fromYear, bar.start);
+            const to = labelForMonth(fromYear, bar.end);
             return (
               <span
-                key={m}
+                key={bar.start}
                 className={`hist-bar ${selected ? "in" : "out"}`}
-                style={{ height: `${Math.max(2, (count / maxBin) * 100)}%` }}
+                title={`${from}${from === to ? "" : ` – ${to}`}: ${bar.count.toLocaleString()} papers`}
+                // LOG, not sqrt. Across 1991-2026 arXiv CS output grows by roughly three orders
+                // of magnitude, and sqrt puts the early 1990s at ~3% height — present in the DOM,
+                // invisible on screen, which is what "the y axis is screwed up" describes. log1p
+                // spans decades legibly and is the standard choice for a growth distribution;
+                // the axis says "log" so the height is not mistaken for a linear reading.
+                style={{ height: `${Math.max(2, (Math.log1p(bar.count) / Math.log1p(maxBar)) * 100)}%` }}
               />
             );
           })}
+          <DualRangeSlider
+            className="histogram-range-selector"
+            min={0}
+            max={maxMonth}
+            low={filters.monthMin}
+            high={filters.monthMax}
+            onChange={setMonthRange}
+            ariaLabelLow="Start month"
+            ariaLabelHigh="End month"
+            formatValue={(v) => labelForMonth(fromYear, v)}
+          />
         </div>
-        <DualRangeSlider
-          min={0}
-          max={maxMonth}
-          low={filters.monthMin}
-          high={filters.monthMax}
-          onChange={setMonthRange}
-          ariaLabelLow="Start month"
-          ariaLabelHigh="End month"
-          formatValue={(v) => labelForMonth(fromYear, v)}
-        />
       </div>
 
       <div className="date-presets">

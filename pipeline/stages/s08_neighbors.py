@@ -12,8 +12,9 @@ Emits:
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
-import polars as pl
 
 from pipeline.common import log
 from pipeline.common.io import read_npy
@@ -53,10 +54,14 @@ def run(cfg: Config | None = None) -> str:
     # one thread for stable artifacts — but single-thread is impractically slow at scale
     # (~30+ min at 400k). Above fused.single_thread_max_n, use all cores and accept the minor
     # non-determinism (an offline stage; the approximate kNN is robust to it).
-    threads = 1 if n <= cfg.fused.single_thread_max_n else 0  # 0 = all cores in hnswlib
+    # Pass an explicit positive count. hnswlib 0.8 can segfault in parallel add_items when
+    # num_threads=0 is used as an "all cores" sentinel (observed at 271k x 768 on Linux).
+    # Half the logical CPUs approximates physical cores and avoids oversubscribing SMT.
+    parallel_threads = max(1, min(8, (os.cpu_count() or 1) // 2))
+    threads = 1 if n <= cfg.fused.single_thread_max_n else parallel_threads
     if threads != 1:
         log.warn(f"n={n} > single_thread_max_n={cfg.fused.single_thread_max_n}: building "
-                 f"HNSW with all cores (faster, slightly non-deterministic)")
+                 f"HNSW with {threads} workers (faster, slightly non-deterministic)")
     index.set_num_threads(threads)
     index.add_items(vectors, np.arange(n), num_threads=threads)
     index.set_ef(max(cand + 10, 50))
@@ -101,6 +106,7 @@ def run(cfg: Config | None = None) -> str:
                 cfg.fused.alpha,
                 k,
                 citation_limit,
+                cfg.fused.hub_degree_limit,
             )
     else:
         log.warn("no edges.npz — using pure text neighbors (run s09 first for fused)")

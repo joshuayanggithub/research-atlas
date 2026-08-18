@@ -7,10 +7,22 @@
     <!-- Type system: Space Grotesk (display) + IBM Plex Mono (instrument readouts). -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Loaded asynchronously. As a plain stylesheet this blocks first paint on a round trip
+         to fonts.googleapis.com, so a slow or unreachable Google Fonts leaves the page blank
+         before the map even starts loading. `display=swap` already paints fallback text
+         first, so promoting the sheet on load costs nothing visually. -->
     <link
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
+      rel="preload"
+      as="style"
+      onload="this.onload=null;this.rel='stylesheet'"
     />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
     <title>Research Atlas — a map of CS/AI research</title>
   </head>
   <body>

@@ -2,7 +2,8 @@
 
 Labels combine two complementary signals:
 
-* discriminative OpenAlex topics, scored by community prevalence and corpus rarity;
+* discriminative taxonomy values (OpenAlex topics for enriched corpora; primary arXiv
+  category codes for the current snapshot), scored by community prevalence and rarity;
 * c-TF-IDF phrases mined from representative titles and abstracts in each community.
 
 The labeler runs top-down. Child labels avoid repeating ancestor labels, and siblings use
@@ -441,12 +442,22 @@ def run(cfg: Config | None = None) -> tuple[str, str]:
         if not band_cells:
             continue
 
+        sorted_cells = sorted(band_cells, key=lambda cell: -cell["count"])
+        cap = cfg.hierarchy.max_labels_per_level
+        label_cells = sorted_cells[:cap]
+        keep = {cell["id"] for cell in label_cells}
+
+        # c-TF-IDF is the expensive part (it concatenates up to 700 abstracts per cell).
+        # Only the top `cap` cells can be emitted to labels.json, so scoring every hidden
+        # cell wastes tens of GB and many minutes at deep bands without changing anything
+        # the browser can display. Hidden cells still get lightweight topic/leaf fallback
+        # names in clusters.json below.
         excluded = {
             cell["id"]: ancestor_labels(cell["id"])
-            for cell in band_cells
+            for cell in label_cells
         }
         phrase_map = _ctfidf_candidates(
-            band_cells,
+            label_cells,
             texts,
             vectors,
             cfg.labels.ctfidf_min_gram,
@@ -454,9 +465,6 @@ def run(cfg: Config | None = None) -> tuple[str, str]:
             exclude=excluded,
             top_k=cfg.labels.ctfidf_candidates,
         )
-        sorted_cells = sorted(band_cells, key=lambda cell: -cell["count"])
-        cap = cfg.hierarchy.max_labels_per_level
-        keep = {cell["id"] for cell in sorted_cells[:cap]}
         if len(band_cells) > cap:
             # The frontend declutters per viewport, so a global cap only ever removes names
             # the user could have seen by zooming in. Log it rather than dropping silently.

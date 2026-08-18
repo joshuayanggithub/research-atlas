@@ -62,6 +62,9 @@ export interface Institution {
   direct_count: number; // size of this unit's own evidence set (node_ids list not shipped)
   curated: boolean; // curated seed org/unit (drives tree + color) vs. directory-only entry
   membership_methods: string[]; // empty = OpenAlex affiliation; otherwise roster provenance
+  // Precomputed by s10. Per-paper author_ids left the resident index in D30, so the browser
+  // can no longer count them; an org shows a dozen names, so they are counted offline instead.
+  top_authors?: { author_id: number; name: string; count: number }[];
 }
 
 export interface OrgsDoc {
@@ -86,6 +89,20 @@ export interface FileMeta {
   rows: number | null;
 }
 
+/** The hierarchy cell tree (regions.arrow), indexed by cell id. */
+export interface RegionTree {
+  parent: Int32Array;
+  level: Int16Array;
+}
+
+export interface PointTileMeta {
+  level: number;
+  path: string;
+  rows: number;
+  cumulative: number;
+  bytes: number;
+}
+
 export interface Manifest {
   schema_version: number;
   built_at: string;
@@ -106,12 +123,28 @@ export interface Manifest {
   projector: Record<string, unknown>;
   levels: LevelBand[];
   files: Record<string, FileMeta>;
+  /** One Arrow file per reveal level, so points can be fetched progressively (s11). */
+  point_tiles?: PointTileMeta[];
+  /** s12 thinning constant; on-screen point separation is viewport_width / this. */
+  tiling_base_divisor?: number;
   // Related-works neighbors are sharded for on-demand loading: shard = node_id // size.
   // 0 means the legacy whole neighbors.arrow.
   neighbor_shard_size?: number;
   n_neighbor_shards?: number;
   // Paper detail is sharded the same way; the resident index is papers-index.arrow.
   paper_shard_size?: number;
+  /** Inverted author index (author-papers-N.arrow); 0/absent means the bundle predates it. */
+  author_papers_shard_size?: number;
+  /** Titles ship as sequential chunks so they can fill in progressively. */
+  title_chunk_rows?: number;
+  n_author_chunks?: number;
+  has_import_index?: boolean;
+  month_histogram?: number[];
+  n_position_shards?: number;
+  position_shard_rows?: number;
+  author_chunk_rows?: number;
+  n_title_chunks?: number;
+  n_indexed_authors?: number;
   n_paper_shards?: number;
   // First-figure crops baked by the pipeline (s13). Present only when the figure stage ran;
   // a crop lives at `${dir}/${node_id / shard_size | 0}/${node_id}.png`. The resident papers
@@ -145,6 +178,8 @@ export interface PointData {
   // point only when its reveal_level <= the active zoom level, which guarantees no two
   // visible points overlap at any zoom. A large sentinel means "not yet loaded".
   revealLevel: Int16Array;
+  /** Deepest hierarchy cell containing the paper; -1 if none. Pairs with Dataset.regions. */
+  regionLeaf: Int32Array;
 }
 
 // Resident per-paper index (papers-index.arrow), accessed by node_id for every paper.
@@ -155,6 +190,8 @@ export interface PaperMeta {
   citedByCount: number;
   // A zero count is meaningful only when the upstream citation provider matched this paper.
   citationCountAvailable: boolean;
+  /** False when no provider supplied a reference list at all (vs. having none in-corpus). */
+  referencesAvailable: boolean;
   authorIds: number[];
   // Publication YEAR only (from points/index). Full ISO date is in PaperDetail. Kept as a
   // string ("2017" / "") so existing `.publicationDate.slice(0,4)` call sites still work.
@@ -166,19 +203,26 @@ export interface PaperMeta {
 
 // Lazy per-node detail (papers-detail-<shard>.arrow), fetched only for the selected paper.
 export interface PaperDetail {
+  /** Local author ids, moved here from the eager index (18.2 MB saved). */
+  authorIds: number[];
   paperId: string;
   publicationDate: string; // full ISO yyyy-mm-dd
   doi: string | null;
   arxivId: string | null;
   venue: string | null;
   authorNames: string[];
+  /** Total works this paper cites per S2, or -1 when S2 has no reference list for it. The
+   *  References tab can only draw the subset that is also in this corpus. */
+  referenceCount: number;
 }
 
 export interface AuthorRow {
   authorId: number;
-  openalexId: string;
   name: string;
   count: number;
+  /** True when this is a real OpenAlex identity rather than a name-hash fallback. The id
+   *  itself lives in the author-papers shard (D32) — see loadArtifacts.peekAuthorOpenAlex. */
+  verified: boolean;
 }
 
 export interface CitationEdges {
@@ -193,7 +237,11 @@ export interface Dataset {
   labels: LabelsDoc;
   orgs: OrgsDoc;
   topics: TopicsDoc;
-  authors: AuthorRow[];
+  // Loaded on first use, not at startup: authors.arrow is 34.6 MB / 829k rows and unpacking
+  // it cost ~50% of total load time while nothing on first paint needs it.
+  /** Cell tree for exact label-region membership; empty until regions.arrow lands. */
+  regions: RegionTree;
+  getAuthors: () => Promise<AuthorRow[]>;
   // Related-works neighbors are fetched on demand by node_id (shard = node_id // size),
   // so the ~9MB (→50MB at 390k) neighbor table is not in the initial load. Cached per shard.
   getNeighbors: (node: number) => Promise<NeighborList>;

@@ -13,8 +13,8 @@ which exposes the needed primitives natively:
 Algorithm (mirrors PDFFigures 2.0):
     1. Find the earliest "Figure 1" / "Table 1" caption in the text layer (page + bbox).
     2. Gather candidate graphical boxes on that page from the three sources above.
-    3. Pick the candidate sitting directly ABOVE the caption, overlapping its column, largest
-       (a scoring function that prefers big + close, exactly like PDFFigures' region scoring).
+    3. Pick a figure directly ABOVE its caption. For tables, first search BELOW the caption
+       (the conventional table layout), then fall back above for unusual templates.
     4. Render that box (plus the caption strip, for context) to a PNG.
 
 Prefers a figure over a table (figures usually come first and convey the gist), earliest
@@ -34,11 +34,13 @@ from dataclasses import dataclass
 import pymupdf
 
 # "Figure 1:" / "Fig. 1" / "Table 1." and the chapter-numbered "Figure 1.1:" (GPT-3-style).
-# The number must be 1 or 1.<n> so "Figure 10" / "Figure 2.x" are not matched, and a
-# separator must follow. Anchored at the start of a text line (a caption begins a block; a
-# mid-sentence "see Table 1" lives inside a line that starts with other words).
+# Figures sometimes omit punctuation ("Figure 1 A comparison"), but tables require ':' or
+# '.' so a leading prose sentence such as "Table 1 reports our results" is not mistaken for
+# the caption. The number must be 1 or 1.<n>, so "Figure 10" does not match.
 _CAPTION_RE = re.compile(
-    r"^(figure|fig\.?|table)\s*1(\.\d+)?\s*([.:]\s|\s|$)", re.IGNORECASE
+    r"^(?:(?:figure|fig\.?)\s*1(?:\.\d+)?\s*(?:[.:]\s|\s|$)|"
+    r"table\s*1(?:\.\d+)?\s*(?:[.:]\s|$))",
+    re.IGNORECASE,
 )
 
 # Candidate-box filters. A real figure/table is not a sliver.
@@ -72,7 +74,10 @@ def _find_caption(doc: pymupdf.Document, max_pages: int) -> _Caption | None:
                 text = "".join(span["text"] for span in line["spans"]).strip()
                 if not text or not _CAPTION_RE.match(text):
                     continue
-                cap = _Caption(pno, pymupdf.Rect(line["bbox"]),
+                # Keep the whole caption block, not merely its first line. Multi-line table
+                # captions otherwise make the apparent caption→table gap look 40–60pt larger
+                # and cause the first header rows to be missed.
+                cap = _Caption(pno, pymupdf.Rect(block["bbox"]),
                                text.lower().startswith("table"))
                 if not cap.is_table and fig is None:
                     fig = cap
@@ -143,6 +148,64 @@ def _text_block_above(page: pymupdf.Page, cap: pymupdf.Rect) -> pymupdf.Rect | N
     return merged
 
 
+def _text_block_below(page: pymupdf.Page, cap: pymupdf.Rect) -> pymupdf.Rect | None:
+    """Contiguous table text directly below an above-table caption.
+
+    Tables conventionally put their caption above the header. PyMuPDF often detects only
+    isolated ruling-line fragments (RLM Table 1 is split into two small drawing clusters),
+    while the text blocks cover the complete header and every row. Merge those blocks until
+    a real whitespace break separates the table from the following prose.
+    """
+    col_lo, col_hi = cap.x0 - 20, cap.x1 + 20
+    blocks = []
+    for b in page.get_text("dict")["blocks"]:
+        if "lines" not in b:
+            continue
+        r = pymupdf.Rect(b["bbox"])
+        if r.y0 < cap.y1 - 2:                     # below the complete caption block only
+            continue
+        if min(r.x1, col_hi) - max(r.x0, col_lo) <= 0:
+            continue
+        blocks.append(r)
+    if not blocks:
+        return None
+    blocks.sort(key=lambda r: r.y0)               # nearest-to-caption first, going down
+    gap_limit = 18.0
+    # Templates commonly leave a little more padding after the caption than between rows.
+    if blocks[0].y0 - cap.y1 > 30.0:
+        return None
+    merged = blocks[0]
+    prev_bottom = blocks[0].y1
+    for r in blocks[1:]:
+        if r.y0 - prev_bottom > gap_limit:        # whitespace ⇒ following body prose
+            break
+        merged |= r
+        prev_bottom = max(prev_bottom, r.y1)
+    if merged.height < _MIN_H or merged.width < _MIN_W:
+        return None
+    return merged
+
+
+def _pick_box_below(
+    cands: list[tuple[str, pymupdf.Rect]], cap: pymupdf.Rect
+) -> tuple[str, pymupdf.Rect] | None:
+    """Graphical table candidate directly below an above-table caption."""
+    col_lo, col_hi = cap.x0 - 20, cap.x1 + 20
+    best: tuple[str, pymupdf.Rect] | None = None
+    best_score = -1.0
+    for src, r in cands:
+        if r.width < _MIN_W or r.height < _MIN_H or r.y0 < cap.y1 - 5:
+            continue
+        overlap = min(r.x1, col_hi) - max(r.x0, col_lo)
+        if overlap <= 0:
+            continue
+        gap = r.y0 - cap.y1
+        score = r.width * r.height - gap * 50.0
+        if score > best_score:
+            best, best_score = (src, r), score
+    return best
+
+
 def _pick_box(
     cands: list[tuple[str, pymupdf.Rect]], cap: pymupdf.Rect
 ) -> tuple[str, pymupdf.Rect] | None:
@@ -188,19 +251,36 @@ def find_first_figure(
             return None
         label = "Table 1" if cap.is_table else "Figure 1"
         page = doc[cap.page_number]
-        chosen = _pick_box(_candidate_boxes(page), cap.rect)
+        candidates = _candidate_boxes(page)
+        table_below = _text_block_below(page, cap.rect) if cap.is_table else None
+        if cap.is_table and table_below is not None:
+            # Text spans the whole table more reliably than find_tables()/drawing clusters,
+            # which frequently return only its ruled subsections.
+            chosen = ("text", table_below)
+        elif cap.is_table:
+            chosen = _pick_box_below(candidates, cap.rect)
+        else:
+            chosen = _pick_box(candidates, cap.rect)
         if chosen is None and cap.is_table:
-            # Borderless table: no graphical box exists; fall back to the text region above.
-            box = _text_block_above(page, cap.rect)
-            chosen = ("text", box) if box is not None else None
+            # Unusual template with the caption below the table.
+            chosen = _pick_box(candidates, cap.rect)
+            if chosen is None:
+                box = _text_block_above(page, cap.rect)
+                chosen = ("text", box) if box is not None else None
         if chosen is None:
             return None
         src, box = chosen
         # Include the caption strip in the crop for context.
-        crop = pymupdf.Rect(
-            min(box.x0, cap.rect.x0), box.y0,
-            max(box.x1, cap.rect.x1), cap.rect.y1,
-        )
+        if cap.is_table and box.y0 >= cap.rect.y1 - 5:
+            crop = pymupdf.Rect(
+                min(box.x0, cap.rect.x0), cap.rect.y0,
+                max(box.x1, cap.rect.x1), box.y1,
+            )
+        else:
+            crop = pymupdf.Rect(
+                min(box.x0, cap.rect.x0), box.y0,
+                max(box.x1, cap.rect.x1), cap.rect.y1,
+            )
         return FigureCrop(cap.page_number, tuple(crop), label, src)
     finally:
         doc.close()

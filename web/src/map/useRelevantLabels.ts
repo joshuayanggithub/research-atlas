@@ -1,132 +1,133 @@
-// A semantic-zoom label is only meaningful over papers that are actually *visible*. When
-// the view is restricted — by an org/author filter, OR by selecting a single paper (which
-// shows only that paper + its citation network) — this hook returns the set of label ids
-// those visible papers populate, so labels over now-empty regions disappear instead of
-// blanketing the whole map. Returns null when nothing is restricted (all labels relevant).
+// Which semantic-zoom labels describe what is currently visible.
 //
-// Method: each visible paper votes for its nearest label centroid within each band — but
-// ONLY when that centroid is actually near the paper (within a per-band radius). Without the
-// distance gate, a selected paper's citation network (which is deliberately spread across the
-// whole map — a landmark paper cites ~2,000 papers spanning ~90% of the map) would have each
-// neighbor claim its nearest coarse-band label regardless of distance, lighting up nearly
-// every label. The gate makes a paper vote only for labels it genuinely sits under, so labels
-// over regions the visible set doesn't populate disappear. A label is then kept when its votes
-// clear `max(MIN_VOTES, FRACTION * region size)` (a flat 1 for selections, since the visible
-// set is small).
+// When the view is restricted — by an org/author/reading-list filter, or by selecting a paper
+// (which shows only that paper plus its citation network) — this returns the label ids those
+// papers actually populate, so labels over now-empty regions disappear instead of blanketing
+// the map. Returns null when nothing is restricted (every label is relevant).
 //
-// Memoized on (dataset, filter, selectedNode) so it recomputes only when the restriction
-// changes, never on pan/zoom.
+// METHOD: exact hierarchy membership. A label IS a hierarchy cell (labels.json ids match the
+// cell ids in regions.arrow), and `points.regionLeaf` records the deepest cell each paper
+// belongs to, so walking the parent chain gives the exact cell that paper occupies in every
+// band. Each visible paper votes for those cells, and a label survives when it covers a
+// meaningful share of the visible set.
+//
+// This replaced nearest-centroid-within-a-radius voting, which was wrong in both directions and
+// produced the complaint that started this: filtering to Graham Neubig's 328 papers surfaced
+// "Sentiment Analysis and Opinion Mining: Sarcasm Detection" and dropped "Language Models".
+// Two compounding causes, both fixed by the change:
+//
+//   1. A paper voted for the nearest centroid, not the region it is IN. Small regions whose
+//      centroid happens to sit in the middle of a dense neighbourhood collected votes from
+//      thousands of papers that belong to entirely different regions — 76 of Neubig's papers
+//      voted for a 159-paper sarcasm region they are not members of.
+//   2. The keep-threshold was a fraction of the REGION's size, so the bigger and more
+//      representative a region was, the harder it was to keep: "Language Models" (65,048 papers,
+//      213 of Neubig's) needed 1,301 votes and was rejected, while the sarcasm region needed 3.
+//      Systematically, the accurate labels lost and the niche ones won.
+//
+// The threshold is now a share of the VISIBLE set, which also fixes small selections: an author
+// with 15 papers previously cleared no threshold anywhere and got no labels at all.
 
 import { useMemo } from "react";
 import type { Dataset } from "../data/types";
 import type { FilterArrays } from "../filters/useFilterMask";
+import { useRegionsReady } from "../data/usePapersReady";
 
-const MIN_VOTES = 2; // a region needs at least this many visible papers to keep its label
-const FRACTION = 0.02; // ...and at least this share of the region's own size
+// A label must cover at least this share of what you are looking at...
+const SHARE = 0.05;
+// ...and at least this many papers, so a handful of papers cannot name a region on their own.
+const MIN_VOTES = 2;
+// ...but a share test alone empties the map for BROAD filters. An organisation with 14,522
+// papers spreads them over the whole atlas, so almost no single region reaches 5% and the view
+// loses its labels exactly when it most needs orientation. So each band also always keeps its
+// top few regions by share: thresholding answers "is this label meaningful?", ranking answers
+// "what is this view mostly about?", and a filtered map needs both.
+// Raised from 6 after a 6,000-paper organisation showed five labels on the whole map. The
+// greedy placement culls overlaps anyway, so this is a candidate budget, not a draw count.
+const TOP_PER_BAND = 14;
+
+// Cap on how many visible papers vote. The walk is O(voters x depth) rather than the old
+// O(voters x bands x labels-per-band), so this is generous; it only bounds pathological cases
+// like a filter matching most of the corpus. A stride keeps the sample spread across the whole
+// set rather than favouring low node ids, which correlate with publication date.
+const MAX_VOTERS = 20000;
 
 export function useRelevantLabels(
   ds: Dataset | null,
   filter: FilterArrays | null,
   selectedNode: number | null = null,
 ): Set<number> | null {
+  // regions.arrow streams in after first paint; until it lands membership cannot be resolved.
+  const regionsReady = useRegionsReady();
   return useMemo(() => {
     if (!ds) return null;
     const filterActive = !!filter?.anyOrgAuthorActive;
     const hasSelection = selectedNode !== null && selectedNode >= 0;
     if (!filterActive && !hasSelection) return null;
 
-    // The visible paper set: a selection shows only the selected node + its cited/citing
-    // neighbors; an org/author filter shows all matching papers. A selection takes
-    // precedence (it's the tighter restriction, matching what the map actually draws).
-    let isVisible: (i: number) => boolean;
+    const { parent, level } = ds.regions;
+    if (parent.length === 0) return null; // not loaded yet: treat every label as relevant
+
+    // The visible set: a selection shows the paper plus its citation network; a filter shows
+    // everything matching. A selection wins, being the tighter restriction and what the map draws.
+    const { regionLeaf, count } = ds.points;
+    const visibleIdx: number[] = [];
     if (hasSelection) {
-      const visible = new Set<number>([
+      const seen = new Set<number>([
         selectedNode,
         ...(ds.citesOut.get(selectedNode) ?? []),
         ...(ds.citedBy.get(selectedNode) ?? []),
       ]);
-      isVisible = (i) => visible.has(i);
+      for (const i of seen) if (i >= 0 && i < count) visibleIdx.push(i);
     } else {
       const { matchValue } = filter!;
-      isVisible = (i) => matchValue[i] === 1;
+      for (let i = 0; i < count; i++) if (matchValue[i] === 1) visibleIdx.push(i);
     }
+    if (visibleIdx.length === 0) return new Set<number>();
 
-    // Group labels by band; carry each label's region size so the threshold can scale.
-    const byLevel = new Map<number, { id: number; x: number; y: number; count: number }[]>();
-    for (const l of ds.labels.labels) {
-      const arr = byLevel.get(l.level) ?? [];
-      arr.push({ id: l.id, x: l.x, y: l.y, count: l.count });
-      byLevel.set(l.level, arr);
-    }
-
-    // Per-band vote radius²: a paper only votes for a label centroid it genuinely sits under.
-    // Derive it from each band's own centroid spacing (median nearest-neighbor distance among
-    // the band's labels), so coarse bands (few, far-apart regions) get a large radius and fine
-    // bands a small one — self-scaling with no magic constant. RADIUS_FACTOR widens it a bit
-    // so a paper near a region edge still counts. Bands with <2 labels have no gate (Infinity).
-    const RADIUS_FACTOR = 1.3;
-    const radius2 = new Map<number, number>();
-    for (const [level, arr] of byLevel) {
-      if (arr.length < 2) {
-        radius2.set(level, Infinity);
-        continue;
-      }
-      const nn: number[] = [];
-      for (let a = 0; a < arr.length; a++) {
-        let bestD = Infinity;
-        for (let b = 0; b < arr.length; b++) {
-          if (a === b) continue;
-          const dx = arr[a].x - arr[b].x;
-          const dy = arr[a].y - arr[b].y;
-          const d = dx * dx + dy * dy;
-          if (d < bestD) bestD = d;
-        }
-        if (bestD < Infinity) nn.push(bestD);
-      }
-      nn.sort((p, q) => p - q);
-      const median = nn[Math.floor(nn.length / 2)] ?? Infinity;
-      radius2.set(level, median * RADIUS_FACTOR * RADIUS_FACTOR);
-    }
-
+    const stride = Math.max(1, Math.ceil(visibleIdx.length / MAX_VOTERS));
     const votes = new Map<number, number>();
-    const { x, y, count } = ds.points;
+    let voters = 0;
+    // Ancestor chains repeat heavily — sibling papers share a leaf — so memoise per leaf cell.
+    const chainCache = new Map<number, number[]>();
 
-    for (let i = 0; i < count; i++) {
-      if (!isVisible(i)) continue;
-      const px = x[i];
-      const py = y[i];
-      // Each visible paper votes for its nearest label centroid in every band — but only if
-      // that centroid is within the band's vote radius (so scattered citation neighbors don't
-      // claim far-away labels).
-      for (const [level, arr] of byLevel) {
-        let best = -1;
-        let bestD = Infinity;
-        for (let j = 0; j < arr.length; j++) {
-          const dx = arr[j].x - px;
-          const dy = arr[j].y - py;
-          const d = dx * dx + dy * dy;
-          if (d < bestD) {
-            bestD = d;
-            best = arr[j].id;
-          }
+    for (let v = 0; v < visibleIdx.length; v += stride) {
+      const leaf = regionLeaf[visibleIdx[v]];
+      if (leaf < 0) continue; // tile not loaded yet; it will vote once it arrives
+      voters++;
+      let chain = chainCache.get(leaf);
+      if (chain === undefined) {
+        chain = [];
+        let cell = leaf;
+        for (let hops = 0; cell >= 0 && cell < level.length && hops < 64; hops++) {
+          chain.push(cell);
+          cell = parent[cell];
         }
-        if (best >= 0 && bestD <= (radius2.get(level) ?? Infinity)) {
-          votes.set(best, (votes.get(best) ?? 0) + 1);
-        }
+        chainCache.set(leaf, chain);
       }
+      for (const cell of chain) votes.set(cell, (votes.get(cell) ?? 0) + 1);
     }
+    if (voters === 0) return null; // nothing placed yet — do not blank the map
 
-    // A single-paper selection is a tiny visible set, so the FRACTION*region-size floor
-    // would reject every coarse-band label. Use a flat threshold of 1 vote for selections
-    // (keep any region a visible paper falls in); keep the scaled threshold for filters.
+    const threshold = Math.max(MIN_VOTES, SHARE * voters);
     const relevant = new Set<number>();
-    for (const arr of byLevel.values()) {
-      for (const l of arr) {
-        const v = votes.get(l.id) ?? 0;
-        const threshold = hasSelection ? 1 : Math.max(MIN_VOTES, FRACTION * l.count);
-        if (v >= threshold) relevant.add(l.id);
-      }
+
+    // Group by band so ranking is per zoom level: the coarse bands keep their top regions and so
+    // do the fine ones, rather than one band's big numbers crowding out every other.
+    const byBand = new Map<number, { cell: number; v: number }[]>();
+    for (const [cell, v] of votes) {
+      if (v < MIN_VOTES) continue; // never name a region from a single paper
+      const band = level[cell];
+      const arr = byBand.get(band) ?? [];
+      arr.push({ cell, v });
+      byBand.set(band, arr);
+    }
+    for (const arr of byBand.values()) {
+      arr.sort((a, b) => b.v - a.v);
+      arr.forEach(({ cell, v }, rank) => {
+        if (v >= threshold || rank < TOP_PER_BAND) relevant.add(cell);
+      });
     }
     return relevant;
-  }, [ds, filter, selectedNode]);
+  }, [ds, filter, selectedNode, regionsReady]);
 }

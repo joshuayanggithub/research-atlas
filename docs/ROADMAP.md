@@ -38,7 +38,11 @@ authorship-backed direct paper attributions.
 
 - Add `pipeline/directory/` provider, canonicalization, attribution, and validation
   boundaries.
-- Seed the current seven roots and evidence-backed Meta/academic child units.
+- Seed the current curated org roots (Google, Google DeepMind, Amazon, OpenAI, NVIDIA, Allen
+  Institute for AI, Meta, Microsoft Research, UC Berkeley, CMU, Stanford, MIT — 12 as of
+  `config.yaml`, up from the seven this section originally referenced) and evidence-backed
+  Meta/academic child units, plus the growing curated-roster neolabs (`org_rosters.yaml`,
+  currently just Redwood Research as a pilot).
 - Emit artifact schema v2 (`organizations.json`, `paper_organizations.arrow`,
   `researchers.arrow`, and `researcher_organizations.arrow`) alongside legacy artifacts.
 - Add golden tests for Meta/FAIR separation, researcher moves, multiple parents,
@@ -50,11 +54,17 @@ authorship-backed direct paper attributions.
   faculty→institution map is manually curated, not algorithmic. See
   `RESEARCH_PRIOR_WORK.md` §2A.)
 
-### 3. Decouple corpus discovery from organizations
+### 3. Decouple corpus discovery from organizations — DONE (via the arXiv-spine pivot)
 
-Today, configured institutions are both fetch predicates and UI filters. Replace that with
-a broad field/date corpus from the OpenAlex snapshot and a separate paper-to-organization
-membership artifact. This is required before "any organization" is a truthful capability.
+Achieved, but by a different route than originally planned here: rather than broadening the
+OpenAlex-fetch predicate, `corpus.source: arxiv_snapshot` (see `HANDOFF.md`) made the corpus a
+broad `cs.* OR stat.ML` / date-range ingest independent of any institution list, with
+organizations layered on afterward as a separate membership overlay — OpenAlex-institution
+evidence (`s15_enrich_openalex.py` → `affiliations.parquet` → `units.py`) plus a curated
+author-id roster for registry-invisible neolabs (`org_rosters.yaml`, `s14_rosters.py`). The
+corpus is now 271,366 papers (2025–2026); org attribution remains **partial** (OpenAlex
+matches 90.2%, but only ~33k papers carry institution evidence) — that gap is item #1 above,
+not this one. `HANDOFF.md` gotcha #8 has the full caveat.
 
 ### 4. Complete one-space embeddings
 
@@ -80,11 +90,13 @@ correctness. Build a versioned human-reviewed benchmark and track:
 - label specificity, duplication, and human ratings.
 
 **Switch Louvain → Leiden — DONE (2026-07).** `s06` now defaults to Leiden
-(`leidenalg`/`igraph`); Louvain stays selectable. On the live 28k corpus, internally
-disconnected zoom cells dropped 14.5% → 10.5% and the hierarchy resolves more/finer
-communities (6,732 → 7,359 regions) with strict nesting intact. **Remaining:** the residual
-10.5% comes from this stage's *semantic* post-processing (coarsen/merge/fill + embedding
-fallback) re-merging graph-disjoint groups — the raw Leiden split itself is 0% disconnected.
+(`leidenalg`/`igraph`); Louvain stays selectable. On the 28k-paper corpus this was measured
+against, internally disconnected zoom cells dropped 14.5% → 10.5% and the hierarchy resolves
+more/finer communities (6,732 → 7,359 regions) with strict nesting intact. **The corpus has
+since grown to 271,366 papers via the arXiv-spine pivot (see item #3) — this disconnection
+rate has not been re-measured at the new scale.** **Remaining:** the residual disconnection
+comes from this stage's *semantic* post-processing (coarsen/merge/fill + embedding fallback)
+re-merging graph-disjoint groups — the raw Leiden split itself is 0% disconnected.
 A **connectivity-aware post-processing pass** (split any cell whose induced subgraph is
 disconnected, or prefer graph-adjacent merges) would drive this toward 0, but trades against
 the branch-target and strict-nesting invariants, so it needs its own design. See

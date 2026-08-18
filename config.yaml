@@ -1,17 +1,16 @@
 # Research Visualizer — single source of truth for the offline pipeline.
-# Every stage (s00..s11) reads from here. See pipeline/config.py for the typed loader.
+# Pipeline stages read from here. See pipeline/config.py for the typed loader.
 
-schema_version: 1
+schema_version: 3
 
 corpus:
-  # OpenAlex field id for Computer Science is fields/17. Works are filtered to this field.
+  # Weekly Cornell/Kaggle bulk metadata, then nightly OAI-PMH upserts. This is the
+  # comprehensive 2025+2026 arXiv CS/stat.ML corpus and does not use per-paper API calls.
+  source: "arxiv_snapshot"
+  # OpenAlex-only controls are retained below so switching `source` stays a config change.
   field_id: "fields/17"
-  # 2015 (was 2020). The 2020 cutoff excluded 125,747 CS works from the configured orgs —
-  # the entire foundational deep-learning era (ResNet, Transformers, BERT, GANs, ViT,
-  # GPT-3). That also silently degraded the papers we DID show: intra-corpus citation edges
-  # can only connect papers inside the corpus, so every 2020+ paper citing those landmarks
-  # lost the edge. 2015 captures the modern era; 2012 (+~17k works) would add AlexNet.
-  date_from: "2015-01-01"
+  # arXiv selection uses the first-version timestamp, not the id's encoded month.
+  date_from: "2025-01-01"
   date_to: "2026-12-31"
   # Corpus scope. "field" = the WHOLE CS field with a citation floor, NO org fetch-gate, so
   # any influential paper appears regardless of author affiliation (the org list below then
@@ -107,11 +106,54 @@ corpus:
       search: "Massachusetts Institute of Technology"
       ids: ["I63966007"]
 
+arxiv:
+  snapshot_path: "data/raw/arxiv-metadata-oai-snapshot.json"
+  snapshot_updated_through: "2026-08-08"
+  category_prefixes: ["cs."]
+  categories: ["stat.ML"]
+  oai_enabled: true
+  oai_base_url: "https://export.arxiv.org/oai2"
+  oai_request_delay: 3.0
+  oai_timeout: 120.0
+
+# Exact-id metadata enrichment layered onto the arXiv corpus. This never discovers or drops
+# papers: arXiv remains authoritative for identity, title, abstract, v1 date, versions, and
+# categories. OpenAlex supplies structured author/institution ids, affiliation evidence,
+# venue/DOI gaps, topics, and secondary citation/reference provenance.
+openalex_enrichment:
+  enabled: true
+  batch_size: 100
+  workers: 12
+  require_api_key: true
+  request_delay: 0.02
+  refresh_days: 30
+  max_papers: 0
+
+# Semantic Scholar is an optional bulk reconciliation source. The normal s16 path uses the
+# already-completed OpenAlex crosswalk instantly; invoke s16_enrich_s2_citations explicitly
+# only for a full S2AG scan, which is paced by the key's 1 request/second API limit.
+semantic_scholar_citations:
+  enabled: false
+  release: "latest"
+  resolve_batch_size: 500
+  min_request_interval: 1.1
+  max_retries: 8
+  download_timeout: 120.0
+  max_citation_shards: 0
+
 embedding:
   # backend: "specter2_s2" (fetch precomputed 768-dim from Semantic Scholar)
-  #       or "scincl_local" (compute locally via sentence-transformers, MIT).
-  backend: "specter2_s2"
+  #       or "specter2_local" (official proximity adapter, complete local coverage)
+  #       or "scincl_local" (different local model/space via sentence-transformers).
+  backend: "specter2_local"
   dim: 768
+  specter2_model: "allenai/specter2_base"
+  specter2_adapter: "allenai/specter2"
+  # Benchmarked on the local RTX 3090: 128 sustains ~450 papers/s at fp16.
+  local_batch_size: 128
+  local_device: "auto"
+  local_precision: "auto"
+  checkpoint_every: 2048
   scincl_model: "malteos/scincl"
   # Semantic Scholar batch size (max 500 ids/POST).
   s2_batch_size: 500
@@ -119,8 +161,6 @@ embedding:
   #   "drop"       -> keep only papers with a real SPECTER2 vector (one clean space).
   #   "fill_local" -> embed the rest with SciNCL (100% coverage, but mixes two spaces
   #                   which shows as an artificial "island" on the map).
-  # NOTE future fix: a "specter2_local" backend can run the SPECTER2 *model* on the
-  # uncovered papers (same space, no island, 100% coverage).
   on_uncovered: "drop"
   # In fill_local mode, if S2 coverage is below this, re-embed the WHOLE corpus locally
   # (avoids mixing spaces at scale). Ignored in drop mode.

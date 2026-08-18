@@ -10,7 +10,6 @@ a text region for a borderless table.
 from __future__ import annotations
 
 import pymupdf
-import pytest
 
 from pipeline.common.figure_extract import find_first_figure, render_crop
 
@@ -58,6 +57,22 @@ def test_ignores_midsentence_mention(tmp_path):
     assert crop.rect[1] > 250
 
 
+def test_ignores_leading_table_prose_before_real_caption(tmp_path):
+    """A paragraph beginning 'Table 1 reports…' is not itself a caption."""
+    def build(doc):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((80, 70), "Table 1 reports our main evaluation results.", fontsize=10)
+        page.insert_text((80, 105), "Table 1: Main results.", fontsize=9)
+        page.insert_text((90, 130), "Model       Accuracy", fontsize=9)
+        page.insert_text((90, 148), "RLM         62.0", fontsize=9)
+
+    pdf = _write_pdf(tmp_path, "table-prose.pdf", build)
+    crop = find_first_figure(pdf)
+    assert crop is not None
+    assert crop.label == "Table 1"
+    assert crop.rect[1] > 90  # starts at the real caption, excluding the prose at y=70
+
+
 def test_chapter_numbered_caption(tmp_path):
     """GPT-3-style 'Figure 1.1:' must match as the first figure."""
     pdf = _write_pdf(tmp_path, "ch.pdf",
@@ -81,6 +96,36 @@ def test_render_crop_returns_png(tmp_path):
     png = render_crop(pdf, crop)
     assert png is not None
     assert png[:8] == b"\x89PNG\r\n\x1a\n"  # PNG magic
+
+
+def test_borderless_table_below_multiline_caption_stops_before_body(tmp_path):
+    """Table captions conventionally sit above the table (unlike figure captions).
+
+    Regression for Recursive Language Models Table 1: its long caption is above a
+    borderless multi-block table, followed by prose after a whitespace break.
+    """
+    def build(doc):
+        page = doc.new_page(width=595, height=842)
+        page.insert_textbox(
+            pymupdf.Rect(80, 80, 515, 115),
+            "Table 1: Performance comparison across long-context benchmarks of varying "
+            "complexity. Lower costs are shown in gray.",
+            fontsize=9,
+        )
+        page.insert_text((90, 135), "Model       Task A       Task B", fontsize=9)
+        page.insert_text((90, 153), "Base        24.0         44.0", fontsize=9)
+        page.insert_text((90, 171), "RLM         62.0         56.5", fontsize=9)
+        page.insert_text((80, 225), "Observation 1: RLMs improve with long contexts.", fontsize=10)
+
+    pdf = _write_pdf(tmp_path, "table-below.pdf", build)
+    crop = find_first_figure(pdf)
+    assert crop is not None
+    assert crop.label == "Table 1"
+    assert crop.source == "text"
+    x0, y0, x1, y1 = crop.rect
+    assert y0 < 90                       # includes the caption
+    assert 165 < y1 < 210               # includes rows, excludes Observation 1
+    assert x1 - x0 > 150
 
 
 def test_missing_pdf_returns_none(tmp_path):

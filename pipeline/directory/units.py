@@ -20,7 +20,7 @@ respects (no topic/embedding inference; a parent match never implies a child).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)

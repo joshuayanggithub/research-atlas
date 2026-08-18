@@ -9,6 +9,7 @@ import {
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import type { Dataset } from "../data/types";
 import { useStore, type EdgeMode } from "../state/store";
+import { useEdgesReady } from "../data/usePapersReady";
 import { importanceWeight } from "../map/importance";
 
 const GRAPH_LIMIT = 5;
@@ -198,17 +199,34 @@ function CitationRows({
   ids,
   direction,
   expanded,
+  referencesAvailable,
 }: {
   ds: Dataset;
   ids: number[];
   direction: "in" | "out";
   expanded: boolean;
+  /** False when no provider supplied a reference list for the SELECTED paper. */
+  referencesAvailable: boolean;
 }) {
   const selectNode = useStore((s) => s.selectNode);
   const setHover = useStore((s) => s.setHover);
   const shown = expanded ? ids : ids.slice(0, LIST_LIMIT);
 
   if (ids.length === 0) {
+    // "No references in this corpus" and "nobody extracted this paper's references" look
+    // identical as an empty list, but mean completely different things. S2 has no reference
+    // list at all for 7.3% of the corpus, rising sharply for recent work (2026: ~30% missing),
+    // so an unqualified "none in this corpus" reads as a claim about the paper when it is
+    // really a gap in the data. Say which it is.
+    if (direction === "out" && !referencesAvailable) {
+      return (
+        <div className="citation-empty">
+          No reference data available for this paper.
+          <span className="subtle"> Its reference list was never extracted upstream — common
+          for recent preprints — so this is missing data, not a paper without references.</span>
+        </div>
+      );
+    }
     return (
       <div className="citation-empty">
         No {direction === "out" ? "references" : "citing papers"} in this corpus.
@@ -251,7 +269,10 @@ function CitationRows({
   );
 }
 
-export function CitationExplorer({ ds, node }: { ds: Dataset; node: number }) {
+export function CitationExplorer(
+  { ds, node, referenceCount = -1 }: { ds: Dataset; node: number; referenceCount?: number },
+) {
+  const edgesReady = useEdgesReady();
   const edgeMode = useStore((s) => s.edgeMode);
   const setEdgeMode = useStore((s) => s.setEdgeMode);
   const [query, setQuery] = useState("");
@@ -270,6 +291,21 @@ export function CitationExplorer({ ds, node }: { ds: Dataset; node: number }) {
     setQuery("");
     setExpanded(false);
   }, [node, edgeMode]);
+
+  if (!ds.manifest.corpus.citation_graph_source) {
+    return (
+      <section className="citation-explorer" aria-labelledby="citation-heading">
+        <div className="panel-section-head">
+          <h4 id="citation-heading">Citation network</h4>
+          <span>unavailable</span>
+        </div>
+        <div className="citation-empty">
+          This arXiv metadata build has no citation graph. Semantic related works remain
+          available below.
+        </div>
+      </section>
+    );
+  }
 
   const matches = (id: number) => {
     const needle = query.trim().toLowerCase();
@@ -323,6 +359,20 @@ export function CitationExplorer({ ds, node }: { ds: Dataset; node: number }) {
         ))}
       </div>
 
+      {/* "References 5" on a paper that cites 18 works reads as a fact about the PAPER when it is
+          really the shape of the MAP: only edges whose other end is also in this corpus can be
+          drawn. Users reported this as a bug twice before it was stated.
+          Gated on edgesReady: the citation graph streams in after first paint, so before it
+          lands `outgoing` is empty and this would confidently announce "0 of 18 — the other 18
+          cite work outside it", which is false. Same placeholder-as-fact trap as D39/D41/D44. */}
+      {edgesReady && referenceCount > outgoing.length && edgeMode !== "in" && (
+        <p className="citation-note subtle">
+          {outgoing.length} of {referenceCount.toLocaleString()} references are in this map — the
+          other {(referenceCount - outgoing.length).toLocaleString()} cite work outside it
+          (books, journals, non-arXiv venues).
+        </p>
+      )}
+
       <CitationGraph
         ds={ds}
         incoming={incoming}
@@ -345,13 +395,25 @@ export function CitationExplorer({ ds, node }: { ds: Dataset; node: number }) {
       {edgeMode !== "in" && (
         <div className="citation-group">
           {edgeMode === "both" && <h5>References</h5>}
-          <CitationRows ds={ds} ids={filteredOut} direction="out" expanded={expanded} />
+          <CitationRows
+            ds={ds}
+            ids={filteredOut}
+            direction="out"
+            expanded={expanded}
+            referencesAvailable={ds.papers[node]?.referencesAvailable ?? true}
+          />
         </div>
       )}
       {edgeMode !== "out" && (
         <div className="citation-group">
           {edgeMode === "both" && <h5>Cited by</h5>}
-          <CitationRows ds={ds} ids={filteredIn} direction="in" expanded={expanded} />
+          <CitationRows
+            ds={ds}
+            ids={filteredIn}
+            direction="in"
+            expanded={expanded}
+            referencesAvailable={ds.papers[node]?.referencesAvailable ?? true}
+          />
         </div>
       )}
 

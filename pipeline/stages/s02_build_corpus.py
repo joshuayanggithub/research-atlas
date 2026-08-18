@@ -243,6 +243,10 @@ def _load_inst_to_org() -> dict[str, str]:
 
 def run(cfg: Config | None = None) -> int:
     cfg = cfg or load_config()
+    if cfg.corpus.source == "arxiv_snapshot":
+        from pipeline.stages.s02_build_arxiv_corpus import run as run_arxiv
+
+        return run_arxiv(cfg)
     ensure_dirs()
     log.stage("s02_build_corpus")
 

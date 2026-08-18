@@ -11,13 +11,15 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
+import { useEdgesReady, usePapersReady } from "../data/usePapersReady";
+import { onPointTiles } from "../data/loadArtifacts";
 import { useFilterMask } from "../filters/useFilterMask";
 import { usePointsLayer } from "./layers/usePointsLayer";
 import { useLabelLayers } from "./layers/useLabelLayers";
 import { useEdgeLayer } from "./layers/useEdgeLayer";
 import { useRelevantLabels } from "./useRelevantLabels";
 import { useRelevanceScores } from "./useRelevanceScores";
-import { coordsCenter, fitZoom } from "./zoom";
+import { coordsCenter, fitMatching, fitZoom } from "./zoom";
 
 export function MapView({ ds }: { ds: Dataset }) {
   const [viewportSize, setViewportSize] = useState(() => ({
@@ -66,6 +68,8 @@ export function MapView({ ds }: { ds: Dataset }) {
   const focusedLabel = useStore((s) => s.focusedLabel);
   const hoverNode = useStore((s) => s.hoverNode);
   const selectNode = useStore((s) => s.selectNode);
+  const focusLabel = useStore((s) => s.focusLabel);
+  const toggleLabel = useStore((s) => s.toggleLabel);
   const setHover = useStore((s) => s.setHover);
   const setZoom = useStore((s) => s.setZoom);
   const relevanceThreshold = useStore((s) => s.relevanceThreshold);
@@ -73,6 +77,10 @@ export function MapView({ ds }: { ds: Dataset }) {
   const filter = useFilterMask(ds, filters);
   const relevantLabelIds = useRelevantLabels(ds, filter, selectedNode);
   const relevance = useRelevanceScores(ds, selectedNode);
+  // Titles stream in after first paint; re-render the hover card when they arrive.
+  usePapersReady();
+  // Citation links also arrive after first paint; rebuild the layers when they do.
+  useEdgesReady();
 
   useEffect(() => {
     if (selectedNode === null || selectedNode < 0 || selectedNode >= ds.points.count) return;
@@ -114,6 +122,56 @@ export function MapView({ ds }: { ds: Dataset }) {
     }));
     setZoom(zoom);
   }, [base.zoom, ds.manifest.levels, focusedLabel, maxZoomOffset, setZoom]);
+
+  // Frame the matching papers whenever an org/author filter turns on or changes.
+  //
+  // Filtering alone left the camera wherever it was, so picking an author often showed an
+  // apparently empty map — their papers were off-screen, or too sparse to notice at the
+  // current zoom. Keyed on the mask identity so it fires once per filter change, not on pan.
+  // Every facet you PICK, not every facet. Orgs, authors and imported reading lists are
+  // selections whose members can sit anywhere on the map, so the camera has to go find them —
+  // an imported 19-paper list otherwise loads correctly and renders correctly while staying
+  // invisible, because 19 dots scattered across a million-paper map at the home view are single
+  // pixels you would have to hunt for. Citation and date ranges are deliberately excluded: they
+  // are dragged continuously, and re-framing on every step would yank the view around. Map
+  // labels are excluded too — focusLabel already moves the camera for those.
+  const framedKey = [
+    filters.orgKeys.join(","),
+    filters.authorIds.join(","),
+    filters.readingLists.join(","),
+  ].join("|");
+  // Matching papers can live in point tiles that have not arrived yet, so a filter frames only
+  // what is loaded and then looks wrong ("I selected an author and see one dot"). Re-fit as
+  // deeper tiles land until the framed set stops growing.
+  const [tileEpoch, setTileEpoch] = useState(0);
+  useEffect(() => onPointTiles(() => setTileEpoch((n) => n + 1)), []);
+  useEffect(() => {
+    if (!filter?.anyOrgAuthorActive) return;
+    if (
+      filters.orgKeys.length === 0 &&
+      filters.authorIds.length === 0 &&
+      filters.readingLists.length === 0
+    ) {
+      return;
+    }
+    // The sidebar is an overlay on desktop only (on mobile it lives behind a toggle); the
+    // header + filter bar overlay at every width.
+    const sidebarInset = viewportSize.width >= 900 ? 320 : 0;
+    const fit = fitMatching(
+      ds.points, filter.matchValue, viewportSize.width, viewportSize.height,
+      base.zoom + maxZoomOffset, sidebarInset, 110,
+    );
+    if (!fit) return;
+    setViewState((current) => ({
+      ...current,
+      target: [fit.target[0], fit.target[1], 0],
+      zoom: fit.zoom,
+      minZoom: base.zoom - 2,
+      maxZoom: base.zoom + maxZoomOffset,
+    }));
+    setZoom(fit.zoom);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [framedKey, filter?.matchValue, tileEpoch]);
 
   const onViewStateChange = useCallback(
     ({ viewState: vs }: { viewState: OrthographicViewState }) => {
@@ -159,10 +217,11 @@ export function MapView({ ds }: { ds: Dataset }) {
     monthMax: filters.monthMax,
     selectedNode,
     hoverNode,
-    relevance: relevance?.score ?? null,
+    relevance,
     relevanceThreshold,
     zoom,
     baseZoom: base.zoom,
+    viewportWidth: viewportSize.width,
     onClick: selectNode,
     onHover: onHoverNode,
   });
@@ -176,6 +235,17 @@ export function MapView({ ds }: { ds: Dataset }) {
     relevantLabelIds,
     focusedLabelId: focusedLabel?.id ?? null,
     onHover: onHoverLabel,
+    // Clicking a topic label navigates to that region through the same store action the
+    // search box uses, so a label reached by clicking and one reached by searching end up
+    // in an identical state (centred, zoomed to its band, highlighted, kept through the
+    // label declutter pass).
+    // Clicking a label both navigates to it AND selects the papers under it, so "show me
+    // World Models" is one click. Clicking it again removes the facet (toggle), and the chip
+    // in the ActiveFilters bar is the other way out.
+    onClick: (label) => {
+      focusLabel(label);
+      toggleLabel(label.id);
+    },
   });
   const edgeLayers = useEdgeLayer({
     ds,
@@ -187,7 +257,7 @@ export function MapView({ ds }: { ds: Dataset }) {
     filter: filter!,
     monthMin: filters.monthMin,
     monthMax: filters.monthMax,
-    relevance: relevance?.score ?? null,
+    relevance,
     relevanceThreshold,
     onSelect: selectNode,
     onHover: onHoverNode,
