@@ -11,6 +11,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
+import { PaperTitle } from "../panels/PaperTitle";
 import { useEdgesReady, usePapersReady } from "../data/usePapersReady";
 import { onPointTiles } from "../data/loadArtifacts";
 import { useFilterMask } from "../filters/useFilterMask";
@@ -305,7 +306,7 @@ export function MapView({ ds }: { ds: Dataset }) {
             top: Math.min(hoverPos.y + 14, viewportSize.height - 130),
           }}
         >
-          <div className="node-tooltip-title">{hoverPaper.title}</div>
+          <div className="node-tooltip-title"><PaperTitle title={hoverPaper.title} /></div>
           {/* Author names / venue are lazy per-paper detail; the hover card uses only the
               resident index (title, year, citations). Full metadata shows on selection. */}
           <div className="node-tooltip-meta">

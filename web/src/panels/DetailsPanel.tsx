@@ -4,6 +4,7 @@ import { ExternalLink, FileText, Network, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dataset, PaperDetail } from "../data/types";
 import { useStore } from "../state/store";
+import { PaperTitle } from "./PaperTitle";
 import { useAuthors } from "../data/useAuthors";
 import { addAuthorToSelection } from "../data/authorIdentity";
 import { ArxivPreview } from "./ArxivPreview";
@@ -168,7 +169,7 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
       >
         <X size={18} aria-hidden="true" />
       </button>
-      <h3 ref={headingRef} tabIndex={-1}>{p.title}</h3>
+      <h3 ref={headingRef} tabIndex={-1}><PaperTitle title={p.title} /></h3>
       <div className="meta authors">
         {authorNames.length > 0
           ? (showAllAuthors ? authorNames : authorNames.slice(0, AUTHOR_PREVIEW)).map((name, i) => {

@@ -760,3 +760,20 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 
 /* Why the reference list is shorter than the paper's bibliography. */
 .citation-note { margin: 6px 0 2px; font-size: 11px; line-height: 1.45; }
+
+/* Title still streaming in. A shimmering bar rather than text: it occupies the space the title
+   will take, so rows do not jump when titles land, and it cannot be mistaken for a real title. */
+.title-skeleton {
+  display: inline-block; width: 62%; min-width: 90px; height: 0.82em;
+  vertical-align: -0.1em; border-radius: 3px;
+  background: linear-gradient(90deg,
+    rgba(214, 224, 240, 0.06) 25%,
+    rgba(214, 224, 240, 0.15) 37%,
+    rgba(214, 224, 240, 0.06) 63%);
+  background-size: 400% 100%;
+  animation: title-shimmer 1.4s ease infinite;
+}
+@keyframes title-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+@media (prefers-reduced-motion: reduce) {
+  .title-skeleton { animation: none; background: rgba(214, 224, 240, 0.10); }
+}

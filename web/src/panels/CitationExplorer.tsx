@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import type { Dataset } from "../data/types";
 import { useStore, type EdgeMode } from "../state/store";
 import { useEdgesReady } from "../data/usePapersReady";
+import { PaperTitle } from "./PaperTitle";
 import { importanceWeight } from "../map/importance";
 
 const GRAPH_LIMIT = 5;
@@ -257,7 +258,7 @@ function CitationRows({
                 )}
               </span>
               <span className="citation-paper">
-                <span className="citation-title">{paper.title}</span>
+                <PaperTitle className="citation-title" title={paper.title} />
                 <span className="citation-meta">{year || "—"}</span>
               </span>
               <span className="citation-count">{paper.citedByCount.toLocaleString()}</span>

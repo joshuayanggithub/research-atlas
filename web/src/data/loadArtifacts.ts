@@ -960,7 +960,13 @@ async function loadDatasetImpl(onProgress?: ProgressFn): Promise<Dataset> {
   void fetchArrow("papers-index.arrow")
     .then((table) => {
       fillPapersIndex(papers, table);
-      papersReady = true;
+      // NOT papersReady. This file carries citation counts and availability flags; titles left
+      // it in D30 and now stream as separate chunks. Setting the flag here made the app announce
+      // "titles are in" while 31 MB of them were still downloading — so a paper with no title yet
+      // rendered as "(untitled)", a claim about the paper rather than about the download. Only
+      // the chunk loop below may declare titles ready. Legacy bundles with no chunks are handled
+      // where nTitleChunks is read.
+      if ((manifest.n_title_chunks ?? 0) === 0) papersReady = true;
       for (const fn of papersReadyWaiters) fn();
       papersReadyWaiters.length = 0;
     })
