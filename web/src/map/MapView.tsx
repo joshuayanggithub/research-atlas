@@ -12,6 +12,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
 import { PaperTitle } from "../panels/PaperTitle";
+import { useHoverAuthors } from "../panels/useHoverAuthors";
+import { PaperYear } from "../panels/PaperYear";
 import { useEdgesReady, usePapersReady } from "../data/usePapersReady";
 import { onPointTiles } from "../data/loadArtifacts";
 import { useFilterMask } from "../filters/useFilterMask";
@@ -276,9 +278,11 @@ export function MapView({ ds }: { ds: Dataset }) {
 
   const bg = ds.manifest.palette.background ?? [7, 9, 13];
 
-  // Lightweight hover card: paper metadata straight from the in-memory index (no fetch).
+  // Hover card: title/year/citations come straight from the resident index (no fetch); author
+  // names come from the paper's detail shard, which is cached per block (see useHoverAuthors).
   const hoverPaper =
     hoverNode !== null && hoverNode !== selectedNode ? ds.papers[hoverNode] : null;
+  const hoverAuthors = useHoverAuthors(ds, hoverPaper ? hoverNode : null);
   const hoverLabel =
     hoverLabelId !== null ? ds.labels.labels.find((l) => l.id === hoverLabelId) ?? null : null;
 
@@ -307,10 +311,17 @@ export function MapView({ ds }: { ds: Dataset }) {
           }}
         >
           <div className="node-tooltip-title"><PaperTitle title={hoverPaper.title} /></div>
-          {/* Author names / venue are lazy per-paper detail; the hover card uses only the
-              resident index (title, year, citations). Full metadata shows on selection. */}
+          {/* Authors arrive a beat after the title (detail shard). Rendered only once present —
+              never as an em dash or an empty line, which would read as "this paper has no
+              authors" rather than "not fetched yet". */}
+          {hoverAuthors && hoverAuthors.length > 0 && (
+            <div className="node-tooltip-authors">
+              {hoverAuthors.slice(0, 3).join(", ")}
+              {hoverAuthors.length > 3 && ` +${hoverAuthors.length - 3}`}
+            </div>
+          )}
           <div className="node-tooltip-meta">
-            {hoverPaper.publicationDate?.slice(0, 4) || "—"} ·{" "}
+            <PaperYear paper={hoverPaper} /> ·{" "}
             {ds.manifest.corpus.citation_count_source && hoverPaper.citationCountAvailable
               ? `${hoverPaper.citedByCount.toLocaleString()} cites`
               : "citation count unavailable"}

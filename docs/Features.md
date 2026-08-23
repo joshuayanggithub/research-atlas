@@ -175,6 +175,10 @@ silently dropped.
 - **Combined paper and map-label search** with type-ahead. Paper results select and focus a
   paper; map-label results pan and zoom to the named semantic region and emphasize its label.
 - Paper, map-label, and author search support keyboard selection.
+- **The hover card names the authors.** Hovering a paper on the map shows its authors under
+  the title, fetched from the paper's detail shard (cached per 2,048-row block, so the rest of
+  a region is free). They appear only once loaded — never as a blank line — and the card is
+  never captioned with a previously hovered paper's authors.
 - **A paper's year is never guessed.** Dates come from the resident papers index as soon as it
   lands rather than waiting for each paper's own tile, and a date that has not arrived shows a
   shimmer instead of an em dash, so "still downloading" cannot be misread as "no publication
