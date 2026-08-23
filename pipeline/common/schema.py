@@ -359,6 +359,24 @@ class PointTile(BaseModel):
     bytes: int
 
 
+class EdgeTile(BaseModel):
+    """One per-reveal-level slice of the citation graph.
+
+    An edge is only drawable when BOTH endpoints are on screen, so an edge belongs to the tier
+    of its deeper endpoint: ``max(reveal_level[src], reveal_level[dst])``. Loading tiers 0..N
+    alongside point tiles 0..N therefore yields exactly the edges that can be drawn, and no
+    more. Measured on the 1,000,490-paper corpus: the home view needs 408 edges (3 KB), the
+    eager depth (L<=4) needs 400,471 (1.8 MB gzipped), and the whole graph is 14,303,089
+    (87 MB gzipped) — which is what every visit used to download before it drew anything.
+    """
+
+    level: int
+    path: str
+    rows: int          # edges that become drawable at this level
+    cumulative: int    # edges drawable once levels 0..this are loaded
+    bytes: int
+
+
 class Manifest(BaseModel):
     schema_version: int
     built_at: str
@@ -370,6 +388,7 @@ class Manifest(BaseModel):
     # Present when the corpus is shipped as fetch-on-demand reveal-level tiles. Ordered by
     # level (0 = coarsest). Empty/omitted for a legacy single-points.arrow bundle.
     point_tiles: list[PointTile] = []
+    edge_tiles: list[EdgeTile] = []
     # s12's thinning constant. The frontend derives its max dot radius from it, because the
     # on-screen separation the thinning guarantees is viewport_width / base_divisor.
     tiling_base_divisor: float = 40.0
@@ -492,6 +511,10 @@ ORG_NODES_SCHEMA = pa.schema([
 
 def org_nodes_shard(shard: int) -> str:
     return f"org-nodes-{shard}.arrow"
+
+
+def edges_tile(level: int) -> str:
+    return f"edges-L{level}.arrow"
 
 # `verified` replaces openalex_id for the one thing the resident index still needs it for:
 # telling a real OpenAlex identity from a name-hash fallback. One byte instead of ~27.

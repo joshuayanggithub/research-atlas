@@ -564,6 +564,54 @@ def _edges_table(corpus: pl.DataFrame, max_per_paper: int) -> pa.Table:
     }, schema=S.EDGES_SCHEMA)
 
 
+def _emit_edge_tiles(edges: pa.Table, reveal_levels: np.ndarray) -> list[S.EdgeTile]:
+    """Split the citation graph by reveal level, so a visit fetches only drawable edges.
+
+    edges.arrow was 87 MB gzipped and was fetched in full after first paint, on every visit,
+    regardless of where the user looked — the single largest artifact on the wire. But an edge
+    can only be drawn when BOTH its endpoints are visible, and at the home view exactly 408 of
+    its 14,303,089 edges qualify.
+
+    An edge therefore belongs to the tier of its DEEPER endpoint, and the frontend loads edge
+    tier N alongside point tile N. Measured, cumulative gzipped:
+
+        L0 3 KB | L4 1.8 MB | L7 51 MB | all 87 MB
+
+    Nothing is dropped: the whole graph is still available, it just arrives with the points
+    that make it drawable.
+    """
+    src = edges.column("src").to_numpy()
+    dst = edges.column("dst").to_numpy()
+    # Guard: an edge referencing a node outside the corpus would index out of bounds, and
+    # silently clipping it would put the edge in the wrong tier.
+    n = len(reveal_levels)
+    valid = (src >= 0) & (src < n) & (dst >= 0) & (dst < n)
+    if not valid.all():
+        log.info(f"  dropping {int((~valid).sum()):,} edges with an out-of-range endpoint")
+        src, dst = src[valid], dst[valid]
+
+    tier = np.maximum(reveal_levels[src], reveal_levels[dst])
+    tiles: list[S.EdgeTile] = []
+    cumulative = 0
+    for level in range(int(tier.max()) + 1 if len(tier) else 0):
+        mask = tier == level
+        rows = int(mask.sum())
+        if rows == 0:
+            continue
+        cumulative += rows
+        table = pa.table({
+            "src": pa.array(src[mask], pa.int32()),
+            "dst": pa.array(dst[mask], pa.int32()),
+        }, schema=S.EDGES_SCHEMA)
+        path = WEB_DATA_DIR / S.edges_tile(level)
+        write_arrow(table, path)
+        tiles.append(S.EdgeTile(level=level, path=S.edges_tile(level), rows=rows,
+                                cumulative=cumulative, bytes=path.stat().st_size))
+    log.info(f"edge tiles: {len(tiles)} levels, {cumulative:,} edges "
+             f"({tiles[0].rows:,} drawable at the home view)" if tiles else "edge tiles: none")
+    return tiles
+
+
 def _emit_org_nodes(orgs: dict) -> tuple[int, int]:
     """Move DIRECTORY institutions' node_ids out of orgs.json into shards, in place.
 
@@ -642,7 +690,11 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
 
     # Neighbors are sharded for on-demand related-works loading (not shipped whole).
     neighbor_shards, neighbor_shard_size = _emit_neighbor_shards(_neighbors_table())
-    write_arrow(_edges_table(corpus, cfg.emit.max_edges_per_paper), WEB_DATA_DIR / S.EDGES)
+    _edges = _edges_table(corpus, cfg.emit.max_edges_per_paper)
+    edge_tiles = _emit_edge_tiles(_edges, reveal_levels)
+    # The whole graph is still written for local inspection and as a fallback for older
+    # frontends, but it is 110 MB — over GitHub's per-file limit — and is NOT published.
+    write_arrow(_edges, WEB_DATA_DIR / S.EDGES)
 
     # Copy JSON + authors artifacts from data/artifacts. clusters.json is intentionally NOT
     # shipped to the browser: the frontend never reads its per-region array (24k+ entries,
@@ -777,6 +829,7 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
         position_shard_rows=position_shard_rows,
         n_org_shards=n_org_shards,
         org_shard_orgs=org_shard_orgs,
+        edge_tiles=edge_tiles,
         author_chunk_rows=S.AUTHOR_CHUNK_ROWS,
         n_paper_shards=len(paper_shards),
         figures=(S.FiguresMeta(count=len(figure_nodes)) if figure_nodes else None),
