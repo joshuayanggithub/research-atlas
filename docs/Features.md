@@ -175,6 +175,13 @@ silently dropped.
 - **Combined paper and map-label search** with type-ahead. Paper results select and focus a
   paper; map-label results pan and zoom to the named semantic region and emphasize its label.
 - Paper, map-label, and author search support keyboard selection.
+- **Any of the 10,475 institutions can be filtered without paying for all of them.** Only the
+  curated browse tree's membership ships up front; a directory institution's papers are fetched
+  when it is selected, one ~47 KB request (D50). This took `orgs.json` from 5.05 MB to 0.67 MB
+  gzipped and the pre-paint budget from ~7.2 MB to 3.2 MB.
+- **A filter's match count is never reported before it is known.** Selecting an organization or
+  author whose membership is still being fetched shows a placeholder where the number goes,
+  rather than a "0" that turns into 16,844 a second later (D51).
 - **The hover card names the authors.** Hovering a paper on the map shows its authors under
   the title, fetched from the paper's detail shard (cached per 2,048-row block, so the rest of
   a region is free). They appear only once loaded — never as a blank line — and the card is

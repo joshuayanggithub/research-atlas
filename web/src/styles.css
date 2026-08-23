@@ -765,6 +765,19 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 
 /* Title still streaming in. A shimmering bar rather than text: it occupies the space the title
    will take, so rows do not jump when titles land, and it cannot be mistaken for a real title. */
+/* Match-count placeholder, for a filter whose membership is still being fetched. Sized for
+   a five-digit count so the bar does not jump when the number lands. */
+.count-skeleton {
+  display: inline-block; width: 3.4em; height: 0.85em; vertical-align: -0.05em;
+  border-radius: 3px;
+  background: linear-gradient(90deg,
+    rgba(214, 224, 240, 0.06) 25%,
+    rgba(214, 224, 240, 0.15) 37%,
+    rgba(214, 224, 240, 0.06) 63%);
+  background-size: 400% 100%;
+  animation: title-shimmer 1.4s ease infinite;
+}
+
 /* Year placeholder: same shimmer as a pending title, sized for four digits so a list of rows
    does not visibly reflow when the real dates land. */
 .year-skeleton {
@@ -790,5 +803,5 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 }
 @keyframes title-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 @media (prefers-reduced-motion: reduce) {
-  .title-skeleton, .year-skeleton { animation: none; background: rgba(214, 224, 240, 0.10); }
+  .title-skeleton, .year-skeleton, .count-skeleton { animation: none; background: rgba(214, 224, 240, 0.10); }
 }

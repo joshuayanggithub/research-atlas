@@ -12,6 +12,7 @@ import { useMemo } from "react";
 import { useStore } from "../state/store";
 import { usePapersReady, usePointTilesEpoch, useRegionsReady } from "../data/usePapersReady";
 import { useAuthorPapers } from "../data/useAuthorPapers";
+import { useOrgNodes } from "../data/useOrgNodes";
 import { nodesInLabels } from "./labelMembership";
 import type { Dataset } from "../data/types";
 import type { Filters } from "../state/store";
@@ -21,6 +22,11 @@ export interface FilterArrays {
   orgKeysAll: string[]; // stable org order for coloring
   matchValue: Float32Array; // 1 = passes org+author filter, 0 = filtered out
   anyOrgAuthorActive: boolean;
+  /** A selected org or author's membership is still being fetched, so `matchValue` is
+   *  incomplete and its match count is NOT yet a real number. Without this the filter bar
+   *  reported "0 of 1,000,490 papers" for a second before Tsinghua's 16,844 arrived — a zero
+   *  that turns into a real count is the placeholder-read-as-fact bug, not a result. */
+  pending: boolean;
 }
 
 // Precompute node -> ROOT-org index once per dataset (independent of selection). Only root
@@ -59,6 +65,8 @@ export function useFilterMask(
   const tilesEpoch = usePointTilesEpoch();
   // author_id -> node ids for the SELECTED authors, from the inverted index.
   const authorPapers = useAuthorPapers(ds, filters.authorIds);
+  // Directory orgs ship without their node_ids; they arrive per shard when one is selected.
+  const orgNodes = useOrgNodes(ds, filters.orgKeys);
   // The imported library lives outside `filters` (it is data, not a selection), so the mask
   // has to subscribe to it directly.
   const readingList = useStore((s) => s.readingList);
@@ -76,6 +84,7 @@ export function useFilterMask(
     const labelActive = filters.labelIds.length > 0;
     const readingActive = filters.readingLists.length > 0;
     const matchValue = new Float32Array(n).fill(1);
+    let pending = false;
 
     if (orgActive || authorActive || subfieldActive || topicActive || citeActive
         || labelActive || readingActive) {
@@ -87,13 +96,24 @@ export function useFilterMask(
         orgMask = new Uint8Array(n);
         for (const key of filters.orgKeys) {
           const inst = ds.orgs.institutions[key];
+          // Sharded membership that has not landed: no ids inline, none fetched yet.
+          if (inst && !inst.node_ids.length && inst.node_shard != null && !orgNodes.has(key)) {
+            pending = true;
+          }
+        }
+        for (const key of filters.orgKeys) {
+          const inst = ds.orgs.institutions[key];
           if (!inst) continue;
-          for (const nid of inst.node_ids) orgMask[nid] = 1;
+          // Inline for the curated tree; from the shard for a directory institution, which is
+          // empty until it lands (useOrgNodes signals, same as the author index).
+          const nids = inst.node_ids.length ? inst.node_ids : orgNodes.get(key) ?? [];
+          for (const nid of nids) orgMask[nid] = 1;
         }
       }
       let authorMask: Uint8Array | null = null;
       if (authorActive) {
         authorMask = new Uint8Array(n);
+        if (filters.authorIds.some((a) => !authorPapers.has(a))) pending = true;
         // Direct lookup via the inverted index — no 912k scan, and no author_ids in the eager
         // bundle. Empty until the author's shard lands, which useAuthorPapers signals.
         for (const a of filters.authorIds) {
@@ -150,10 +170,14 @@ export function useFilterMask(
       anyOrgAuthorActive:
         orgActive || authorActive || subfieldActive || topicActive || citeActive || labelActive
         || readingActive,
+      pending,
     };
   }, [ds, orgIndex, filters.orgKeys, filters.authorIds, filters.subfieldIds, filters.topicIds,
       filters.citeMin, filters.citeMax, filters.labelIds, filters.readingLists, readingList,
       regionsReady, tilesEpoch, authorPapers,
+      // Directory-org membership arrives per shard; without this the mask keeps the empty
+      // view it was built with and the org filter matches nothing.
+      orgNodes,
       // author_ids live in the DEFERRED papers-index (D23). Without this the author mask is
       // computed against empty arrays and silently matches nothing until titles land.
       papersReady]);

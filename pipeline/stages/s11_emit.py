@@ -564,6 +564,38 @@ def _edges_table(corpus: pl.DataFrame, max_per_paper: int) -> pa.Table:
     }, schema=S.EDGES_SCHEMA)
 
 
+def _emit_org_nodes(orgs: dict) -> tuple[int, int]:
+    """Move DIRECTORY institutions' node_ids out of orgs.json into shards, in place.
+
+    orgs.json is 5.05 MB gzipped and 94% of it is `node_ids`; 1,370,907 of the 1,489,472 ids
+    belong to the 10,475 search-only directory entries, whose membership nothing reads until
+    someone selects one. Moving them out leaves 0.64 MB on the critical path.
+
+    The build-machine copy under data/artifacts keeps its ids inline — only the published copy
+    is slimmed — so nothing downstream of this stage loses information.
+    """
+    insts = orgs["institutions"]
+    directory = sorted(k for k, v in insts.items() if not v.get("curated"))
+    n_shards = 0
+    moved = 0
+    for shard, start in enumerate(range(0, len(directory), S.ORG_SHARD_ORGS)):
+        chunk = directory[start:start + S.ORG_SHARD_ORGS]
+        table = pa.table(
+            {"org_key": chunk, "node_ids": [insts[k].get("node_ids") or [] for k in chunk]},
+            schema=S.ORG_NODES_SCHEMA,
+        )
+        write_arrow(table, WEB_DATA_DIR / S.org_nodes_shard(shard))
+        for k in chunk:
+            moved += len(insts[k].get("node_ids") or [])
+            insts[k]["node_ids"] = []
+            insts[k]["node_shard"] = shard
+        n_shards = shard + 1
+    kept = sum(len(v.get("node_ids") or []) for v in insts.values())
+    log.info(f"org nodes: {moved:,} ids -> {n_shards} shards; {kept:,} ids stay inline "
+             f"(curated tree, needed for color-by-org before any selection)")
+    return n_shards, S.ORG_SHARD_ORGS
+
+
 def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     cfg = cfg or load_config()
     ensure_dirs()
@@ -617,8 +649,12 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     # ~7MB now / ~40MB at 390k — the single largest artifact), and the only thing needed
     # from it (the zoom `levels`) goes into the manifest below. Semantic-zoom labels come
     # from labels.json. Keeping it out of web/public/data is the biggest initial-load win.
-    for fname in (S.LABELS, S.ORGS, S.TOPICS):
+    for fname in (S.LABELS, S.TOPICS):
         write_json(read_json(ARTIFACTS_DIR / fname), WEB_DATA_DIR / fname)
+    # orgs.json is published SLIM: directory membership moves to org-nodes-{N}.arrow.
+    _orgs = read_json(ARTIFACTS_DIR / S.ORGS)
+    n_org_shards, org_shard_orgs = _emit_org_nodes(_orgs)
+    write_json(_orgs, WEB_DATA_DIR / S.ORGS)
     # Slim, chunked author search index. openalex_id (40.3% of the old file) now rides in the
     # author-papers shards, which are already loaded whenever the author panel can appear.
     _src = read_arrow(ARTIFACTS_DIR / S.AUTHORS)
@@ -739,6 +775,8 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
         month_histogram=_month_histogram(month_index),
         n_position_shards=n_position_shards,
         position_shard_rows=position_shard_rows,
+        n_org_shards=n_org_shards,
+        org_shard_orgs=org_shard_orgs,
         author_chunk_rows=S.AUTHOR_CHUNK_ROWS,
         n_paper_shards=len(paper_shards),
         figures=(S.FiguresMeta(count=len(figure_nodes)) if figure_nodes else None),

@@ -581,6 +581,39 @@ export function peekAuthorOpenAlex(authorId: number): string | null {
   return authorOpenAlexCache.get(authorId) ?? null;
 }
 
+const orgNodesCache = new Map<number, Promise<Map<string, number[]>>>();
+
+/**
+ * Membership for a DIRECTORY organization, from its shard.
+ *
+ * The curated browse tree (43 entries, 118,565 ids) still ships inline in orgs.json because
+ * color-by-org needs it before any selection exists. The other 10,475 institutions are
+ * search-only; their 1,370,907 ids were 94% of the file and nothing read them until someone
+ * picked one, so they load on demand here — one ~47 KB fetch per 128 orgs.
+ */
+export function loadOrgNodes(shard: number): Promise<Map<string, number[]>> {
+  let pending = orgNodesCache.get(shard);
+  if (!pending) {
+    pending = fetchArrow(`org-nodes-${shard}.arrow`, "high")
+      .then((t) => {
+        const keys = t.getChild("org_key")!;
+        const lists = t.getChild("node_ids")!;
+        const out = new Map<string, number[]>();
+        for (let i = 0; i < t.numRows; i++) {
+          const v = lists.get(i);
+          out.set(String(keys.get(i) ?? ""), v ? (Array.from(v) as number[]) : []);
+        }
+        return out;
+      })
+      .catch((e) => {
+        orgNodesCache.delete(shard);
+        throw e;
+      });
+    orgNodesCache.set(shard, pending);
+  }
+  return pending;
+}
+
 export function loadAuthorPapers(
   shardSize: number,
   authorId: number,

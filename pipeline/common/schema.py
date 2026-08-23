@@ -287,6 +287,10 @@ class Institution(BaseModel):
     # Curated entries drive the hierarchy tree and color-by-org; directory entries are
     # search-and-filter only. See docs/ORGANIZATION_DIRECTORY.md.
     curated: bool = True
+    # Which org-nodes shard holds this entry's node_ids, for directory entries whose ids were
+    # moved out of the published orgs.json. None means the ids are inline (every curated
+    # entry, and every entry in the build-machine copy under data/artifacts).
+    node_shard: Optional[int] = None
     # How papers were attributed to this entry. Empty means OpenAlex institution
     # authorship; roster-backed neolabs carry explicit reviewed claim provenance.
     membership_methods: list[str] = Field(default_factory=list)
@@ -389,6 +393,9 @@ class Manifest(BaseModel):
     month_histogram: list[int] = Field(default_factory=list)
     n_position_shards: int = 0
     position_shard_rows: int = 0
+    # Directory-org membership lives in org-nodes-{N}.arrow, not orgs.json (see ORG_SHARD_ORGS).
+    n_org_shards: int = 0
+    org_shard_orgs: int = 0
     author_chunk_rows: int = 0
     n_indexed_authors: int = 0
     n_paper_shards: int = 0
@@ -462,6 +469,29 @@ AUTHOR_CHUNK_ROWS = 120000
 
 def authors_chunk(chunk: int) -> str:
     return f"authors-{chunk}.arrow"
+
+
+# Directory institutions' node_ids, moved out of orgs.json.
+#
+# 94% of orgs.json is `node_ids` — 1,489,472 ids across 10,518 institutions — and 1,370,907 of
+# those belong to the 10,475 DIRECTORY entries, which are search-only: nothing reads their
+# membership until someone selects one. Shipping them eagerly cost 5.05 MB gzipped on the
+# critical path to answer a question almost no visit asks. Slimmed, orgs.json is 0.64 MB.
+#
+# Sharded by a dense index over directory keys (sorted, so it is stable across builds) rather
+# than one file per org: 10,475 tiny files would trade the bytes for request count, which is
+# what the object store actually bills. At 128 orgs per shard a selection costs one ~30 KB
+# fetch and the whole set is 82 files.
+ORG_SHARD_ORGS = 128
+
+ORG_NODES_SCHEMA = pa.schema([
+    ("org_key", pa.string()),
+    ("node_ids", pa.list_(pa.int32())),
+])
+
+
+def org_nodes_shard(shard: int) -> str:
+    return f"org-nodes-{shard}.arrow"
 
 # `verified` replaces openalex_id for the one thing the resident index still needs it for:
 # telling a real OpenAlex identity from a name-hash fallback. One byte instead of ~27.

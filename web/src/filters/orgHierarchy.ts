@@ -3,7 +3,7 @@
 // `children`. A unit's `node_ids` is always the ROLLUP set (unit + descendants), so any
 // key — root or child — can be unioned directly into the filter mask.
 
-import type { AuthorRow, Dataset, Institution } from "../data/types";
+import type { Dataset, Institution } from "../data/types";
 
 export interface OrgNode {
   key: string;
@@ -79,28 +79,4 @@ export function rootOrgIndex(ds: Dataset): Map<string, number> {
   const index = new Map<string, number>();
   rootOrgKeys(ds).forEach((k, i) => index.set(k, i));
   return index;
-}
-
-/**
- * Top authors within a set of node ids, ranked by paper count inside the set.
- * Used for organization-scoped researcher browsing.
- */
-export function topAuthorsInNodes(
-  ds: Dataset,
-  nodeIds: number[],
-  authors: AuthorRow[],
-  limit = 12,
-): { authorId: number; name: string; count: number }[] {
-  const counts = new Map<number, number>();
-  for (const nid of nodeIds) {
-    const paper = ds.papers[nid];
-    if (!paper) continue;
-    for (const aid of paper.authorIds) counts.set(aid, (counts.get(aid) ?? 0) + 1);
-  }
-  const nameOf = new Map<number, string>();
-  for (const a of authors) nameOf.set(a.authorId, a.name);
-  return Array.from(counts.entries())
-    .map(([authorId, count]) => ({ authorId, count, name: nameOf.get(authorId) ?? `#${authorId}` }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-    .slice(0, limit);
 }

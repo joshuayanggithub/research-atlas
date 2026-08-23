@@ -1149,3 +1149,65 @@ a completion signal for the index rather than a per-row flag.
 back 45 s by a Playwright route to force the pending window: **0 em-dash years at every sample
 on both viewports** (was 47), 47 shimmer placeholders during the hold, all 58 real years once
 the index landed, console clean.
+
+## D50. Directory-org membership is sharded; orgs.json ships the browse tree only — ACTIVE
+
+**Context.** `orgs.json` is fetched before first paint (the org filter and colour-by-org both
+need it) and cost **5.05 MB gzipped**. Measured, **94% of it was `node_ids`**: 1,489,472 ids
+across 10,518 institutions — and 1,370,907 of those belong to the **10,475 directory entries**,
+which are search-only. Nothing reads a directory org's membership until someone selects it, so
+every visit paid for 1.37M ids to answer a question almost no visit asks.
+
+**Decision.** Publish `orgs.json` slim. The **43 curated browse-tree entries** keep their ids
+inline (118,565), because `buildOrgOfNode` maps every point to a root org for colour-by-org
+before any selection exists. The rest move to `org-nodes-{N}.arrow`, fetched when an org is
+selected.
+
+- **Emitted in `s11_emit.py`, not `s10_indexes.py`** (the plan said s10). s11 is where artifacts
+  are published to `web/public/data`, so `data/artifacts/orgs.json` keeps its ids inline and
+  nothing downstream of the emit stage loses information. It also means the shards can be
+  regenerated without recomputing the org build.
+- **128 orgs per shard, not one file per org.** 10,475 tiny files would trade bytes for request
+  count, which is what the object store actually bills; at this size a selection costs one
+  ~47 KB fetch and the whole set is 82 files.
+- Keys sorted, so shard assignment is stable across builds.
+
+**Measured.** orgs.json **5.05 → 0.67 MB gzipped**; bytes before first paint **7.2 → 3.2 MB**.
+Selecting Tsinghua University costs **one** shard request and yields its full 16,844 papers.
+
+**Consequences.**
+- `Institution.node_ids` is empty for directory entries in the published bundle. Anything
+  needing it must go through `useOrgNodes`, never the field.
+- The in-browser `topAuthorsInNodes` fallback is deleted. It had already stopped working when
+  per-paper `author_ids` left the resident index (D30) and cannot work at all now; an org with
+  no precomputed `top_authors` (D36) says so instead of rendering an empty list.
+- A selection is briefly unresolved, which surfaced a second bug — see below.
+
+**Revert condition.** If colour-by-org is ever extended to directory institutions, their ids
+would be needed eagerly again and this would have to be reversed or the colouring reworked to
+use a precomputed per-node org column instead.
+
+## D51. A filter's match count is not reported until the selection resolves — ACTIVE
+
+**Context.** With D50 (and D30 before it) a selection's membership arrives asynchronously. The
+filter bar computed its count from the mask regardless, so selecting Tsinghua University showed
+
+    0 of 1,000,490 papers · ORG Tsinghua University
+
+for about a second before it became 16,844. Measured in the browser at 1 MB/s. A zero that
+turns into a real number is the placeholder-read-as-fact bug this project keeps hitting
+(D39, D41, D44, D49), and it is worse here than a blank: it reads as "this organization has no
+papers in the map".
+
+**Decision.** `useFilterMask` returns `pending` — true while any selected org's shard or any
+selected author's paper list is still in flight — and `ActiveFilters` renders a shimmer in
+place of the number until it clears. The total ("of 1,000,490 papers") stays visible because it
+is always known.
+
+**Tradeoffs.** One more boolean threaded through the mask, and the count now has three states
+rather than two. The alternative, showing the last known count, would be worse: it would assert
+a stale number as the current one.
+
+**Verified.** Selecting Tsinghua at 1 MB/s: shimmer while the shard is in flight, then 16,844;
+at no sample does the bar read 0. Curated orgs (ids inline) never enter the pending state —
+Carnegie Mellon reads 15,464 immediately.

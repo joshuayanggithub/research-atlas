@@ -178,7 +178,14 @@ export function ActiveFilters({ ds }: { ds: Dataset }) {
   return (
     <div className="active-filters" role="region" aria-label="Active filters">
       <span className="active-filters-count">
-        <strong>{matched.toLocaleString()}</strong>
+        {/* A count is only a count once the selection's membership has arrived. Reporting the
+            in-flight state as "0 of 1,000,490" claimed the filter matched nothing, a second
+            before it matched 16,844. */}
+        {filter?.pending ? (
+          <strong className="count-skeleton" role="img" aria-label="Counting matches" />
+        ) : (
+          <strong>{matched.toLocaleString()}</strong>
+        )}
         <span className="subtle"> of {total.toLocaleString()} papers</span>
         {/* Only while it is actually true: a filter whose papers have all arrived says nothing
             extra, so this never becomes background noise. */}

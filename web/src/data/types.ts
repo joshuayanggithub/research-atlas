@@ -54,7 +54,12 @@ export interface Institution {
   kind: string;
   lineage: number[];
   count: number; // rollup count (this org/unit + all descendants), deduplicated
-  node_ids: number[]; // rollup node ids
+  // Rollup node ids. EMPTY for directory entries in the published bundle — their membership
+  // is 94% of orgs.json and nothing reads it until the org is selected, so it moved to
+  // org-nodes-{N}.arrow. Use useOrgNodes(), never `node_ids` directly, for a directory org.
+  node_ids: number[];
+  /** Shard holding this entry's node_ids when they are not inline. Null for curated entries. */
+  node_shard?: number | null;
   // Directory hierarchy (evidence-backed dept/lab sub-units).
   parent: string | null; // parent org key, or null for a root org
   unit_type: string; // organization | school | department | institute | lab | ...

@@ -5,13 +5,11 @@
 // aggregate is never mistaken for a specific lab. Units come from raw-affiliation evidence
 // (see docs/ORGANIZATION_DIRECTORY.md); a parent match never implies a child.
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronRight, Users, X } from "lucide-react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
-import { loadAuthors } from "../data/loadArtifacts";
-import type { AuthorRow } from "../data/types";
-import { buildOrgTree, searchDirectory, topAuthorsInNodes, type OrgNode } from "./orgHierarchy";
+import { buildOrgTree, searchDirectory, type OrgNode } from "./orgHierarchy";
 
 export function OrgFilterPanel({ ds }: { ds: Dataset }) {
   const filters = useStore((s) => s.filters);
@@ -106,7 +104,7 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
             {node.children.filter(childVisible).map((c) => renderUnit(c, depth + 1))}
           </div>
         )}
-        {active && <OrgAuthors ds={ds} node={node} />}
+        {active && <OrgAuthors node={node} />}
       </div>
     );
   };
@@ -188,32 +186,23 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
 
 // Organization-scoped researcher browsing: the top authors within the selected unit's
 // papers. Clicking a researcher adds them to the author filter to explore their work.
-function OrgAuthors({ ds, node }: { ds: Dataset; node: OrgNode }) {
+function OrgAuthors({ node }: { node: OrgNode }) {
   const [open, setOpen] = useState(false);
   const filters = useStore((s) => s.filters);
   const setAuthors = useStore((s) => s.setAuthors);
-  // Precomputed by s10 (Institution.top_authors). Counting them here is no longer possible:
-  // per-paper author_ids left the resident papers index in D30, so ds.papers[n].authorIds is
-  // empty until a paper is selected — which silently emptied this list. Older artifacts have
-  // no top_authors, so the in-browser count remains as a fallback.
-  const [authorIndex, setAuthorIndex] = useState<AuthorRow[]>([]);
+  // Precomputed by s10 (Institution.top_authors), for the browse-tree units only.
   const precomputed = node.inst.top_authors ?? [];
-  const needsFallback = open && precomputed.length === 0;
-  useEffect(() => {
-    if (!needsFallback) return;
-    let live = true;
-    loadAuthors().then((rows) => { if (live) setAuthorIndex(rows); }).catch(() => {});
-    return () => { live = false; };
-  }, [needsFallback]);
-  const authors = useMemo(() => {
-    if (!open) return [];
-    if (precomputed.length > 0) {
-      return precomputed
-        .slice(0, 12)
-        .map((a) => ({ authorId: a.author_id, name: a.name, count: a.count }));
-    }
-    return topAuthorsInNodes(ds, node.inst.node_ids, authorIndex, 12);
-  }, [open, ds, node.inst.node_ids, authorIndex, precomputed]);
+  // The in-browser fallback (count author_ids across the org's node_ids) is gone. It had
+  // already stopped working when per-paper author_ids left the resident index in D30, and the
+  // ids it scanned are no longer shipped for directory institutions either — s10 precomputes
+  // top_authors for the browse tree instead. An org without them now says so rather than
+  // rendering a confidently empty list.
+  const authors = useMemo(
+    () => (open
+      ? precomputed.slice(0, 12).map((a) => ({ authorId: a.author_id, name: a.name, count: a.count }))
+      : []),
+    [open, precomputed],
+  );
 
   const addAuthor = (authorId: number) => {
     if (!filters.authorIds.includes(authorId)) setAuthors([...filters.authorIds, authorId]);
@@ -230,7 +219,13 @@ function OrgAuthors({ ds, node }: { ds: Dataset; node: OrgNode }) {
         <Users size={12} aria-hidden="true" />
         {open ? "Hide researchers" : "Top researchers"}
       </button>
-      {open && (
+      {open && authors.length === 0 && (
+        <p className="org-hint subtle" style={{ margin: "4px 0 0" }}>
+          Top researchers are precomputed for the organizations in the browse tree; this
+          institution does not have them.
+        </p>
+      )}
+      {open && authors.length > 0 && (
         <ul className="org-author-list">
           {authors.map((a) => {
             const selected = filters.authorIds.includes(a.authorId);
