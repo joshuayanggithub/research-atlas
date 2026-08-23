@@ -320,6 +320,12 @@ function fillPointTile(points: PointData, table: Table, papers?: PaperMeta[]): v
       if (row) {
         row.citedByCount = cited[i];
         row.citationCountAvailable = true;
+        // The YEAR too. placeholderPapers derives publicationDate from points.year, which is 0
+        // for a paper whose tile has not arrived — so its date rendered as an em dash and stayed
+        // that way, because nothing refreshed it when the tile finally landed. Clicking the paper
+        // appeared to "fix" it only because the detail shard carries the real date. Reported as
+        // years being hyphenated in an author's paper list.
+        if (!row.publicationDate && year[i]) row.publicationDate = String(year[i]);
       }
     }
     points.subfieldId[n] = sub[i];
