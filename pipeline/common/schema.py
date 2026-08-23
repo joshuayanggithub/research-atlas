@@ -403,6 +403,7 @@ class Manifest(BaseModel):
     n_edge_node_shards: int = 0
     # Alphabetical ranges of the title search index chunks (see SEARCH_INDEX_CHUNKS).
     search_chunks: list["SearchChunk"] = []
+    n_author_affiliation_shards: int = 0
     # s12's thinning constant. The frontend derives its max dot radius from it, because the
     # on-screen separation the thinning guarantees is viewport_width / base_divisor.
     tiling_base_divisor: float = 40.0
@@ -475,6 +476,33 @@ AUTHOR_PAPERS_SCHEMA = pa.schema([
     # while an author filter is active — which means this shard is already loaded.
     ("openalex_id", pa.string()),
 ])
+
+
+# Where each author publishes from, recency-ranked (s10._author_affiliations).
+#
+# These were briefly folded into AUTHOR_PAPERS_SCHEMA on the reasoning that the author-papers
+# shard is already fetched when the panel appears, so they would cost no extra request. The
+# measurement behind that was wrong in an instructive way: the per-shard AVERAGE was 269 KB
+# gzipped, but `author_id` is ordered by DESCENDING paper count, so shard 0 holds the most
+# prolific authors and is 2,008 KB — and a searched-for researcher is prolific by definition,
+# so real users hit exactly the shards the average hid. Folding affiliations in doubled the
+# very fetch that matters most.
+#
+# Their own shards instead, keyed the same way but far smaller, because affiliation rows are
+# tiny and fixed-size while node_ids lists are not.
+AUTHOR_AFFILIATION_SHARD_ROWS = 2048
+
+AUTHOR_AFFILIATIONS_SCHEMA = pa.schema([
+    ("author_id", pa.int32()),
+    ("labels", pa.list_(pa.string())),
+    ("counts", pa.list_(pa.int32())),
+    ("first_year", pa.list_(pa.int16())),
+    ("last_year", pa.list_(pa.int16())),
+])
+
+
+def author_affiliations_shard(shard: int) -> str:
+    return f"author-affiliations-{shard}.arrow"
 
 
 # Titles, sharded by node id (shard = node_id // TITLE_CHUNK_ROWS).

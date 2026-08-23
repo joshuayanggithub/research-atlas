@@ -175,6 +175,10 @@ silently dropped.
 - **Combined paper and map-label search** with type-ahead. Paper results select and focus a
   paper; map-label results pan and zoom to the named semantic region and emphasize its label.
 - Paper, map-label, and author search support keyboard selection.
+- **The author panel says where a researcher publishes from.** Selecting an author shows their
+  top institutions with paper counts and year ranges, ranked so a current employer outranks a
+  former one; an author whose papers could not be attributed shows no affiliation line rather
+  than an empty one (D58).
 - **The NeoLabs are on the map.** Anthropic, DeepSeek, Moonshot AI and MiniMax are curated
   organizations alongside Redwood Research, attributed from the affiliation text on the papers
   themselves, and each entry states which kind of evidence backs it (D57).

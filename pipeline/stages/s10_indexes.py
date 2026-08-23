@@ -34,6 +34,7 @@ ROSTER_MEMBERSHIPS_IN = INTERIM_DIR / "roster_memberships.parquet"
 ROSTER_ORGS_IN = INTERIM_DIR / "roster_orgs.json"
 COMET_IN = INTERIM_DIR / "comet_affiliations.parquet"
 ORGS_OUT = ARTIFACTS_DIR / "orgs.json"
+AUTHOR_AFFILIATIONS_OUT = ARTIFACTS_DIR / "author_affiliations.arrow"
 AUTHORS_OUT = ARTIFACTS_DIR / "authors.arrow"
 TOPICS_OUT = ARTIFACTS_DIR / "topics.json"
 
@@ -86,6 +87,11 @@ def _author_affiliations(
     were a fact about the author.
     """
     HALF_LIFE = 4.0
+    # Recency is the whole ranking signal here, so a corpus without years cannot produce an
+    # honest answer — emit nothing rather than a list ordered by raw count that would read as
+    # "where this author works".
+    if "year" not in corpus.columns or not local_author_id:
+        return {}
     latest = int(corpus["year"].max() or 0)
     # (author, label) -> [weight, count, first year, last year]
     acc: dict[tuple[int, str], list[float]] = {}
@@ -151,7 +157,8 @@ def _build_orgs(corpus: pl.DataFrame, resolved: dict,
                 inst_registry: dict | None = None,
                 roster_orgs: dict | None = None,
                 roster_memberships: pl.DataFrame | None = None,
-                local_author_id: dict[str, int] | None = None) -> OrgsDoc:
+                local_author_id: dict[str, int] | None = None,
+                ) -> tuple[OrgsDoc, dict[int, list[tuple[str, int, int, int]]]]:
     # institution openalex id -> set(node_id). Sets, not lists, because the COMET merge below
     # has to ask "is this pair already known?" for ~700k papers.
     inst_sets: dict[str, set[int]] = defaultdict(set)
@@ -379,7 +386,30 @@ def _build_orgs(corpus: pl.DataFrame, resolved: dict,
              f"(>={DIRECTORY_MIN_PAPERS} papers)")
     if local_author_id:
         _attach_top_authors(institutions, corpus, local_author_id)
-    return OrgsDoc(institutions=institutions)
+
+    # Author -> where they publish from. Built here because this is the only place that holds
+    # BOTH directions of the affiliation data: OpenAlex institutions (which resolve
+    # universities well) and the curated name matches (which are the only thing that resolves
+    # companies). Labels are display names, so the frontend needs no second lookup.
+    node_orgs: dict[int, list[str]] = defaultdict(list)
+    for inst_id, nodes in inst_nodes.items():
+        label = (registry.get(inst_id) or {}).get("display_name")
+        if not label:
+            continue
+        for nid in nodes:
+            node_orgs[nid].append(label)
+    for org_key, nodes in comet_org_nodes.items():
+        inst = institutions.get(org_key)
+        if inst is None:
+            continue
+        for nid in nodes:
+            node_orgs[nid].append(inst.display_name)
+    author_affiliations = _author_affiliations(corpus, local_author_id or {}, node_orgs)
+    if local_author_id:
+        log.info(f"  author affiliations: {len(author_affiliations):,} of "
+                 f"{len(local_author_id):,} authors have at least one attributed paper "
+                 f"({len(author_affiliations) / max(len(local_author_id), 1) * 100:.1f}%)")
+    return OrgsDoc(institutions=institutions), author_affiliations
 
 
 # Names shown per org unit. The panel lists a dozen; a few spare keep it useful if the
@@ -453,6 +483,22 @@ def _build_topics(corpus: pl.DataFrame) -> TopicsDoc:
     return TopicsDoc(nodes=list(nodes.values()))
 
 
+def _write_author_affiliations(
+    affiliations: dict[int, list[tuple[str, int, int, int]]],
+) -> None:
+    """Persist author -> affiliations for s11 to fold into the author-papers shards."""
+    rows = sorted(affiliations.items())
+    pa_table = pa.table({
+        "author_id": pa.array([a for a, _ in rows], pa.int32()),
+        "labels": pa.array([[x[0] for x in v] for _, v in rows], pa.list_(pa.string())),
+        "counts": pa.array([[x[1] for x in v] for _, v in rows], pa.list_(pa.int32())),
+        "first_year": pa.array([[x[2] for x in v] for _, v in rows], pa.list_(pa.int16())),
+        "last_year": pa.array([[x[3] for x in v] for _, v in rows], pa.list_(pa.int16())),
+    })
+    write_arrow(pa_table, AUTHOR_AFFILIATIONS_OUT)
+    log.info(f"author affiliations -> {AUTHOR_AFFILIATIONS_OUT}")
+
+
 def run(cfg: Config | None = None) -> tuple[str, str, str]:
     cfg = cfg or load_config()
     ensure_dirs()
@@ -470,9 +516,10 @@ def run(cfg: Config | None = None) -> tuple[str, str, str]:
     write_arrow(authors_tbl, AUTHORS_OUT)
     log.info(f"authors: {authors_tbl.num_rows} unique -> {AUTHORS_OUT}")
 
-    orgs_doc = _build_orgs(
+    orgs_doc, author_affiliations = _build_orgs(
         corpus, resolved, inst_registry, roster_orgs, roster_memberships, local_author_id,
     )
+    _write_author_affiliations(author_affiliations)
     write_json(orgs_doc, ORGS_OUT)
     # Only log the curated seed roots + units (the directory adds thousands).
     for k, inst in orgs_doc.institutions.items():

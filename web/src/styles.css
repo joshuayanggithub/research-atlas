@@ -770,6 +770,16 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 
 /* Title still streaming in. A shimmering bar rather than text: it occupies the space the title
    will take, so rows do not jump when titles land, and it cannot be mistaken for a real title. */
+/* Author affiliations: where a researcher publishes from, recency-ranked. Rendered only when
+   attributed — never as an empty row. */
+.author-affiliations { list-style: none; margin: 6px 0 2px; padding: 0;
+  display: flex; flex-direction: column; gap: 3px; }
+.author-affiliations li { display: flex; align-items: baseline; gap: 7px; font-size: 12px; }
+.author-affiliations .aff-name { color: var(--ink); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.author-affiliations .aff-meta { font-family: var(--font-mono); font-size: 10px;
+  flex: 0 0 auto; }
+
 /* Topic filter: fields collapse to one row each, so the panel is ~26 rows instead of a flat
    243-chip wall. */
 .topic-fields { display: flex; flex-direction: column; gap: 1px; margin-bottom: 8px; }

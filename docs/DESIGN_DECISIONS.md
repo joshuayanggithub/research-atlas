@@ -1501,3 +1501,66 @@ about where someone works.
 "Largest in corpus" lists Tsinghua 16,844, Chinese Academy of Sciences 11,982, Shanghai Jiao
 Tong 10,930; selecting Anthropic filters to exactly 173 papers; badges read AFFILIATION for the
 four name-matched labs and ROSTER for Redwood.
+
+## D58. The author panel says where a researcher publishes from — ACTIVE
+
+**Context.** Clicking a researcher gave a name, a paper count and three external links. The
+first thing anyone wants — where they work — was absent, and no artifact carried it.
+`Institution.top_authors` (D36) is the org → author direction and covers only the 43
+browse-tree units, so it cannot be inverted for a general author.
+
+**Decision.** `s10._author_affiliations` joins each author's papers to those papers'
+affiliations and keeps the top three.
+
+**Ranked by RECENCY-weighted count, not raw count.** An author with six papers from a PhD lab
+in 2014 and twelve from a company since 2022 works at the company; a raw count over a long
+career keeps naming the university. Half-life is four years, so older work registers without
+leading. The displayed count and year range are **raw**, so a weighted number is never shown as
+if it were a fact. The result is legible on real people:
+
+| author | affiliations |
+|---|---|
+| Aditi Raghunathan | **CMU (35, 2022–2025)**, Stanford (27, 2016–2025), Berkeley (8, 2019–2023) |
+| Graham Neubig | CMU (310, 2015–2025), Google (29), Meta (18) |
+
+Raghunathan is the case that justifies the weighting: Stanford spans more years, CMU is
+current, and CMU ranks first.
+
+**A corpus without a `year` column returns nothing**, because recency *is* the ranking signal —
+a raw-count list would read as "where this author works" while meaning something else.
+
+**992,493 of 1,482,740 authors (66.9%) have at least one affiliation.**
+
+### The mistake worth recording
+
+These were first folded into `AUTHOR_PAPERS_SCHEMA`, on the reasoning that the author-papers
+shard is *already* fetched whenever the panel can appear — so affiliations would cost no extra
+request. The supporting measurement was the per-shard **average**: 269 KB gzipped, so "+133 KB".
+
+That average was hiding the only case that matters. `author_id` is ordered by **descending
+paper count**, so shard 0 holds the most prolific authors at **2,008 KB** — and a researcher
+anyone searches for is prolific by definition. The change would have doubled precisely the
+fetch users hit, while being reported as nearly free. A browser probe caught it: one selection
+pulled 2,130 KB.
+
+Affiliations therefore have **their own shards** (`AUTHOR_AFFILIATION_SHARD_ROWS = 2048`, 724
+shards, ~53 KB each). They are tiny and fixed-size, so they shard far finer than variable-length
+`node_ids` lists ever could.
+
+| | folded in | own shards |
+|---|---|---|
+| `author-papers-0` | 2,008 KB gz | **1,767 KB** (unchanged from before) |
+| cost per author selection | +241 KB on the biggest fetch | **one 78–81 KB request** |
+
+**Honesty constraints.** An author with nothing attributed renders **no line at all** — a blank
+would say "no affiliation on record" when it means "the papers we hold could not be
+attributed". That is common for recent work: upstream extraction stops at December 2025 and
+2026 attribution is ~6%. ROR also misses companies entirely (D43), which is why the curated
+name matchers feed this join as well as the org tree.
+
+**Revert condition / cheap lever.** If 53 KB per selection ever looks like too much, keeping
+only the top affiliation cuts it roughly threefold with no structural change.
+
+**Verified** at 1 MB/s on desktop 1440x900 and iPhone 13, console clean: affiliations render
+with counts and year ranges, `author-papers` 1 request / 1,829 KB and `author-affiliations`
+1 request / 78–81 KB.

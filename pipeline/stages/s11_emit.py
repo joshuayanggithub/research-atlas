@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as _dt
 
 import re
+from collections import defaultdict
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -373,6 +374,7 @@ def _emit_author_papers(corpus: pl.DataFrame) -> tuple[list[str], int, int]:
     src = read_arrow(ARTIFACTS_DIR / S.AUTHORS)
     oa_by_id = dict(zip(src["author_id"].to_pylist(), src["openalex_id"].to_pylist()))
 
+
     paths: list[str] = []
     for shard in sorted(shards):
         authors = sorted(shards[shard])
@@ -712,6 +714,42 @@ def _emit_search_index(corpus: pl.DataFrame) -> list[S.SearchChunk]:
     return chunks
 
 
+def _emit_author_affiliations() -> int:
+    """Publish author -> affiliations as small, id-keyed shards.
+
+    Deliberately NOT folded into the author-papers shards. That looked free — the panel only
+    renders while an author filter is active, so that shard is already fetched — but author ids
+    are ordered by descending paper count, so shard 0 holds the most prolific authors at
+    2,008 KB gzipped while the average shard is 269 KB. A researcher anyone searches for is
+    prolific, so folding affiliations in would have doubled precisely the fetch that matters.
+    Affiliation rows are tiny and fixed-size, so they shard far finer.
+    """
+    src = ARTIFACTS_DIR / "author_affiliations.arrow"
+    if not src.exists():
+        log.warn("author_affiliations.arrow absent — the author panel will show no affiliation")
+        return 0
+    table = read_arrow(src)
+    ids = table["author_id"].to_pylist()
+    labels = table["labels"].to_pylist()
+    counts = table["counts"].to_pylist()
+    first = table["first_year"].to_pylist()
+    last = table["last_year"].to_pylist()
+    rows = S.AUTHOR_AFFILIATION_SHARD_ROWS
+    by_shard: dict[int, list[int]] = defaultdict(list)
+    for i, a in enumerate(ids):
+        by_shard[a // rows].append(i)
+    for shard, idxs in sorted(by_shard.items()):
+        write_arrow(pa.table({
+            "author_id": pa.array([ids[i] for i in idxs], pa.int32()),
+            "labels": pa.array([labels[i] for i in idxs], pa.list_(pa.string())),
+            "counts": pa.array([counts[i] for i in idxs], pa.list_(pa.int32())),
+            "first_year": pa.array([first[i] for i in idxs], pa.list_(pa.int16())),
+            "last_year": pa.array([last[i] for i in idxs], pa.list_(pa.int16())),
+        }, schema=S.AUTHOR_AFFILIATIONS_SCHEMA), WEB_DATA_DIR / S.author_affiliations_shard(shard))
+    log.info(f"author affiliations: {len(ids):,} authors across {len(by_shard)} shards")
+    return len(by_shard)
+
+
 def _emit_org_nodes(orgs: dict) -> tuple[int, int]:
     """Move DIRECTORY institutions' node_ids out of orgs.json into shards, in place.
 
@@ -788,6 +826,7 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     title_paths, title_chunk_rows = _emit_title_chunks(corpus)
     has_import_index = _emit_import_index(corpus)
     search_chunks = _emit_search_index(corpus)
+    n_author_affiliation_shards = _emit_author_affiliations()
 
     # Neighbors are sharded for on-demand related-works loading (not shipped whole).
     neighbor_shards, neighbor_shard_size = _emit_neighbor_shards(_neighbors_table())
@@ -934,6 +973,7 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
         edge_tiles=edge_tiles,
         n_edge_node_shards=n_edge_node_shards,
         search_chunks=search_chunks,
+        n_author_affiliation_shards=n_author_affiliation_shards,
         author_chunk_rows=S.AUTHOR_CHUNK_ROWS,
         n_paper_shards=len(paper_shards),
         figures=(S.FiguresMeta(count=len(figure_nodes)) if figure_nodes else None),

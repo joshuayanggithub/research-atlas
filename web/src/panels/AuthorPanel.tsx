@@ -3,13 +3,41 @@
 // DetailsPanel.addAuthorFilter). Surfaces external profile links per selected author.
 
 import { ExternalLink, X } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
 import { useAuthors } from "../data/useAuthors";
-import { peekAuthorOpenAlex } from "../data/loadArtifacts";
+import {
+  ensureAuthorAffiliations, onAuthorAffiliations, peekAuthorAffiliations,
+  peekAuthorOpenAlex,
+} from "../data/loadArtifacts";
 import { useAuthorPapers } from "../data/useAuthorPapers";
 import { resolveAuthorIdentity } from "../data/authorIdentity";
+
+function AuthorAffiliations({ authorId }: { authorId: number }) {
+  const [, setTick] = useState(0);
+  useEffect(() => onAuthorAffiliations(() => setTick((n) => n + 1)), []);
+  useEffect(() => { void ensureAuthorAffiliations([authorId]); }, [authorId]);
+  const rows = peekAuthorAffiliations(authorId);
+  // null = not fetched yet, [] = fetched and this author has none attributed. Both render
+  // nothing: an empty line would read as "no affiliation on record" when it means the papers
+  // we hold could not be attributed — common for very recent work, since the upstream
+  // extraction stops at Dec 2025 and 2026 attribution is ~6%.
+  if (!rows || rows.length === 0) return null;
+  return (
+    <ul className="author-affiliations">
+      {rows.map((r) => (
+        <li key={r.label}>
+          <span className="aff-name">{r.label}</span>
+          <span className="aff-meta subtle">
+            {r.count.toLocaleString()} paper{r.count === 1 ? "" : "s"}
+            {r.from > 0 && ` · ${r.from}${r.to > r.from ? `–${r.to}` : ""}`}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function openAlexUrl(openalexId: string): string {
   return `https://openalex.org/${openalexId}`;
@@ -97,6 +125,11 @@ export function AuthorPanel({ ds }: { ds: Dataset }) {
               })()}
               {!verified && " · identity not confirmed by OpenAlex, may include others sharing this name"}
             </div>
+            {/* Where they publish from. Absent entirely when nothing is attributed: a blank
+                line would read as "no affiliation on record" when it means the papers we
+                have could not be attributed. Attribution is ~6% for 2026 work (the upstream
+                extraction stops at Dec 2025), so this is common for very recent authors. */}
+            <AuthorAffiliations authorId={a.authorId} />
             <div className="author-links">
               {verified && openalexId && (
                 <a className="link" href={openAlexUrl(openalexId)} target="_blank" rel="noopener noreferrer">

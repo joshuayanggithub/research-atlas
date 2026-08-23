@@ -139,6 +139,8 @@ export interface Manifest {
   /** Per-node adjacency shards (edges-by-node-N.arrow), keyed by `position_shard_rows`.
    *  0/absent means the bundle predates them and the whole graph is the only complete source. */
   n_edge_node_shards?: number;
+  /** Author -> affiliation shards (author-affiliations-N.arrow), 2048 authors each. */
+  n_author_affiliation_shards?: number;
   /** Alphabetical ranges of the title search index chunks (title-tokens-N.arrow). */
   search_chunks?: { chunk: number; first: string; last: string; tokens: number; bytes: number }[];
   /** s12 thinning constant; on-screen point separation is viewport_width / this. */

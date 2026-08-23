@@ -591,6 +591,86 @@ export function peekAuthorOpenAlex(authorId: number): string | null {
   return authorOpenAlexCache.get(authorId) ?? null;
 }
 
+/** Where an author publishes from, recency-ranked (s10). Filled by loadAuthorPapers. */
+export interface AuthorAffiliation {
+  label: string;
+  count: number;
+  from: number;
+  to: number;
+}
+
+const authorAffiliationCache = new Map<number, AuthorAffiliation[]>();
+
+/** Null means "not loaded"; an empty array means "loaded, and this author has none". The two
+ *  render differently — an author with no attributed papers must show nothing at all, not a
+ *  blank affiliation line. */
+export function peekAuthorAffiliations(authorId: number): AuthorAffiliation[] | null {
+  return authorAffiliationCache.get(authorId) ?? null;
+}
+
+const authorAffiliationShards = new Map<number, Promise<void>>();
+const affiliationWaiters: (() => void)[] = [];
+
+export function onAuthorAffiliations(fn: () => void): () => void {
+  affiliationWaiters.push(fn);
+  return () => {
+    const i = affiliationWaiters.indexOf(fn);
+    if (i >= 0) affiliationWaiters.splice(i, 1);
+  };
+}
+
+/**
+ * Affiliations for specific authors, from their own small shards.
+ *
+ * NOT carried in the author-papers shard even though that one is already fetched when the
+ * panel appears: author ids are ordered by descending paper count, so shard 0 holds the most
+ * prolific authors at ~1.8 MB while the average is 269 KB — and a searched-for researcher is
+ * prolific by definition. Folding affiliations in doubled exactly the fetch that mattered.
+ * These shards are ~53 KB.
+ */
+export async function ensureAuthorAffiliations(authorIds: number[]): Promise<void> {
+  const manifest = manifestRef;
+  const rows = 2048; // AUTHOR_AFFILIATION_SHARD_ROWS
+  if (!manifest || (manifest.n_author_affiliation_shards ?? 0) === 0) return;
+  const want = new Set<number>();
+  for (const id of authorIds) {
+    if (id < 0 || authorAffiliationCache.has(id)) continue;
+    const shard = Math.floor(id / rows);
+    if (!authorAffiliationShards.has(shard)) want.add(shard);
+  }
+  if (want.size === 0) return;
+  await Promise.all([...want].slice(0, 8).map((shard) => {
+    const pending = fetchArrow(`author-affiliations-${shard}.arrow`, "high")
+      .then((t) => {
+        const ids = t.getChild("author_id")!.toArray() as Int32Array;
+        const labels = t.getChild("labels")!;
+        const counts = t.getChild("counts")!;
+        const first = t.getChild("first_year")!;
+        const last = t.getChild("last_year")!;
+        for (let i = 0; i < ids.length; i++) {
+          const l = labels.get(i);
+          const c = counts.get(i);
+          const f = first.get(i);
+          const to = last.get(i);
+          const out: AuthorAffiliation[] = [];
+          for (let k = 0; k < (l?.length ?? 0); k++) {
+            out.push({
+              label: String(l.get(k) ?? ""),
+              count: Number(c?.get(k) ?? 0),
+              from: Number(f?.get(k) ?? 0),
+              to: Number(to?.get(k) ?? 0),
+            });
+          }
+          authorAffiliationCache.set(ids[i], out);
+        }
+        for (const fn of affiliationWaiters) fn();
+      })
+      .catch(() => { authorAffiliationShards.delete(shard); });
+    authorAffiliationShards.set(shard, pending);
+    return pending;
+  }));
+}
+
 const orgNodesCache = new Map<number, Promise<Map<string, number[]>>>();
 
 /**

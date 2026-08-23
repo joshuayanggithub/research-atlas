@@ -26,7 +26,7 @@ RESOLVED = {
 def _run(rows, registry, monkeypatch):
     # Avoid touching affiliations.parquet on disk.
     monkeypatch.setattr(s10_indexes, "_load_unit_attribution", lambda corpus: {})
-    return _build_orgs(_corpus(rows), RESOLVED, registry).institutions
+    return _build_orgs(_corpus(rows), RESOLVED, registry)[0].institutions
 
 
 def test_curated_root_and_directory_split(monkeypatch):
@@ -79,7 +79,7 @@ def test_curated_child_units_are_subsets_of_parent(monkeypatch):
     monkeypatch.setattr(
         s10_indexes, "_load_unit_attribution", lambda corpus: {"cmu": {"cmu-ri": {0, 1}}}
     )
-    insts = _build_orgs(_corpus(rows), RESOLVED, {}).institutions
+    insts = _build_orgs(_corpus(rows), RESOLVED, {})[0].institutions
     assert "cmu-ri" in insts
     assert insts["cmu-ri"].parent == "cmu"
     assert set(insts["cmu-ri"].node_ids) <= set(insts["cmu"].node_ids)
@@ -105,7 +105,7 @@ def test_roster_backed_neolab_is_a_curated_root_with_provenance(monkeypatch):
     monkeypatch.setattr(s10_indexes, "_load_unit_attribution", lambda corpus: {})
     insts = _build_orgs(
         _corpus(rows), RESOLVED, {}, roster_orgs, memberships,
-    ).institutions
+    )[0].institutions
 
     redwood = insts["redwood"]
     assert redwood.kind == "neolab" and redwood.curated is True
