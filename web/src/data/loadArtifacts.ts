@@ -451,7 +451,9 @@ export function deferredProgress(): DeferredProgress[] {
     // there is no honest "N of 489" to report. The loading pill covers the streams that DO
     // run to completion; a pending title shows its own shimmer where it will appear.
 
-    { key: "authors", label: "authors", loaded: authorChunksLoaded, total: m.n_author_chunks ?? 0 },
+    // No "authors" row: nothing streams the author index any more (D59). Reporting a
+    // percentage for a fetch that never happens is the same false claim as a title
+    // progress bar for shards fetched on demand.
     { key: "edges", label: "citations", loaded: edgesReady ? 1 : 0, total: 1 },
   ];
   return out.filter((p) => p.total > 0);

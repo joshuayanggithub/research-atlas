@@ -5,7 +5,7 @@ Concrete, checkable next steps for whoever picks this up. This is the *actionabl
 were made and what reverting costs. When you finish an item, check it off and note the
 commit; when you add one, keep it specific enough to act on without re-deriving context.
 
-Last updated: 2026-08-23 (publishable bundle: per-visit cost ~143 MB -> 5.7 MB; edges and
+Last updated: 2026-08-23 (published to R2; author index; publishable bundle: per-visit cost ~143 MB -> 5.7 MB; edges and
 titles sharded; token search index; NeoLabs curated; author affiliations. D49-D58).
 
 ---
@@ -195,7 +195,7 @@ titles sharded; token search index; NeoLabs curated; author affiliations. D49-D5
 
 | | requests | bytes |
 |---|---|---|
-| home view | 22 | **5.7 MB** |
+| home view | 21 | **4.3 MB** |
 | + select a hub paper (Attention, 69,262 citers) | 38 | 15.1 MB |
 | + filter an organization (Tsinghua) | 40 | 17.8–20.8 MB |
 | + filter an author | 43–45 | 23.8–24.0 MB |
@@ -206,13 +206,16 @@ GitHub's 100 MB per-file limit, so the bundle is hostable. Publish dry-run: **3,
 
 ## Biggest remaining wins, in order
 
-1. **`authors.arrow` is now the largest stream on the wire** — ~14.4 MB fetched eagerly in 13
-   chunks so the author box can substring-match names. It is the single biggest remaining item
-   and the same shape as the title index that replaced 31 MB (D54): a name-token -> author-id
-   index measured at **5.5 MB capped at 25 authors/token**, and it could be chunked
-   alphabetically like the title index so a query costs ~100 KB instead of 14 MB.
-2. **The real R2 upload has never run.** `tools/publish_artifacts.sh --confirm` is written,
-   dry-run-verified and waiting on an explicit go-ahead. Nothing has been published.
+1. ~~`authors.arrow` is the largest stream~~ — **done** (D59). A name-token index in 128
+   alphabetical chunks replaced the 14.4 MB eager load; a query costs one or two ~127 KB
+   chunks. Home view is now 21 requests / 4.3 MB.
+2. ~~The real R2 upload has never run~~ — **done 2026-08-23.** Published to
+   `r2:research-atlas/v/2026-08-23`: **3,919 objects, 568 MiB**, gzip-encoded with
+   `max-age=31536000, immutable`, CORS scoped to the Pages origin, `papers.arrow` and
+   `edges.arrow` correctly absent (404). Verified by building the app against it and loading:
+   **14 R2 requests / 3.9 MB, zero failed requests, zero console errors**, both viewports.
+   Set the repository variable so Pages picks it up:
+   `VITE_DATA_BASE=https://pub-e9b4142dba374b438774d2bab6b4e09f.r2.dev/v/2026-08-23`
 3. **A custom domain in front of R2** is the highest-value cost/abuse mitigation left: a cached
    response never reaches the bucket and costs no Class B operation, and it moves off
    `pub-*.r2.dev`, which Cloudflare rate-limits and does not intend for production.

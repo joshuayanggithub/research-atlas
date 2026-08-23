@@ -184,3 +184,11 @@ big eager stream** (~14.4 MB), and the name-token index that would replace it is
 already proven twice. After that, publishing is a decision rather than a project — the script
 is written and dry-run-verified, waiting on a go-ahead — and the 2026 affiliation gap is the
 only remaining *data* deficit, now unblocked by a working GPU.
+
+**2026-08-23, later:** the author index followed titles onto a token lookup (D59), taking the
+last big eager stream off the wire — a visit is now **21 requests / 4.3 MB**. The bundle is
+**published**: 3,919 objects / 568 MiB at `r2:research-atlas/v/2026-08-23`, verified by loading
+the app against it end to end. What is left is no longer about bytes: wire `VITE_DATA_BASE` into
+the Pages repository variable, put a proxied custom domain in front of R2 (a cached response
+never reaches the bucket and costs no Class B operation), repair the e2e suite, and close the
+2026 affiliation gap.
