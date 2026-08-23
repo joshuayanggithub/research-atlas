@@ -1564,3 +1564,50 @@ only the top affiliation cuts it roughly threefold with no structural change.
 **Verified** at 1 MB/s on desktop 1440x900 and iPhone 13, console clean: affiliations render
 with counts and year ranges, `author-papers` 1 request / 1,829 KB and `author-affiliations`
 1 request / 78–81 KB.
+
+## D59. Author lookup runs on a name-token index, not a downloaded list — ACTIVE
+
+**Context.** `authors.arrow` shipped as 13 chunks / **~14.4 MB gzipped**, fetched after first
+paint on every visit, so the author box could substring-match 1,482,740 names. After titles
+moved off (D55) it was the largest remaining stream on the wire, and nothing on first paint
+read it.
+
+**Decision.** The same treatment titles got: a name-token → authors index in **128 alphabetical
+chunks** (~127 KB each). A query fetches the chunk holding its tokens; the last token is
+treated as a prefix, and alphabetical order makes that a contiguous run.
+
+**Denormalised on purpose.** The postings carry name, paper count and verified flag, not just
+ids. That triples the index on disk — an author appears under every token of their name — but
+it makes the dropdown self-contained. The alternative measured worse in the dimension that
+matters: id-only postings are 46 KB per chunk, but ranking 25 candidates would then need up to
+25 author-info shard fetches *per keystroke*, trading a few hundred KB for dozens of requests.
+
+Capped at the 25 most prolific authors per token; the dropdown shows three ranked by paper
+count, so a deeper posting could never be displayed.
+
+**Per-author records** (`author-info-{N}.arrow`, 2048 per shard, ~96 KB) carry name, count and
+**every row sharing the same exact name** — fetched only for the authors a session selects.
+That last field is what allows identity merging without the full index: one person is routinely
+split across several rows (210,084 names occupy more than one), and selecting an author must
+select all of them.
+
+**A correctness detail found in verification.** The panel states the group total as a fact —
+"77 papers in this corpus · merged from 19 author records". Summing the records a session
+*happens* to have fetched gives **58** for Aditi Raghunathan, because her other 18 rows live in
+different shards. The total is therefore precomputed (`same_name_papers`) rather than derived
+in the browser, restoring the exact number the whole-list scan used to produce.
+
+**Also removed:** the author box gated its index load on `onFocus`, a holdover from when that
+load was 14.4 MB and had to be deferred until someone clearly wanted it. With a per-query
+fetch the gate only made the field inert until focused.
+
+**Tradeoffs.** Infix matching within a name is gone, as it is for titles (D54) — "eubi" no
+longer finds "Neubig". Prefix and whole-token matching cover ordinary type-ahead. Index storage
+grows from 14.4 MB to ~16 MB, but almost none of it is ever fetched.
+
+**Verified** at 1 MB/s on desktop 1440x900 and iPhone 13, identical on both, console clean:
+"Hinton" → Geoffrey E. Hinton (43), (6), Geoffrey Hinton (5); "Neubig" → Graham Neubig (328),
+(18), (17); "Aditi Raghunathan" → 58; nonsense → empty. Selecting filters to 58 papers and the
+panel reads "77 papers in this corpus · merged from 19 author records" with her affiliations.
+**Home view: 21 requests / 4.3 MB, zero `authors.arrow` fetches.** Four queries plus a
+selection cost 5 index chunks (769 KB) and 1 author record shard (133 KB).

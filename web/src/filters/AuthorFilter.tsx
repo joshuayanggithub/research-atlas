@@ -1,36 +1,42 @@
-// Author filter: type-ahead over the author index (authors.arrow). Selecting authors
-// dims/hides non-matching papers (union across selected authors, AND with org/date).
+// Author filter: type-ahead over the author name-token index. Selecting authors dims/hides
+// non-matching papers (union across selected authors, AND with org/date).
+//
+// The whole author list is no longer downloaded to do this (D59): a query fetches the index
+// chunk holding its tokens, and the postings carry the name and paper count the dropdown
+// shows, so nothing else has to be resolved to render a result.
 
 import { useMemo, useState } from "react";
 import { X } from "lucide-react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
-import { useAuthors } from "../data/useAuthors";
+import { useAuthorInfo, useAuthorSearch } from "../data/useAuthorLookup";
 
 export function AuthorFilter({ ds: _ds }: { ds: Dataset }) {
-  const [wantAuthors, setWantAuthors] = useState(false);
-  const authors = useAuthors(wantAuthors);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const filters = useStore((s) => s.filters);
   const setAuthors = useStore((s) => s.setAuthors);
 
-  const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (q.length < 2) return [];
-    const out = [];
-    for (const a of authors) {
-      if (a.name.toLowerCase().includes(q)) {
-        out.push(a);
-        if (out.length >= 8) break; // authors are pre-sorted by paper count
-      }
-    }
-    return out;
-  }, [query, authors]);
-
-  const selectedNames = new Map(
-    authors.filter((a) => filters.authorIds.includes(a.authorId)).map((a) => [a.authorId, a.name]),
+  // No focus gate any more: the index is fetched per query (one ~127 KB chunk), not as a
+  // 14.4 MB whole-list load that had to be deferred until someone clearly wanted it.
+  const found = useAuthorSearch(query.trim(), query.trim().length >= 2);
+  const matches = useMemo(
+    // Postings are emitted most-prolific-first; ranking a name-prefix hit above a mid-name one
+    // keeps "hinton" from being crowded out by someone whose forename merely starts the same.
+    () => [...found]
+      .sort((a, b) => {
+        const q = query.trim().toLowerCase();
+        const rank = (n: string) => (n.toLowerCase().startsWith(q) ? 2
+          : new RegExp(`\\b${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(n.toLowerCase()) ? 1 : 0);
+        return rank(b.name) - rank(a.name) || b.count - a.count;
+      })
+      .slice(0, 8),
+    [found, query],
   );
+
+  // Names for the chips of already-selected authors, from their own records.
+  const info = useAuthorInfo(filters.authorIds);
+  const selectedNames = new Map([...info].map(([id, a]) => [id, a.name]));
 
   const choose = (authorId: number) => {
     if (!filters.authorIds.includes(authorId)) {
@@ -56,7 +62,6 @@ export function AuthorFilter({ ds: _ds }: { ds: Dataset }) {
               ? `author-search-option-${matches[activeIndex].authorId}`
               : undefined
           }
-          onFocus={() => setWantAuthors(true)}
           placeholder="Search author..."
           value={query}
           onChange={(e) => {

@@ -750,6 +750,87 @@ def _emit_author_affiliations() -> int:
     return len(by_shard)
 
 
+def _emit_author_index() -> tuple[list[S.SearchChunk], int]:
+    """Author name-token index + per-author records, replacing the eager authors.arrow stream.
+
+    authors.arrow was 13 chunks / ~14.4 MB gzipped on every visit so the author box could
+    substring-match names — the largest remaining stream once titles moved off (D55).
+    """
+    src = read_arrow(ARTIFACTS_DIR / S.AUTHORS)
+    ids = src["author_id"].to_pylist()
+    names = src["name"].to_pylist()
+    counts = src["count"].to_pylist()
+    verified = [not str(o or "").startswith("arxiv-name:") for o in src["openalex_id"].to_pylist()]
+    count_of = dict(zip(ids, counts))
+    name_of = dict(zip(ids, names))
+    ver_of = dict(zip(ids, verified))
+
+    tokenizer = re.compile(r"[a-z0-9]+")
+    postings: dict[str, list[int]] = defaultdict(list)
+    for author, name in zip(ids, names):
+        for word in set(tokenizer.findall((name or "").lower())):
+            if len(word) >= 2:
+                postings[word].append(author)
+
+    items: list[tuple[str, list[int]]] = []
+    capped = 0
+    for word in sorted(postings):
+        found = postings[word]
+        if len(found) > S.AUTHOR_TOKEN_CAP:
+            capped += 1
+            found = sorted(found, key=lambda a: -count_of[a])[:S.AUTHOR_TOKEN_CAP]
+        # Most prolific first: the dropdown shows three and never pages.
+        items.append((word, sorted(found, key=lambda a: -count_of[a])))
+
+    per = (len(items) + S.AUTHOR_INDEX_CHUNKS - 1) // S.AUTHOR_INDEX_CHUNKS
+    chunks: list[S.SearchChunk] = []
+    for c in range(S.AUTHOR_INDEX_CHUNKS):
+        part = items[c * per:(c + 1) * per]
+        if not part:
+            continue
+        table = pa.table({
+            "token": pa.array([w for w, _ in part], pa.string()),
+            "author_ids": pa.array([v for _, v in part], pa.list_(pa.int32())),
+            "names": pa.array([[name_of[a] for a in v] for _, v in part], pa.list_(pa.string())),
+            "counts": pa.array([[count_of[a] for a in v] for _, v in part], pa.list_(pa.int32())),
+            "verified": pa.array([[ver_of[a] for a in v] for _, v in part], pa.list_(pa.bool_())),
+        }, schema=S.AUTHOR_INDEX_SCHEMA)
+        path = WEB_DATA_DIR / S.author_index_chunk(c)
+        write_arrow(table, path)
+        chunks.append(S.SearchChunk(chunk=c, first=part[0][0], last=part[-1][0],
+                                    tokens=len(part), bytes=path.stat().st_size))
+
+    # Per-author records, including every row sharing the same exact name — that is what lets
+    # a selection merge one person's split profiles without the full index in memory.
+    by_name: dict[str, list[int]] = defaultdict(list)
+    for author, name in zip(ids, names):
+        by_name[name].append(author)
+    count_by_id = dict(zip(ids, counts))
+    group_papers = {n: sum(count_by_id[a] for a in group) for n, group in by_name.items()}
+    rows = S.AUTHOR_INFO_SHARD_ROWS
+    n_info = 0
+    order = sorted(range(len(ids)), key=lambda i: ids[i])
+    by_shard: dict[int, list[int]] = defaultdict(list)
+    for i in order:
+        by_shard[ids[i] // rows].append(i)
+    for shard, idxs in sorted(by_shard.items()):
+        write_arrow(pa.table({
+            "author_id": pa.array([ids[i] for i in idxs], pa.int32()),
+            "name": pa.array([names[i] for i in idxs], pa.string()),
+            "count": pa.array([counts[i] for i in idxs], pa.int32()),
+            "verified": pa.array([verified[i] for i in idxs], pa.bool_()),
+            "same_name_ids": pa.array([by_name[names[i]] for i in idxs], pa.list_(pa.int32())),
+            "same_name_papers": pa.array(
+                [group_papers[names[i]] for i in idxs], pa.int32()),
+        }, schema=S.AUTHOR_INFO_SCHEMA), WEB_DATA_DIR / S.author_info_shard(shard))
+        n_info = max(n_info, shard + 1)
+
+    log.info(f"author index: {len(items):,} name tokens in {len(chunks)} chunks "
+             f"({capped:,} capped at {S.AUTHOR_TOKEN_CAP}); {len(ids):,} author records in "
+             f"{n_info} shards")
+    return chunks, n_info
+
+
 def _emit_org_nodes(orgs: dict) -> tuple[int, int]:
     """Move DIRECTORY institutions' node_ids out of orgs.json into shards, in place.
 
@@ -827,6 +908,7 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     has_import_index = _emit_import_index(corpus)
     search_chunks = _emit_search_index(corpus)
     n_author_affiliation_shards = _emit_author_affiliations()
+    author_index_chunks, n_author_info_shards = _emit_author_index()
 
     # Neighbors are sharded for on-demand related-works loading (not shipped whole).
     neighbor_shards, neighbor_shard_size = _emit_neighbor_shards(_neighbors_table())
@@ -974,6 +1056,8 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
         n_edge_node_shards=n_edge_node_shards,
         search_chunks=search_chunks,
         n_author_affiliation_shards=n_author_affiliation_shards,
+        author_index_chunks=author_index_chunks,
+        n_author_info_shards=n_author_info_shards,
         author_chunk_rows=S.AUTHOR_CHUNK_ROWS,
         n_paper_shards=len(paper_shards),
         figures=(S.FiguresMeta(count=len(figure_nodes)) if figure_nodes else None),

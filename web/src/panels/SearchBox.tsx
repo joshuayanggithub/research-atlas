@@ -2,13 +2,13 @@
 // the details sheet; label choices pan/zoom to the named map region; author choices filter the
 // map to that author's papers.
 //
-// Authors are NOT in the startup bundle (authors.arrow is 33 MB and unpacking it was ~50% of
-// load time), so they are pulled in through useAuthors only once the user has actually typed a
-// query. First paint stays fast; the first author search pays the unpack once, then it's cached.
+// Authors are matched through the name-token index (D59), not by scanning a downloaded list:
+// a query fetches the index chunk holding its tokens and the postings carry the name and paper
+// count shown, so the 14.4 MB author index never has to be on the wire.
 
 import { useMemo, useState } from "react";
 import type { AuthorRow, Dataset } from "../data/types";
-import { useAuthors } from "../data/useAuthors";
+import { useAuthorSearch } from "../data/useAuthorLookup";
 import { addAuthorToSelection } from "../data/authorIdentity";
 import { usePapersReady } from "../data/usePapersReady";
 import { useTitleSearch } from "../data/useTitleSearch";
@@ -60,7 +60,7 @@ export function SearchBox({ ds }: { ds: Dataset }) {
   const setAuthors = useStore((s) => s.setAuthors);
 
   // Triggers the lazy authors.arrow fetch the moment the query is long enough to search.
-  const authors = useAuthors(query.trim().length >= MIN_QUERY);
+  const authors = useAuthorSearch(query.trim(), query.trim().length >= MIN_QUERY);
   // Papers, from the token index rather than a scan over whatever titles have downloaded.
   const titleSearch = useTitleSearch(query.trim(), query.trim().length >= MIN_QUERY);
   const titleHits = titleSearch.nodes;

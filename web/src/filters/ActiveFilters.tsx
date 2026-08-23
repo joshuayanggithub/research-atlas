@@ -11,7 +11,7 @@ import { useMemo } from "react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
 import { UNLOADED_LEVEL } from "../data/loadArtifacts";
-import { useAuthors } from "../data/useAuthors";
+import { useAuthorInfo } from "../data/useAuthorLookup";
 import { useFilterMask } from "./useFilterMask";
 
 interface Chip {
@@ -40,7 +40,9 @@ export function ActiveFilters({ ds }: { ds: Dataset }) {
 
   // Authors are only needed to name the chips, and they are already loaded by the time an
   // author filter can exist — so this never triggers the 55.9 MB fetch on its own.
-  const authors = useAuthors(filters.authorIds.length > 0);
+  // Names for the selected authors only — the full index is no longer downloaded (D59).
+  const authorInfo = useAuthorInfo(filters.authorIds);
+  const authors = [...authorInfo.values()];
   const filter = useFilterMask(ds, filters);
 
   const fromYear = parseInt(ds.manifest.corpus.date_from.slice(0, 4));

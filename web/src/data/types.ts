@@ -141,6 +141,10 @@ export interface Manifest {
   n_edge_node_shards?: number;
   /** Author -> affiliation shards (author-affiliations-N.arrow), 2048 authors each. */
   n_author_affiliation_shards?: number;
+  /** Author name-token index chunks (author-tokens-N.arrow), alphabetical ranges. */
+  author_index_chunks?: { chunk: number; first: string; last: string; tokens: number; bytes: number }[];
+  /** Per-author record shards (author-info-N.arrow), 2048 authors each. */
+  n_author_info_shards?: number;
   /** Alphabetical ranges of the title search index chunks (title-tokens-N.arrow). */
   search_chunks?: { chunk: number; first: string; last: string; tokens: number; bytes: number }[];
   /** s12 thinning constant; on-screen point separation is viewport_width / this. */

@@ -25,26 +25,34 @@ export interface AuthorIdentity {
   papers: number;
 }
 
-/** All rows sharing `id`'s name, plus the counts needed to describe the merge honestly. */
+/** All rows sharing `id`'s name, plus the counts needed to describe the merge honestly.
+ *
+ *  `authors` used to be every row in the corpus, scanned in memory. It is now whatever records
+ *  the session has fetched, and the sibling ids come precomputed on the record itself
+ *  (`same_name_ids`, s11) — the full list is no longer downloaded to answer this.
+ */
 export function resolveAuthorIdentity(
   id: number,
-  authors: AuthorRow[],
+  authors: (AuthorRow & { sameNameIds?: number[]; sameNamePapers?: number })[],
 ): AuthorIdentity | null {
   const self = authors.find((a) => a.authorId === id);
   if (!self) return null;
-  const same = authors.filter((a) => a.name === self.name);
+  const sameIds = self.sameNameIds ?? [self.authorId];
   return {
-    ids: same.map((a) => a.authorId),
+    ids: sameIds,
     name: self.name,
-    profiles: same.length,
-    papers: same.reduce((sum, a) => sum + a.count, 0),
+    profiles: sameIds.length,
+    // The group total comes precomputed on the record. Summing the rows this session happens
+    // to have fetched would under-report it — 58 instead of 77 for "Aditi Raghunathan", whose
+    // other 18 rows sit in different shards — while the panel states it as a fact.
+    papers: self.sameNamePapers ?? self.count,
   };
 }
 
 /** Merge `id`'s whole identity into an existing selection, without duplicates. */
 export function addAuthorToSelection(
   id: number,
-  authors: AuthorRow[],
+  authors: (AuthorRow & { sameNameIds?: number[]; sameNamePapers?: number })[],
   current: number[],
 ): number[] {
   const identity = resolveAuthorIdentity(id, authors);

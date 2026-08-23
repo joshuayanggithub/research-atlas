@@ -6,7 +6,7 @@ import { ExternalLink, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
-import { useAuthors } from "../data/useAuthors";
+import { useAuthorInfo } from "../data/useAuthorLookup";
 import {
   ensureAuthorAffiliations, onAuthorAffiliations, peekAuthorAffiliations,
   peekAuthorOpenAlex,
@@ -52,7 +52,9 @@ function semanticScholarUrl(name: string): string {
 export function AuthorPanel({ ds }: { ds: Dataset }) {
   const selectedNode = useStore((s) => s.selectedNode);
   const authorIds = useStore((s) => s.filters.authorIds);
-  const authors = useAuthors(selectedNode === null && authorIds.length > 0);
+  // Records for the selected authors only (name, count, and the rows sharing the name).
+  const authorInfo = useAuthorInfo(authorIds);
+  const authors = [...authorInfo.values()];
   const setAuthors = useStore((s) => s.setAuthors);
   // Not for the paper lists — the filter already computes those — but because OpenAlex ids
   // live in these shards (D32). Awaiting them here re-renders once they land, which is what

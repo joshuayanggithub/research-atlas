@@ -1,12 +1,12 @@
 // Metadata and graph context for the selected paper.
 
 import { ExternalLink, FileText, Network, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Dataset, PaperDetail } from "../data/types";
 import { useStore } from "../state/store";
 import { PaperTitle } from "./PaperTitle";
 import { useTitles } from "../data/useTitles";
-import { useAuthors } from "../data/useAuthors";
+import { useAuthorInfo } from "../data/useAuthorLookup";
 import { addAuthorToSelection } from "../data/authorIdentity";
 import { ArxivPreview } from "./ArxivPreview";
 import { CitationExplorer } from "./CitationExplorer";
@@ -36,14 +36,17 @@ function clampWidth(px: number): number {
 
 export function DetailsPanel({ ds }: { ds: Dataset }) {
   const selectedNode = useStore((s) => s.selectedNode);
-  const authors = useAuthors(selectedNode !== null);
   const selectNode = useStore((s) => s.selectNode);
   const selectedAuthorIds = useStore((s) => s.filters.authorIds);
   const setAuthors = useStore((s) => s.setAuthors);
-  const authorById = useMemo(() => new Map(authors.map((a) => [a.authorId, a])), [authors]);
   const [view, setView] = useState<"citations" | "paper">("citations");
   const [showAllAuthors, setShowAllAuthors] = useState(false);
   const [detail, setDetail] = useState<PaperDetail | null>(null);
+  // Author ids come from the paper's detail shard; fetch just those records so clicking one
+  // can merge the person's split profiles (D59). Declared after `detail` because it reads it.
+  const authorInfo = useAuthorInfo(detail?.authorIds ?? []);
+  const authors = [...authorInfo.values()];
+  const authorById = authorInfo;
   const headingRef = useRef<HTMLHeadingElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 

@@ -545,6 +545,170 @@ export function onAuthorsChunk(fn: () => void): () => void {
  * silent — the author filter applied and the map showed the 7 matching papers, but the filter
  * bar and author panel rendered nothing at all, because both look their names up in that map.
  */
+// ---------------------------------------------------------------------------------------
+// Author lookup.
+//
+// authors.arrow shipped as 13 chunks / ~14.4 MB gzipped, fetched after first paint on every
+// visit, purely so the author box could substring-match 1,482,740 names — the largest stream
+// left on the wire once titles moved off (D55). Same treatment as titles: a name-token index
+// in alphabetical chunks, so a query costs one or two ~127 KB fetches.
+//
+// The postings carry name, count and verified flag, so the dropdown needs nothing else; and a
+// selected author's own record (with every row sharing their name) comes from a separate
+// author-info shard, which is what makes identity merging possible without the full index.
+// ---------------------------------------------------------------------------------------
+
+const authorTokenCache = new Map<number, Promise<Map<string, AuthorRow[]>>>();
+const AUTHOR_CHUNK_CAP = 3;
+const AUTHOR_PREFIX_CAP = 48;
+
+function loadAuthorTokenChunk(chunk: number): Promise<Map<string, AuthorRow[]>> {
+  let pending = authorTokenCache.get(chunk);
+  if (!pending) {
+    pending = fetchArrow(`author-tokens-${chunk}.arrow`, "high")
+      .then((t) => {
+        const tokens = t.getChild("token")!;
+        const ids = t.getChild("author_ids")!;
+        const names = t.getChild("names")!;
+        const counts = t.getChild("counts")!;
+        const verified = t.getChild("verified")!;
+        const out = new Map<string, AuthorRow[]>();
+        for (let i = 0; i < t.numRows; i++) {
+          const idList = ids.get(i);
+          const nameList = names.get(i);
+          const countList = counts.get(i);
+          const verList = verified.get(i);
+          const rows: AuthorRow[] = [];
+          for (let k = 0; k < (idList?.length ?? 0); k++) {
+            const row: AuthorRow = {
+              authorId: Number(idList.get(k)),
+              name: String(nameList?.get(k) ?? ""),
+              count: Number(countList?.get(k) ?? 0),
+              verified: Boolean(verList?.get(k)),
+            };
+            rows.push(row);
+            if (!authorInfoCache.has(row.authorId)) authorRowHint.set(row.authorId, row);
+          }
+          out.set(String(tokens.get(i) ?? ""), rows);
+        }
+        return out;
+      })
+      .catch((e) => { authorTokenCache.delete(chunk); throw e; });
+    authorTokenCache.set(chunk, pending);
+  }
+  return pending;
+}
+
+function authorChunksFor(token: string): number[] {
+  const chunks = manifestRef?.author_index_chunks ?? [];
+  const hits: number[] = [];
+  for (const c of chunks) {
+    const beforeStart = token < c.first.slice(0, token.length);
+    const afterEnd = token > c.last.slice(0, Math.max(token.length, c.last.length));
+    if (!beforeStart && !afterEnd) hits.push(c.chunk);
+  }
+  return hits;
+}
+
+/** Authors whose name matches `query`. The last token is treated as a prefix (type-ahead). */
+export async function searchAuthors(query: string): Promise<AuthorRow[]> {
+  const words = query.toLowerCase().match(/[a-z0-9]+/g)?.filter((w) => w.length >= 2) ?? [];
+  if (words.length === 0) return [];
+  const ordered = [...new Set(words)].sort((a, b) => b.length - a.length);
+  const last = words[words.length - 1];
+
+  let result: Map<number, AuthorRow> | null = null;
+  let fetched = 0;
+  for (const word of ordered) {
+    const wanted = authorChunksFor(word);
+    if (wanted.length === 0) continue;
+    if (fetched >= AUTHOR_CHUNK_CAP) break;
+    fetched += wanted.length;
+    const tables = await Promise.all(wanted.map((c) => loadAuthorTokenChunk(c).catch(() => null)));
+    const hits = new Map<number, AuthorRow>();
+    for (const table of tables) {
+      if (!table) continue;
+      for (const row of table.get(word) ?? []) hits.set(row.authorId, row);
+      if (word === last) {
+        let expanded = 0;
+        for (const [tok, rows] of table) {
+          if (tok.length > word.length && tok.startsWith(word)) {
+            for (const row of rows) hits.set(row.authorId, row);
+            if (++expanded >= AUTHOR_PREFIX_CAP) break;
+          }
+        }
+      }
+    }
+    if (hits.size === 0) return [];
+    if (result === null) result = hits;
+    else for (const id of [...result.keys()]) if (!hits.has(id)) result.delete(id);
+    if (result.size === 0) return [];
+  }
+  return result ? [...result.values()] : [];
+}
+
+const authorInfoCache =
+  new Map<number, AuthorRow & { sameNameIds: number[]; sameNamePapers: number }>();
+/** Name/count seen in a token posting, used until the author's own record lands. */
+const authorRowHint = new Map<number, AuthorRow>();
+const authorInfoShards = new Map<number, Promise<void>>();
+const authorInfoWaiters: (() => void)[] = [];
+
+export function onAuthorInfo(fn: () => void): () => void {
+  authorInfoWaiters.push(fn);
+  return () => {
+    const i = authorInfoWaiters.indexOf(fn);
+    if (i >= 0) authorInfoWaiters.splice(i, 1);
+  };
+}
+
+/** An author's record, or the lighter hint from a search posting, or null. */
+export function peekAuthorInfo(
+  id: number,
+): (AuthorRow & { sameNameIds?: number[]; sameNamePapers?: number }) | null {
+  return authorInfoCache.get(id) ?? authorRowHint.get(id) ?? null;
+}
+
+/** Fetch records for specific authors — the ones a session actually selects or displays. */
+export async function ensureAuthorInfo(ids: number[]): Promise<void> {
+  const manifest = manifestRef;
+  if (!manifest || (manifest.n_author_info_shards ?? 0) === 0) return;
+  const rows = 2048; // AUTHOR_INFO_SHARD_ROWS
+  const want = new Set<number>();
+  for (const id of ids) {
+    if (id < 0 || authorInfoCache.has(id)) continue;
+    const shard = Math.floor(id / rows);
+    if (!authorInfoShards.has(shard)) want.add(shard);
+  }
+  if (want.size === 0) return;
+  await Promise.all([...want].slice(0, 8).map((shard) => {
+    const pending = fetchArrow(`author-info-${shard}.arrow`, "high")
+      .then((t) => {
+        const ids2 = t.getChild("author_id")!.toArray() as Int32Array;
+        const name = t.getChild("name")!;
+        const count = t.getChild("count")!;
+        const ver = t.getChild("verified")!;
+        const same = t.getChild("same_name_ids")!;
+        const groupPapers = t.getChild("same_name_papers");
+        for (let i = 0; i < ids2.length; i++) {
+          const sib = same.get(i);
+          authorInfoCache.set(ids2[i], {
+            authorId: ids2[i],
+            name: String(name.get(i) ?? ""),
+            count: Number(count.get(i) ?? 0),
+            verified: Boolean(ver.get(i)),
+            sameNameIds: sib ? (Array.from(sib) as number[]) : [ids2[i]],
+            sameNamePapers: Number(groupPapers?.get(i) ?? 0),
+          });
+        }
+        for (const fn of authorInfoWaiters) fn();
+      })
+      .catch(() => { authorInfoShards.delete(shard); });
+    authorInfoShards.set(shard, pending);
+    return pending;
+  }));
+}
+
 export function loadAuthors(): Promise<AuthorRow[]> {
   if (authorsCache && authorsPending === null) return Promise.resolve(authorsCache);
   if (!authorsPending) {
@@ -1404,12 +1568,11 @@ async function loadDatasetImpl(onProgress?: ProgressFn): Promise<Dataset> {
     /* map + filters still work without the citation graph */
   });
 
-  // Authors, also after first paint. Waiting for the first keystroke to START a 55.9 MB
-  // (~31 MB gzipped) fetch meant the first author search rendered an empty list and only
-  // worked later, once opening a paper had warmed the same cache — which read as "search
-  // doesn't find authors". Kicking it off here means it is usually ready by the time anyone
-  // types, and useAuthors still de-dupes so nothing is fetched twice.
-  void loadAuthors().catch(() => { /* author features degrade to empty */ });
+  // Authors are NOT streamed any more. The whole index was fetched here after first paint —
+  // 13 chunks / ~14.4 MB gzipped on every visit — so the author box could substring-match
+  // 1,482,740 names, which made it the largest remaining stream once titles moved off (D55).
+  // A query now reads the name-token index instead (D59): one or two ~127 KB chunks, and the
+  // postings carry the name and count the dropdown renders.
 
   // Titles are NOT streamed any more. They were 17 chunks / 31.1 MB gzipped fetched in full
   // on every visit, to display a few dozen strings — and on a slow link they saturated the

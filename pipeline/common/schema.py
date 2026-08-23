@@ -404,6 +404,8 @@ class Manifest(BaseModel):
     # Alphabetical ranges of the title search index chunks (see SEARCH_INDEX_CHUNKS).
     search_chunks: list["SearchChunk"] = []
     n_author_affiliation_shards: int = 0
+    author_index_chunks: list["SearchChunk"] = []
+    n_author_info_shards: int = 0
     # s12's thinning constant. The frontend derives its max dot radius from it, because the
     # on-screen separation the thinning guarantees is viewport_width / base_divisor.
     tiling_base_divisor: float = 40.0
@@ -503,6 +505,62 @@ AUTHOR_AFFILIATIONS_SCHEMA = pa.schema([
 
 def author_affiliations_shard(shard: int) -> str:
     return f"author-affiliations-{shard}.arrow"
+
+
+# Author type-ahead: name token -> the authors whose name contains it.
+#
+# authors.arrow shipped as 13 chunks / ~14.4 MB gzipped, fetched eagerly on every visit, purely
+# so the author box could substring-match 1,482,740 names. It was the largest remaining stream
+# on the wire once titles moved off (D55). Same fix as titles got: an alphabetically chunked
+# token index, so a query costs one or two ~128 KB fetches instead of 14.4 MB up front.
+#
+# DENORMALISED — the postings carry name, paper count and verified flag, not just ids. That
+# triples the index on disk (an author appears under each token of their name), but it makes
+# the dropdown self-contained: without it, ranking 25 candidates would mean fetching up to 25
+# author-info shards per keystroke, trading a few hundred KB for dozens of requests.
+#
+# Capped at the 25 most prolific authors per token: the dropdown shows three, ranked by paper
+# count, so a deeper posting list could never be displayed.
+AUTHOR_TOKEN_CAP = 25
+AUTHOR_INDEX_CHUNKS = 128
+
+AUTHOR_INDEX_SCHEMA = pa.schema([
+    ("token", pa.string()),
+    ("author_ids", pa.list_(pa.int32())),
+    ("names", pa.list_(pa.string())),
+    ("counts", pa.list_(pa.int32())),
+    ("verified", pa.list_(pa.bool_())),
+])
+
+
+def author_index_chunk(chunk: int) -> str:
+    return f"author-tokens-{chunk}.arrow"
+
+
+# Per-author record for the authors a session actually selects: display name, paper count, and
+# every row sharing the same exact name.
+#
+# That last field is what makes identity merging possible without the full index. One person is
+# routinely split across several rows (210,084 names occupy more than one), so selecting an
+# author must select all of them — previously found by scanning every row in memory.
+AUTHOR_INFO_SHARD_ROWS = 2048
+
+AUTHOR_INFO_SCHEMA = pa.schema([
+    ("author_id", pa.int32()),
+    ("name", pa.string()),
+    ("count", pa.int32()),
+    ("verified", pa.bool_()),
+    ("same_name_ids", pa.list_(pa.int32())),
+    # Papers across the WHOLE same-name group. Precomputed because the panel states it as a
+    # fact ("77 papers in this corpus · merged from 19 author records"), and summing only the
+    # records a session happens to have fetched would under-report it — 58 rather than 77 for
+    # Aditi Raghunathan, whose 18 other rows live in different shards.
+    ("same_name_papers", pa.int32()),
+])
+
+
+def author_info_shard(shard: int) -> str:
+    return f"author-info-{shard}.arrow"
 
 
 # Titles, sharded by node id (shard = node_id // TITLE_CHUNK_ROWS).
