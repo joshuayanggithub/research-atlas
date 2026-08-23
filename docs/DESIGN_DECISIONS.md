@@ -1113,3 +1113,39 @@ Status legend: **ACTIVE** (in force) · **PROPOSED** (agreed, not yet built) · 
   opens fully) and far below a hub's tens of thousands. Verified on a hub: the slider reads
   "top 2%" and the fan of edges and topic spread become legible.
 - **Revert.** Return `selectNode` to `relevanceThreshold: 0`.
+
+## D49. A paper's year is read from the resident index, and its absence is stated — ACTIVE
+
+**Context.** An author's paper list rendered em dashes where years belong, which turned into
+real years a minute or two later — and appeared to be "fixed" by clicking a paper, because the
+detail shard carries the date. Measured on Aditi Raghunathan (58 papers) over a throttled
+1 MB/s link: **47 of 58 rows showed an em-dash year**, decaying 47 → 41 → 37 → 0 across roughly
+two minutes.
+
+**Cause.** `papers-index.arrow` has always carried a `year` column for all 1,000,490 papers, and
+`fillPapersIndex` never read it. Dates were therefore populated *only* by point tiles and
+position shards — per-paper fetches that trickle in — even though a single 2.6 MB artifact
+already on the wire knew every one of them. The same function's comment describes fixing exactly
+this omission for `cited_by_count` (D39); `year` sat in the next column and was missed.
+
+**Decision.**
+1. Read `year` in `fillPapersIndex`, filling `publicationDate` when it is not already a fuller
+   ISO date from a detail shard.
+2. Add `PaperMeta.dateAvailable`, set by whichever source lands first, and render the pending
+   state as a shimmer (`PaperYear`, mirroring `PaperTitle` / D45) instead of an em dash. An em
+   dash now appears only when the index has landed and the paper genuinely has no date.
+
+**Tradeoffs.** Costs one boolean per resident row (~1 MB of heap across 1M papers, no wire
+bytes) and one more component in five render sites. The alternative — carrying `year` in
+`AUTHOR_PAPERS_SCHEMA` so an author's dates arrive with their paper list — was rejected: it adds
+wire bytes to fix data we already ship, and helps only the author path, not search results,
+citation lists or related works.
+
+**Revert condition.** If `papers-index.arrow` ever stops shipping `year` for all N papers, the
+shimmer would never resolve for unfetched papers; `dateAvailable` would then need to fall back to
+a completion signal for the index rather than a per-row flag.
+
+**Verified.** Desktop 1440x900 and iPhone 13, 1 MB/s CDP throttle, `papers-index.arrow` held
+back 45 s by a Playwright route to force the pending window: **0 em-dash years at every sample
+on both viewports** (was 47), 47 shimmer placeholders during the hold, all 58 real years once
+the index landed, console clean.

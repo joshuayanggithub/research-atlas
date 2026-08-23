@@ -326,6 +326,7 @@ function fillPointTile(points: PointData, table: Table, papers?: PaperMeta[]): v
         // appeared to "fix" it only because the detail shard carries the real date. Reported as
         // years being hyphenated in an author's paper list.
         if (!row.publicationDate && year[i]) row.publicationDate = String(year[i]);
+        row.dateAvailable = true;
       }
     }
     points.subfieldId[n] = sub[i];
@@ -367,6 +368,9 @@ function placeholderPapers(points: PointData): PaperMeta[] {
       referencesAvailable: true,
       authorIds: [],
       publicationDate: ys,
+      // A tile-less row has year 0, which is not a date — say so rather than letting the UI
+      // render the placeholder as a real absence.
+      dateAvailable: points.revealLevel[i] !== UNLOADED_LEVEL,
       hasFigure: false,
     };
   }
@@ -386,11 +390,25 @@ function fillPapersIndex(papers: PaperMeta[], table: Table): void {
   // the panel printed "0 citations · Semantic Scholar S2AG" for a paper the artifact records
   // as having 40. One source for both, and the pair can no longer disagree.
   const citedCol = table.getChild("cited_by_count");
+  // The YEAR, which this artifact has always carried for all N papers and which nothing read.
+  // Dates were therefore filled ONLY by point tiles and position shards — per-paper fetches
+  // that trickle in over minutes — so an author's list showed em-dash years long after the
+  // 2.6 MB index that knows every one of them had already landed. Exactly the omission the
+  // comment above describes for `cited_by_count`, in the column next to it.
+  const yearCol = table.getChild("year");
   for (let i = 0; i < n; i++) {
     const row = papers[nodeIds[i]];
     if (!row) continue;
     if (hasFigureCol) row.hasFigure = Boolean(hasFigureCol.get(i));
     if (citedCol) row.citedByCount = Number(citedCol.get(i) ?? 0);
+    if (yearCol) {
+      const y = Number(yearCol.get(i) ?? 0);
+      // Never overwrite a full ISO date already resolved from a detail shard with a bare year.
+      if (y > 0 && row.publicationDate.length < 4) row.publicationDate = String(y);
+      // True even when y is 0: the index is authoritative for all N rows, so a blank date is
+      // now a real absence and the UI should stop shimmering and say so.
+      row.dateAvailable = true;
+    }
     if (availCol) row.citationCountAvailable = Boolean(availCol.get(i));
     if (refAvailCol) row.referencesAvailable = Boolean(refAvailCol.get(i));
   }

@@ -125,7 +125,10 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
     setAuthors(addAuthorToSelection(id, authors, selectedAuthorIds));
     selectNode(null);
   };
-  const dateText = detail?.publicationDate || p.publicationDate || "—";
+  // "—" only when the date is KNOWN to be absent; while the index is still in flight the
+  // panel says so rather than asserting a paper has no publication date.
+  const dateText = detail?.publicationDate || p.publicationDate
+    || (p.dateAvailable ? "—" : "Loading…");
   const link = detail?.doi
     ? `https://doi.org/${detail.doi}`
     : detail?.arxivId

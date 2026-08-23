@@ -175,6 +175,10 @@ silently dropped.
 - **Combined paper and map-label search** with type-ahead. Paper results select and focus a
   paper; map-label results pan and zoom to the named semantic region and emphasize its label.
 - Paper, map-label, and author search support keyboard selection.
+- **A paper's year is never guessed.** Dates come from the resident papers index as soon as it
+  lands rather than waiting for each paper's own tile, and a date that has not arrived shows a
+  shimmer instead of an em dash, so "still downloading" cannot be misread as "no publication
+  date" (D49).
 - **Author search becomes usable while it is still loading.** The name index arrives as 12
   chunks (13.5 MB gzipped in total, 1.18 MB for the first) instead of one 21.2 MB file, and
   matching runs against whatever has arrived — so a name typed a second after load can already

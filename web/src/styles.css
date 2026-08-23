@@ -370,6 +370,8 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 .node-tooltip-title { font-family: var(--font-display); font-weight: 500; font-size: 12.5px;
   line-height: 1.32; color: var(--ink);
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* Sits between title and metadata, and only appears once the paper's detail shard has
+   resolved — the card must never reserve a blank line for data that may not come. */
 .node-tooltip-authors { margin-top: 4px; font-size: 11px; color: var(--ink); opacity: 0.85;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-tooltip-meta { margin-top: 3px; font-family: var(--font-mono); font-size: 10px;
@@ -763,6 +765,19 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 
 /* Title still streaming in. A shimmering bar rather than text: it occupies the space the title
    will take, so rows do not jump when titles land, and it cannot be mistaken for a real title. */
+/* Year placeholder: same shimmer as a pending title, sized for four digits so a list of rows
+   does not visibly reflow when the real dates land. */
+.year-skeleton {
+  display: inline-block; width: 2.4em; height: 0.78em; vertical-align: -0.08em;
+  border-radius: 3px;
+  background: linear-gradient(90deg,
+    rgba(214, 224, 240, 0.06) 25%,
+    rgba(214, 224, 240, 0.15) 37%,
+    rgba(214, 224, 240, 0.06) 63%);
+  background-size: 400% 100%;
+  animation: title-shimmer 1.4s ease infinite;
+}
+
 .title-skeleton {
   display: inline-block; width: 62%; min-width: 90px; height: 0.82em;
   vertical-align: -0.1em; border-radius: 3px;
@@ -775,5 +790,5 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 }
 @keyframes title-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 @media (prefers-reduced-motion: reduce) {
-  .title-skeleton { animation: none; background: rgba(214, 224, 240, 0.10); }
+  .title-skeleton, .year-skeleton { animation: none; background: rgba(214, 224, 240, 0.10); }
 }

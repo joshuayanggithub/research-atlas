@@ -196,6 +196,11 @@ export interface PaperMeta {
   // Publication YEAR only (from points/index). Full ISO date is in PaperDetail. Kept as a
   // string ("2017" / "") so existing `.publicationDate.slice(0,4)` call sites still work.
   publicationDate: string;
+  /** Whether the date above is KNOWN. An empty string means "not downloaded yet" until the
+   *  papers index lands, and "this paper genuinely has no date" afterwards; rendering both as
+   *  an em dash made 47 of one author's 58 rows claim a missing year for ~2 minutes. Same
+   *  distinction `citationCountAvailable` draws for a zero count. */
+  dateAvailable: boolean;
   // True when the pipeline baked a first-figure crop for this paper (manifest.figures + the
   // sharded PNG). Lets the details card load the baked crop instead of parsing the PDF.
   hasFigure: boolean;

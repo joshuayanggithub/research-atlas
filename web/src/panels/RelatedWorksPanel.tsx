@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import type { Dataset, NeighborList } from "../data/types";
 import { useStore } from "../state/store";
 import { PaperTitle } from "./PaperTitle";
+import { PaperYear } from "./PaperYear";
 
 export function RelatedWorksPanel({ ds, node }: { ds: Dataset; node: number }) {
   const selectNode = useStore((s) => s.selectNode);
@@ -46,7 +47,7 @@ export function RelatedWorksPanel({ ds, node }: { ds: Dataset; node: number }) {
               >
                 <span className="score">{scores[i]?.toFixed(2)}</span>
                 <PaperTitle className="rtitle" title={p.title} />
-                <span className="ryear">{p.publicationDate?.slice(0, 4)}</span>
+                <span className="ryear"><PaperYear paper={p} /></span>
               </button>
             </li>
           );

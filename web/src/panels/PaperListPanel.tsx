@@ -17,6 +17,7 @@ import { useFilterMask } from "../filters/useFilterMask";
 import { usePapersReady, usePointTilesEpoch } from "../data/usePapersReady";
 import { useSetLabel } from "../data/useSetLabel";
 import { PaperTitle } from "./PaperTitle";
+import { PaperYear } from "./PaperYear";
 
 // Rendering every row of a 900k-paper result would freeze the tab and help nobody; the list is
 // for inspecting a selection, and anything past this is better narrowed with another facet.
@@ -136,7 +137,7 @@ export function PaperListPanel({ ds }: { ds: Dataset }) {
                       <PaperTitle title={p?.title} />
                     </span>
                     <span className="paper-row-meta subtle">
-                      {p?.publicationDate?.slice(0, 4) || "—"} ·{" "}
+                      <PaperYear paper={p} /> ·{" "}
                       {ds.manifest.corpus.citation_count_source && p?.citationCountAvailable
                         ? `${p.citedByCount.toLocaleString()} cites`
                         : "—"}

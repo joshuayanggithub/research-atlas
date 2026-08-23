@@ -11,6 +11,7 @@ import type { Dataset } from "../data/types";
 import { useStore, type EdgeMode } from "../state/store";
 import { useEdgesReady } from "../data/usePapersReady";
 import { PaperTitle } from "./PaperTitle";
+import { PaperYear } from "./PaperYear";
 import { importanceWeight } from "../map/importance";
 
 const GRAPH_LIMIT = 5;
@@ -241,7 +242,7 @@ function CitationRows({
         const paper = ds.papers[id];
         // Rows use the resident index only (title, year, citations); author names/venue are
         // lazy per-paper detail shown when a paper is selected, not per list row.
-        const year = paper.publicationDate.slice(0, 4);
+
         return (
           <li key={`${direction}-${id}`}>
             <button
@@ -259,7 +260,7 @@ function CitationRows({
               </span>
               <span className="citation-paper">
                 <PaperTitle className="citation-title" title={paper.title} />
-                <span className="citation-meta">{year || "—"}</span>
+                <span className="citation-meta"><PaperYear paper={paper} /></span>
               </span>
               <span className="citation-count">{paper.citedByCount.toLocaleString()}</span>
             </button>
