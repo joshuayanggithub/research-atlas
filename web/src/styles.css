@@ -91,6 +91,12 @@ html, body, #root {
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.02em;
   color: var(--faint);
 }
+.topbar .title .byline {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.02em;
+  color: var(--faint); text-decoration: none; width: fit-content;
+}
+.topbar .title .byline:hover { color: var(--brass); text-decoration: underline; }
+
 .mobile-filter-toggle, .mobile-sidebar-close { display: none; }
 
 /* Search --------------------------------------------------------------- */

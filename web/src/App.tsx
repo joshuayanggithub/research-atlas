@@ -16,6 +16,10 @@ import { PaperListPanel } from "./panels/PaperListPanel";
 import { Legend } from "./panels/Legend";
 import { SearchBox } from "./panels/SearchBox";
 
+// Who made this. Change these two lines to change the credit everywhere it appears.
+const AUTHOR_NAME = "Joshua Yang";
+const AUTHOR_GITHUB = "joshuayanggithub";
+
 export default function App() {
   const dataset = useStore((s) => s.dataset);
   const loading = useStore((s) => s.loading);
@@ -122,6 +126,16 @@ export default function App() {
             {m.corpus.count.toLocaleString()} papers · {m.corpus.date_from.slice(0, 4)}–
             {m.corpus.date_to.slice(0, 4)} · {m.embedding.backend}
           </span>
+          {/* Author credit. Its own class rather than `subtle`, which the mobile header hides
+              to stay compact — a credit that disappears on a phone is not a credit. */}
+          <a
+            className="byline"
+            href={`https://github.com/${AUTHOR_GITHUB}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            by {AUTHOR_NAME}
+          </a>
         </div>
         <SearchBox ds={dataset} />
         <button
