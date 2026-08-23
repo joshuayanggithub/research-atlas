@@ -77,9 +77,10 @@ interface AppState {
   selectedNode: number | null;
   hoverNode: number | null;
   focusedLabel: LabelFocus | null;
-  // When a paper is selected, hide connected papers whose Connected-Papers relevance score is
-  // below this threshold (0 = show the whole citation network, 1 = only the most relevant).
-  // Reset to 0 whenever the selection changes.
+  // When a paper is selected, hide connected papers below this relevance PERCENTILE (0 = show
+  // the whole citation network, 1 = only the most relevant). Set on each selection by
+  // autoRelevanceThreshold: 0 for ordinary papers, pre-opened for hubs whose network would
+  // otherwise bury the map.
   relevanceThreshold: number;
 
   filters: Filters;
@@ -136,6 +137,25 @@ function datasetMonthRange(d: Dataset): { min: number; max: number; yearMin: num
   const yearMax = parseInt(d.manifest.corpus.date_to.slice(0, 4));
   const toMonth = parseInt(d.manifest.corpus.date_to.slice(5, 7)) || 12;
   return { min: 0, max: (yearMax - yearMin) * 12 + (toMonth - 1), yearMin, yearMax };
+}
+
+// Most papers a selection can show at once before the map stops being legible. Chosen to sit
+// comfortably above a typical network (which opens fully) and well below a hub's tens of
+// thousands.
+const NETWORK_SOFT_CAP = 1500;
+
+/**
+ * Starting relevance threshold for a newly selected paper, as a percentile in [0,1].
+ *
+ * 0 means "show the whole network", which is right for the vast majority of papers. Only when a
+ * network exceeds NETWORK_SOFT_CAP is the slider pre-opened, and only far enough to leave roughly
+ * that many of the most relevant papers visible — the user can always drag it back to "all".
+ */
+function autoRelevanceThreshold(ds: Dataset | null, node: number): number {
+  if (!ds) return 0;
+  const total = (ds.citesOut.get(node)?.length ?? 0) + (ds.citedBy.get(node)?.length ?? 0);
+  if (total <= NETWORK_SOFT_CAP) return 0;
+  return Math.min(0.99, 1 - NETWORK_SOFT_CAP / total);
 }
 
 /**
@@ -206,7 +226,17 @@ export const useStore = create<AppState>((set) => ({
   setZoom: (z) => set({ currentZoom: z }),
   // Reset the relevance threshold on every selection change so a new paper always starts
   // showing its whole citation network.
-  selectNode: (id) => set({ selectedNode: id, focusedLabel: null, relevanceThreshold: 0 }),
+  selectNode: (id) =>
+    set((st) => ({
+      selectedNode: id,
+      focusedLabel: null,
+      // Open the relevance filter far enough to show a READABLE slice of the network, not all
+      // of it. Selecting "Attention Is All You Need" reveals its 69,262 citers as points, which
+      // covers the entire map in one colour and hides the very structure the selection was meant
+      // to expose. The slider was the intended remedy but started at "all", so the first thing a
+      // user saw was the flood. Small networks are unaffected and still open fully.
+      relevanceThreshold: id === null ? 0 : autoRelevanceThreshold(st.dataset, id),
+    })),
   focusLabel: (label) =>
     set((s) => ({
       selectedNode: null,

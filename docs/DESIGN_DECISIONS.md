@@ -1088,3 +1088,28 @@ Status legend: **ACTIVE** (in force) · **PROPOSED** (agreed, not yet built) · 
   MUST filter `LOCAL_ONLY_FILES`. A naive `rsync`/`aws s3 sync` of the directory would push
   276 MB nobody reads, and on GitHub it would fail outright.
 - **Revert.** Empty the set; publishing then includes everything the directory holds.
+
+## D48. A hub selection opens the relevance filter instead of flooding the map — ACTIVE
+
+- **Decision.** `selectNode` sets `relevanceThreshold` from `autoRelevanceThreshold`: 0 for an
+  ordinary paper, and for a network above `NETWORK_SOFT_CAP` (1,500) enough to leave roughly that
+  many of the most relevant papers visible. The slider still drags back to "all".
+- **Why.** Selecting "Attention Is All You Need" revealed its **69,262 citers** as points, which
+  covered the entire map in one colour — reported as "clicking a paper shows tons of edges in
+  background". It is not edges: those are capped at 40 per direction and were behaving. It is the
+  network's *points*, and the flood hid exactly the structure the selection was meant to expose.
+  The slider was the intended remedy but started at "all", so the flood was the first thing seen.
+- **Depends on the percentile fix.** The slider applied a RAW score cutoff while its label claimed
+  "top N%". Since `score = raw / max` over small integer counts, a typical connected paper sits at
+  `1/max` — often 0.02 — so the first few percent of travel culled nearly everything and the label
+  was simply untrue. `map/importance.relevanceCutoff` reads the cutoff out of the sorted score
+  list, which makes the percentile real and is what lets this decision express itself as
+  "leave 1,500 papers visible".
+- **Alternatives.** (a) Hard-cap the rendered network — the slider then cannot reach what it hides,
+  and a user asking for "all" should get all. (b) Shrink dot size for large networks — makes it
+  denser, not clearer. (c) Leave it and rely on the user finding the slider — that is what was
+  already happening, and it read as a bug.
+- **Honest limit.** 1,500 is a judgement, not a measurement: it sits above a typical network (which
+  opens fully) and far below a hub's tens of thousands. Verified on a hub: the slider reads
+  "top 2%" and the fan of edges and topic spread become legible.
+- **Revert.** Return `selectNode` to `relevanceThreshold: 0`.
