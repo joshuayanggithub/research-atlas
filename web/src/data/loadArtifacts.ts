@@ -15,7 +15,14 @@ import type {
   TopicsDoc,
 } from "./types";
 
-const BASE = "data";
+// Where the artifact bundle lives. Relative "data" works for `vite dev`/`preview`, which
+// serve web/public/data directly. In a deployed build it points at the object store instead:
+// the bundle is 1,221 files / 0.79 GB and two of its members exceed GitHub's 100 MB per-file
+// hard limit, so Pages hosts the app and something else hosts the data.
+//
+// Left as a bare relative path when unset, deliberately — a missing VITE_DATA_BASE should
+// 404 visibly rather than silently produce a site that looks fine and has no papers.
+const BASE = import.meta.env.VITE_DATA_BASE ?? "data";
 const SUPPORTED_SCHEMA_VERSION = 3;
 let datasetPromise: Promise<Dataset> | null = null;
 

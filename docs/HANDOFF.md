@@ -200,6 +200,36 @@ test suite (`81 passed`):
 
 ---
 
+## Deploying (app on Pages, artifacts in object storage)
+
+The bundle is 1,303 files / 0.79 GB and two members exceed GitHub's 100 MB per-file limit, so
+the two halves are hosted separately (D52).
+
+```bash
+# 1. Publish the artifacts. Dry-run by default — prints file count and byte total, uploads
+#    nothing. Pre-gzips every file: R2 does NOT compress .arrow for you (measured).
+tools/publish_artifacts.sh
+tools/publish_artifacts.sh --confirm          # actually upload
+
+# 2. Point the app at them. Set VITE_DATA_BASE as a repository variable; the Pages workflow
+#    (.github/workflows/pages.yml) reads it at build time.
+#    e.g. https://pub-e9b4142dba374b438774d2bab6b4e09f.r2.dev/v/2026-08-22
+```
+
+Notes worth knowing before you touch this:
+
+- `rclone` must be **>= 1.60**; the system one on the build box is v1.53 (2020) and predates R2
+  entirely. A working copy is at `~/.local/bin/rclone`.
+- The bucket's **CORS policy must list every origin that will serve the app**, and it can only
+  be changed in the Cloudflare dashboard — the API token is object-scoped, so `PutBucketCors`
+  is denied. Currently allowed: `https://joshuayanggithub.github.io`, `http://localhost:5173`,
+  `http://localhost:4321`.
+- Artifacts go under an immutable `v/<date>/` prefix. Never overwrite a published prefix; cut a
+  new one and repoint `VITE_DATA_BASE`.
+- To test the split locally without publishing anything, serve `web/public/data` from a second
+  port with CORS and build with `VITE_DATA_BASE=http://localhost:4322`. That is how D52 was
+  verified.
+
 ## The seam you must respect
 
 The **only** contract between pipeline and frontend is the artifact bundle, defined in

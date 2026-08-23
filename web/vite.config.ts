@@ -63,6 +63,10 @@ function compressArtifacts(): PluginOption {
 }
 
 export default defineConfig({
+  // Project pages are served from https://<user>.github.io/research-atlas/, so asset URLs
+  // must be prefixed. Without this every /assets/... request 404s on Pages while working
+  // perfectly on localhost — the failure only appears once deployed.
+  base: process.env.VITE_BASE ?? "/research-atlas/",
   plugins: [react(), compressArtifacts()],
   server: { port: 5173, host: true },
   // `vite preview` serves the production build; the same artifacts need compressing there.

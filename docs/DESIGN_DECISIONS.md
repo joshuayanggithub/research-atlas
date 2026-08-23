@@ -1211,3 +1211,39 @@ a stale number as the current one.
 **Verified.** Selecting Tsinghua at 1 MB/s: shimmer while the shard is in flight, then 16,844;
 at no sample does the bar read 0. Curated orgs (ids inline) never enter the pending state —
 Carnegie Mellon reads 15,464 immediately.
+
+## D52. The app deploys to Pages; the artifacts do not — ACTIVE
+
+**Context.** The bundle is **1,303 files / 0.79 GB**, and two members exceed GitHub's 100 MB
+per-file hard limit (`papers.arrow` 263 MB, `edges.arrow` 110 MB). Pages also cannot set cache
+headers and has a ~100 GB/month bandwidth allowance, which at the pre-slimming per-visit cost
+was roughly 700 visits.
+
+**Decision.** Pages serves only the app shell. The artifact origin is one environment variable,
+`VITE_DATA_BASE`, defaulting to the relative `"data"` path that `vite dev`/`preview` already
+serve. `vite.config.ts` sets `base: '/research-atlas/'` (overridable via `VITE_BASE`) because a
+project page is served from a sub-path and every asset URL 404s without it — a failure that
+appears only once deployed.
+
+Left deliberately un-defensive: with `VITE_DATA_BASE` unset a deployed build requests a
+relative `data/` path and 404s visibly, rather than falling back to something that makes the
+site look fine while having no papers.
+
+**Publishing** is `tools/publish_artifacts.sh`, dry-run by default. It **pre-gzips every file
+and stamps `Content-Encoding: gzip`**, because measured against the real bucket R2 serves a
+plain `.arrow` at full size even when the browser sends `Accept-Encoding: gzip` (2,346 bytes in,
+2,346 on the wire; pre-compressed, 82). Without that the per-visit budget is wrong by ~2x. It
+also reads its exclusion list from `schema.LOCAL_ONLY_FILES` (D47) so the list cannot drift from
+the code that defines it, and writes under an immutable versioned prefix `v/<date>/` with
+`max-age=31536000, immutable`, since Pages-hosted artifacts could never be cached that way.
+
+**Tradeoffs.** Two origins instead of one, so CORS must stay correct on the bucket (it is set
+and verified, and must be updated by hand for any new origin — the API token is object-scoped
+and cannot call `PutBucketCors`). A versioned prefix means each publish writes a full copy;
+at 0.40 GB gzipped against R2's 10 GB free tier that allows ~25 builds before pruning matters.
+
+**Verified.** Built with `VITE_DATA_BASE` pointed at a separate origin (port 4322, CORS,
+immutable cache headers) and served the app from `/research-atlas/` on another: map renders,
+**15 of 18 requests go to the data origin**, zero failed requests, zero console errors, on
+desktop 1440x900 and iPhone 13. Publish dry-run stages 1,303 files, 0.78 GB raw -> 0.40 GB gzipped
+(ratio 0.509, 380 MiB to transfer), correctly excluding `papers.arrow`.

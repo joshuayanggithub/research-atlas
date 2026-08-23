@@ -175,6 +175,10 @@ silently dropped.
 - **Combined paper and map-label search** with type-ahead. Paper results select and focus a
   paper; map-label results pan and zoom to the named semantic region and emphasize its label.
 - Paper, map-label, and author search support keyboard selection.
+- **The app can be deployed independently of its data.** `VITE_DATA_BASE` points the browser
+  at whatever origin hosts the artifact bundle, so GitHub Pages serves the app shell and the
+  1,303-file bundle lives in object storage; `tools/publish_artifacts.sh` pushes it pre-gzipped
+  under an immutable versioned path (D52).
 - **Any of the 10,475 institutions can be filtered without paying for all of them.** Only the
   curated browse tree's membership ships up front; a directory institution's papers are fetched
   when it is selected, one ~47 KB request (D50). This took `orgs.json` from 5.05 MB to 0.67 MB
