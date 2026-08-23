@@ -165,7 +165,7 @@ export interface PointData {
   x: Float32Array;
   y: Float32Array;
   year: Int16Array;
-  // Months since the corpus start month (from papers.arrow publication_date), enabling
+  // Months since the corpus start month (from the corpus publication_date), enabling
   // month-granularity date filtering on the GPU. Derived at load, not shipped in Arrow.
   monthIndex: Int16Array;
   citedByCount: Int32Array;

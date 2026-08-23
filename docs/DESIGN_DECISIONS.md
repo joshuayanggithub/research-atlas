@@ -1062,3 +1062,29 @@ Status legend: **ACTIVE** (in force) · **PROPOSED** (agreed, not yet built) · 
   that corner, and the bottom-left already holds the list toggle and the set-topic label. Caught
   by looking at the screenshot rather than at the DOM.
 - **Revert.** Remove `<LoadingStatus />` from `App.tsx`.
+
+## D47. Some artifacts are build-machine only and must never be published — ACTIVE
+
+- **Decision.** `schema.LOCAL_ONLY_FILES` names artifacts that s11 writes to `web/public/data`
+  for local use but that must not reach a remote repo or CDN. It currently holds
+  **`papers.arrow`**. Anything listed must also be absent from the manifest, or the frontend
+  would try to fetch it.
+- **Why keep it at all.** `papers.arrow` is the pre-D23 whole-paper table — one row per paper
+  with every field together (title, date, doi, arxiv id, venue, citations, topic, author and
+  institution lists). D23 split what the browser reads into `papers-index.arrow` (counts and
+  availability flags), `papers-titles-N.arrow` (titles, streamed) and `papers-detail-N.arrow`
+  (authors, venue, ids, on selection), and nothing has fetched the original since. It stays
+  because it is the only place every field sits side by side, which is genuinely useful for
+  offline inspection and for rebuilding the split files.
+- **Why not publish it.** **276 MB** at 1,000,490 papers, which is over GitHub's **100 MB**
+  per-file hard limit, and it is a quarter of the whole artifact bundle. No browser has ever
+  requested it.
+- **Alternatives.** (a) Delete it outright — loses the one convenient offline view and the
+  ability to rebuild the split files without rerunning s11 over the corpus. (b) Move it under
+  `data/artifacts/` — cleaner in principle, but it is produced alongside the split files by the
+  same function and separating them invites the two drifting apart. (c) Publish it — impossible
+  (file limit) and pointless (never fetched).
+- **Consequence for the upload step.** Whatever eventually copies `web/public/data` to a host
+  MUST filter `LOCAL_ONLY_FILES`. A naive `rsync`/`aws s3 sync` of the directory would push
+  276 MB nobody reads, and on GitHub it would fail outright.
+- **Revert.** Empty the set; publishing then includes everything the directory holds.

@@ -592,6 +592,8 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
 
     # Papers: resident search/list index (whole) + per-node detail (sharded, on demand).
     # The legacy whole papers.arrow is still written for reference / fallback.
+    # LOCAL ONLY — see schema.LOCAL_ONLY_FILES. Kept for offline inspection, never published:
+    # nothing fetches it, and at 276 MB it is over GitHub's per-file limit.
     write_arrow(_build_papers(corpus), WEB_DATA_DIR / S.PAPERS)
     write_arrow(
         _build_papers_index(

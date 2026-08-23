@@ -76,6 +76,18 @@ ALL_FILES = [
     LABELS, ORGS, TOPICS,
 ]
 
+# Artifacts that stay on the build machine and are NEVER uploaded to a remote host.
+#
+# `papers.arrow` is the pre-D23 whole-paper table (276 MB at 1M papers). D23 split what the app
+# reads into papers-index.arrow (counts/flags), papers-titles-N.arrow (titles) and
+# papers-detail-N.arrow (authors/venue/ids), and nothing has fetched the original since. It is
+# still emitted because it is the one place every field sits together, which makes it useful for
+# offline inspection and for rebuilding the split files — but it is dead weight to a browser and
+# it exceeds GitHub's 100 MB per-file limit, so it must not reach a remote repo or a CDN.
+#
+# Anything added here must also be absent from the manifest, or the frontend will try to fetch it.
+LOCAL_ONLY_FILES = frozenset({PAPERS})
+
 # ---------------------------------------------------------------------------
 # Arrow schemas (large columnar artifacts).
 # ---------------------------------------------------------------------------
