@@ -23,6 +23,7 @@ from pipeline.common.schema import (
     AUTHORS_SCHEMA, Institution, OrgsDoc, TopAuthor, TopicNode, TopicsDoc,
 )
 from pipeline.directory import ORG_UNITS, extract_unit_keys
+from pipeline.directory.org_names import NAME_ONLY_ORGS
 from pipeline.config import ARTIFACTS_DIR, CORPUS_ACTIVE, INTERIM_DIR, Config, ensure_dirs, load_config
 
 CORPUS_IN = CORPUS_ACTIVE
@@ -61,6 +62,63 @@ def _build_authors(corpus: pl.DataFrame) -> tuple[pa.Table, dict]:
         "count": pa.array([c for _, c in ordered], pa.int32()),
     }, schema=AUTHORS_SCHEMA)
     return table, local_id
+
+
+def _author_affiliations(
+    corpus: pl.DataFrame,
+    local_author_id: dict[str, int],
+    node_orgs: dict[int, list[str]],
+    top_n: int = 3,
+) -> dict[int, list[tuple[str, int, int, int]]]:
+    """Where each author publishes from: (label, papers, first year, last year).
+
+    The org tree answers "who works at this organization" (Institution.top_authors, D36). The
+    author panel needs the opposite direction and nothing carried it, so clicking a researcher
+    showed a name, a paper count and three external links but not where they work — the first
+    thing anyone wants.
+
+    Ranked by RECENCY-WEIGHTED paper count, not raw count: an author who published six papers
+    from a PhD lab in 2014 and twelve from a company since 2022 works at the company, and a raw
+    count of a long career would keep naming the university. Half-life is four years, so work
+    from a decade ago still registers but does not lead.
+
+    The reported count and year range are RAW, so the UI never shows a weighted number as if it
+    were a fact about the author.
+    """
+    HALF_LIFE = 4.0
+    latest = int(corpus["year"].max() or 0)
+    # (author, label) -> [weight, count, first year, last year]
+    acc: dict[tuple[int, str], list[float]] = {}
+    for node, year, aids in zip(corpus["node_id"].to_list(), corpus["year"].to_list(),
+                                corpus["author_ids"].to_list()):
+        labels = node_orgs.get(node)
+        if not labels or not aids:
+            continue
+        y = int(year or 0)
+        weight = 0.5 ** ((latest - y) / HALF_LIFE) if y else 0.0
+        for aid in aids:
+            local = local_author_id.get(aid)
+            if local is None:
+                continue
+            for label in labels:
+                slot = acc.get((local, label))
+                if slot is None:
+                    acc[(local, label)] = [weight, 1, y or 9999, y or 0]
+                else:
+                    slot[0] += weight
+                    slot[1] += 1
+                    if y:
+                        slot[2] = min(slot[2], y)
+                        slot[3] = max(slot[3], y)
+
+    by_author: dict[int, list[tuple[float, str, int, int, int]]] = defaultdict(list)
+    for (local, label), (w, n, y0, y1) in acc.items():
+        by_author[local].append((w, label, n, y0, y1))
+    out: dict[int, list[tuple[str, int, int, int]]] = {}
+    for local, rows in by_author.items():
+        rows.sort(key=lambda r: (-r[0], -r[2], r[1]))
+        out[local] = [(label, n, y0, y1) for _, label, n, y0, y1 in rows[:top_n]]
+    return out
 
 
 def _load_unit_attribution(corpus: pl.DataFrame) -> dict[str, dict[str, set[int]]]:
@@ -252,6 +310,37 @@ def _build_orgs(corpus: pl.DataFrame, resolved: dict,
             curated=True,
             membership_methods=sorted(roster_methods.get(key, set())),
         )
+
+    # Name-only organizations: real labs with no OpenAlex institution to resolve and no author
+    # roster, whose entire evidence is the affiliation STRING (org_names.NAME_ONLY_ORGS).
+    # AGENTS.md names Anthropic, DeepSeek, Kimi/Moonshot and MiniMax as first-class NeoLabs;
+    # without this the browse tree listed exactly one independent lab. Provenance is recorded
+    # as `affiliation_name` so the UI can say where the attribution came from, exactly as the
+    # roster path above does.
+    for key, meta in NAME_ONLY_ORGS.items():
+        if key in institutions:
+            continue  # an OpenAlex-resolved or roster org of the same key wins
+        node_ids = sorted(comet_org_nodes.get(key, set()))
+        if not node_ids:
+            continue  # no evidence in this corpus: emit nothing rather than an empty org
+        institutions[key] = Institution(
+            openalex_id="",
+            organization_id=f"local:{key}",
+            display_name=meta["display_name"],
+            ror=None,
+            type="company",
+            kind=meta.get("kind", "neolab"),
+            lineage=[],
+            parent=None,
+            unit_type="organization",
+            children=[],
+            count=len(node_ids),
+            node_ids=node_ids,
+            direct_count=len(node_ids),
+            curated=True,
+            membership_methods=["affiliation_name"],
+        )
+        log.info(f"  name-only org {key}: {len(node_ids)} papers")
 
     # Full corpus directory: every OTHER institution appearing in the corpus, so any
     # university/company/lab is searchable + filterable — not just the seven curated seeds.

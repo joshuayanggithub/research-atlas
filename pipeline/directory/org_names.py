@@ -34,6 +34,30 @@ class OrgMatcher:
 # Ordered: the first matcher that fires wins, so a subsidiary is tested before its parent
 # ("Google DeepMind" must resolve to deepmind, not google).
 ORG_MATCHERS: tuple[OrgMatcher, ...] = (
+    # NeoLabs. AGENTS.md names these as first-class organizations, but none of them resolve
+    # through OpenAlex the way a university does, and ROR misses companies entirely — so the
+    # affiliation STRING is the only evidence there is. Counts in the corpus at the time of
+    # writing: Anthropic 173 papers, Moonshot AI 75, DeepSeek 27, MiniMax 9.
+    OrgMatcher(
+        "anthropic",
+        patterns=(r"\bAnthropic\b",),
+        # "anthropic principle"/"anthropic reasoning" are cosmology, not the company. Vetoes
+        # cost nothing and this corpus contains physics.
+        exclude=(r"anthropic\s+(?:principle|reasoning|bias|shadow|selection)",),
+    ),
+    OrgMatcher("deepseek", patterns=(r"\bDeepSeek(?:[- ]AI)?\b", r"\bDeep\s?Seek\s+AI\b")),
+    # The lab is Moonshot AI; "Kimi" is its product. Bare "Moonshot" is an ordinary English
+    # word and bare "Kimi" is a personal name, so neither is matched on its own — every hit
+    # observed in the corpus is the full "Moonshot AI" anyway.
+    OrgMatcher("moonshot", patterns=(r"\bMoonshot\s+AI\b",)),
+    OrgMatcher(
+        "minimax",
+        patterns=(r"\bMiniMax\b",),
+        # "minimax" is also a standard optimization term; patterns are case-insensitive, so
+        # veto the mathematical senses before they can be read as an employer.
+        exclude=(r"minimax\s+(?:optimi[sz]ation|problem|regret|game|estimation|estimator|"
+                 r"rate|risk|bound|theorem|principle|search|algorithm|formulation)",),
+    ),
     OrgMatcher("deepmind", patterns=(r"\bDeepMind\b",)),
     OrgMatcher(
         "meta",
@@ -84,3 +108,16 @@ def org_keys_for(affiliation: str) -> list[str]:
         if (ci is not None and ci.search(affiliation)) or (cs is not None and cs.search(affiliation)):
             out.append(m.org_key)
     return out
+
+
+# Organizations whose ONLY evidence is the affiliation string above — no OpenAlex institution
+# to resolve and no author roster. s10 creates curated roots for these directly, with
+# `membership_methods = ["affiliation_name"]` so the provenance is visible in the UI rather
+# than implied. Redwood Research is the precedent: it is a curated root sourced from a roster,
+# not from OpenAlex.
+NAME_ONLY_ORGS: dict[str, dict[str, str]] = {
+    "anthropic": {"display_name": "Anthropic", "kind": "neolab"},
+    "deepseek": {"display_name": "DeepSeek", "kind": "neolab"},
+    "moonshot": {"display_name": "Moonshot AI", "kind": "neolab"},
+    "minimax": {"display_name": "MiniMax", "kind": "neolab"},
+}

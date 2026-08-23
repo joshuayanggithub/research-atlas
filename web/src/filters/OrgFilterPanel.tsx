@@ -9,7 +9,16 @@ import { useMemo, useState } from "react";
 import { ChevronRight, Users, X } from "lucide-react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
-import { buildOrgTree, searchDirectory, type OrgNode } from "./orgHierarchy";
+import { buildOrgTree, searchDirectory, topDirectoryOrgs, type OrgNode } from "./orgHierarchy";
+
+/** What the membership evidence actually is, for the badge tooltip. */
+function provenanceTitle(methods: string[]): string {
+  if (methods.includes("affiliation_name")) {
+    return "Membership from the affiliation text on the papers themselves (curated name "
+      + "matching — ROR does not resolve company affiliations)";
+  }
+  return `Membership from reviewed author roster (${methods.join(", ")})`;
+}
 
 export function OrgFilterPanel({ ds }: { ds: Dataset }) {
   const filters = useStore((s) => s.filters);
@@ -29,6 +38,8 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
     () => Object.values(ds.orgs.institutions).filter((i) => i.parent === null).length,
     [ds],
   );
+  // Largest non-curated institutions, so the directory is browsable without a query.
+  const topDirectory = useMemo(() => topDirectoryOrgs(ds, 10), [ds]);
 
   const q = query.trim().toLowerCase();
   const matchNode = (n: OrgNode): boolean =>
@@ -89,11 +100,12 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
               <span className="org-unit-kind">{unitKind(inst.unit_type)}</span>
             )}
             {inst.membership_methods.length > 0 && (
-              <span
-                className="org-source-badge"
-                title={`Membership from reviewed author roster (${inst.membership_methods.join(", ")})`}
-              >
-                roster
+              // The badge names the ACTUAL evidence. It used to read "roster" for anything
+              // with a provenance, which became a false claim once organizations could be
+              // attributed from affiliation strings: Anthropic's papers come from what authors
+              // wrote on the paper, not from a reviewed membership list.
+              <span className="org-source-badge" title={provenanceTitle(inst.membership_methods)}>
+                {inst.membership_methods.includes("affiliation_name") ? "affiliation" : "roster"}
               </span>
             )}
             <span className="count">{inst.count.toLocaleString()}</span>
@@ -161,6 +173,18 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
       {renderGroup("Companies", industry)}
       {renderGroup("Independent labs", neolabs)}
       {renderGroup("Universities & research institutions", academic)}
+      {/* The directory was reachable only by typing a name you already knew, which hid the
+          largest institutions in the corpus behind a guess. Show the biggest when idle. */}
+      {q.length < 2 && (
+        <div className="org-group">
+          <div className="group-title">Largest in corpus</div>
+          <div className="org-tree">{topDirectory.map((n) => renderUnit(n))}</div>
+          <p className="org-hint subtle" style={{ marginTop: 8 }}>
+            Counts are papers <em>in this map</em> (CS, co-authored with a featured org), not
+            the institution's full output.
+          </p>
+        </div>
+      )}
       {q.length >= 2 && (
         <div className="org-group">
           <div className="group-title">

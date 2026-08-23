@@ -1444,3 +1444,60 @@ in, and the list in the author's column.
 **one** independent lab (Redwood Research, 28 papers), while `AGENTS.md` names Anthropic,
 DeepSeek, Kimi and MiniMax as NeoLabs and none exist as roots. 6e — the author panel still shows
 no affiliation, which needs an author → org join.
+
+## D57. NeoLabs are curated from affiliation text, with the evidence named — ACTIVE
+
+**Context.** `AGENTS.md` names Redwood Research, Anthropic, OpenAI, DeepSeek, Kimi and MiniMax
+as first-class NeoLabs. The browse tree contained **one** independent lab (Redwood, 28 papers)
+beside 8 companies and 4 universities, and the other labs did not exist at any granularity.
+
+The obvious route — add them to `config.yaml` and let `s00_resolve_orgs` fetch OpenAlex ids —
+needs a network call and an API key, and inventing ids would be worse than not doing it.
+
+**The precedent that made it possible offline:** Redwood Research is already a curated root with
+`openalex_id == ""`, sourced from an author roster. So a curated org never needed an OpenAlex
+institution; it needed evidence and visible provenance. For these labs the evidence is the
+affiliation STRING, which is how companies are attributed anyway — ROR resolves Google's id
+**zero times** across COMET's 2.8M rows (D43).
+
+**Decision.** `org_names.NAME_ONLY_ORGS` declares organizations whose only evidence is the
+affiliation text, and `s10` creates curated roots for them with
+`membership_methods = ["affiliation_name"]`, mirroring the roster branch.
+
+| lab | papers | evidence |
+|---|---|---|
+| Anthropic | 173 | affiliation_name |
+| Moonshot AI | 35 | affiliation_name |
+| Redwood Research | 28 | publication_history |
+| DeepSeek | 27 | affiliation_name |
+| MiniMax | 9 | affiliation_name |
+
+**Two things done carefully, because this is attribution users are expected to trust:**
+
+1. **Matchers are vetoed against their false senses.** "anthropic principle" is cosmology and
+   "minimax optimization" is a standard technique; this corpus contains both. `Moonshot` and
+   `Kimi` are matched only as "Moonshot AI" — bare "Moonshot" is an ordinary word and "Kimi" is
+   a personal name. Eight matcher cases are tested.
+2. **New matches were MERGED into `org_affiliations_json`, never regenerated.** That column was
+   built over every affiliation string but only the first eight are stored, so regenerating
+   from the stored strings would silently drop attribution for the 0.86% of papers at the cap.
+   Merging can under-count those papers; it cannot destroy existing attribution.
+
+**Also fixed here:** the provenance badge read **"roster"** for anything with a membership
+method, which became a false claim the moment orgs could come from affiliation text — it told
+the reader Anthropic's papers came from a reviewed membership list when they came from what
+authors wrote on the paper. The badge now names the actual evidence.
+
+**And:** 10,475 directory institutions were reachable only by typing a name you already knew,
+which hid **Tsinghua University (16,844 papers — larger than every curated root)** behind a
+guess. The panel now lists the largest when the search box is empty.
+
+**Tradeoffs.** Name matching is recall-limited: a lab that never spells itself out in an
+affiliation is invisible, and papers whose mention sat in a dropped affiliation string are
+missed. Both under-count rather than mis-attribute, which is the right direction for a claim
+about where someone works.
+
+**Verified** at 1 MB/s on both viewports, console clean: independent labs group shows 5;
+"Largest in corpus" lists Tsinghua 16,844, Chinese Academy of Sciences 11,982, Shanghai Jiao
+Tong 10,930; selecting Anthropic filters to exactly 173 papers; badges read AFFILIATION for the
+four name-matched labs and ROSTER for Redwood.

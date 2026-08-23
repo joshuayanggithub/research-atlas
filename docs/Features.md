@@ -175,6 +175,12 @@ silently dropped.
 - **Combined paper and map-label search** with type-ahead. Paper results select and focus a
   paper; map-label results pan and zoom to the named semantic region and emphasize its label.
 - Paper, map-label, and author search support keyboard selection.
+- **The NeoLabs are on the map.** Anthropic, DeepSeek, Moonshot AI and MiniMax are curated
+  organizations alongside Redwood Research, attributed from the affiliation text on the papers
+  themselves, and each entry states which kind of evidence backs it (D57).
+- **The institution directory is browsable, not just searchable.** The largest organizations in
+  the corpus are listed when the org search box is empty, so Tsinghua (16,844 papers) no longer
+  requires guessing its name (D57).
 - **Topics are browsable by field.** The filter shows 26 fields ordered by how much of the
   corpus each holds, expanding to their subfields, instead of 243 subfields in one flat
   alphabetical list; counts are exact, computed offline rather than from downloaded points (D56).

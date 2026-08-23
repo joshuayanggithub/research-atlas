@@ -74,6 +74,22 @@ export function searchDirectory(ds: Dataset, query: string, limit = 40): OrgNode
   return out.slice(0, limit);
 }
 
+/** The largest institutions in the corpus that are NOT in the curated browse tree.
+ *
+ *  10,475 of the 10,518 organizations were reachable only by typing a name you already knew,
+ *  which meant Tsinghua University (16,844 papers — larger than every curated root) was
+ *  effectively invisible. This surfaces the biggest of them so the directory is browsable.
+ */
+export function topDirectoryOrgs(ds: Dataset, limit = 10): OrgNode[] {
+  const insts = ds.orgs.institutions;
+  const out: OrgNode[] = [];
+  for (const key of Object.keys(insts)) {
+    if (!insts[key].curated) out.push({ key, inst: insts[key], children: [] });
+  }
+  out.sort((a, b) => b.inst.count - a.inst.count);
+  return out.slice(0, limit);
+}
+
 /** Stable index of a root org among roots (used for color-by-org hue assignment). */
 export function rootOrgIndex(ds: Dataset): Map<string, number> {
   const index = new Map<string, number>();
