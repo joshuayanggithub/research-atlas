@@ -2,32 +2,62 @@
 
 Spec for review. Nothing here is built yet.
 
+## Reconsidered: split screen, not overlay
+
+**The first version of this spec argued for a single map with A, B and both in three colours.
+That was wrong, and the reasoning is worth keeping because it is the kind of mistake this
+project keeps catching.**
+
+Three things were underweighted:
+
+1. **Occlusion makes an overlay lie.** Carnegie Mellon (15,464) against MIT (10,366) is ~25,000
+   dots in three colours on one surface. Whichever draws last wins each pixel, so the apparent
+   ratio of A to B is an artifact of **draw order, not data**. That is precisely the failure
+   mode D49, D51 and D56 exist to prevent — a visual that reads as fact and is not one. It was
+   filed as "a risk to measure" when it is a design objection.
+2. **The intersection is usually tiny.** Two authors' co-authored papers are frequently 0-5, and
+   jointly-affiliated institutional papers are a thin slice. The whole overlay argument rested
+   on "the question is overlap" — but when the third colour is nearly empty, what is actually
+   being compared is **shape**: two distributions over the same space. Small multiples is the
+   canonical answer to that, and split screen is small multiples.
+3. **The cost objection to split was factually wrong.** It assumed two maps meant two WebGL
+   contexts and therefore two picking readbacks — the operation that profiling showed dominates
+   (D60). deck.gl 9 supports multiple `views` on a **single** canvas with `layerFilter`: one
+   context, one picking pass. Split costs far less than assumed.
+
+The mobile objection ("halves the map") was also weak: panes can stack vertically, which is
+still small multiples.
+
 ## The question this answers
 
-"How do these two relate?" — and in practice that almost always means **where do they
-overlap**: shared papers, shared topics, whether one's recent work has drifted into the other's
-territory.
+"How do these two relate?" — which splits into two questions that want different answers:
 
-That is why this is **not split screen**. Two synchronised maps put A on the left and B on the
-right, which makes the one thing you are looking for — the intersection — the hardest thing to
-see, because it appears twice and matches nowhere. It also halves the map, which is worst on
-mobile where the map is already the whole screen.
+| question | answered by |
+|---|---|
+| *Do they work on the same things?* (the common case) | **two maps, side by side** — shape against shape |
+| *What exactly do they share?* | **a list**, not a colour — the panel's shared-paper section |
 
-**Proposal: one map, two colours, third colour for the overlap, plus a comparison panel.**
+The intersection does not need a colour on the map. It needs to be enumerable, and a list does
+that better than a hue that may apply to four dots.
 
 ## What it looks like
 
-- The map keeps its full area. Papers belonging to A are one colour, B another, and papers
-  belonging to **both** a third that reads as "special" rather than as a blend of two dots.
-- Everything not in A ∪ B is hidden, exactly as an ordinary org/author filter already hides
-  non-matching papers — so the comparison is the whole view, not a needle in the corpus.
-- A panel gives the numbers the map cannot: counts, the shared papers themselves, and topic and
-  year profiles for each side.
+- **Two panes, one deck.gl canvas**, via `views: [OrthographicView('a'), OrthographicView('b')]`
+  plus `layerFilter` to route each side's layers to its own pane. Side by side on desktop,
+  stacked on mobile.
+- **Linked viewports.** Both panes share one `viewState`, so panning or zooming either moves
+  both. This is what makes the comparison honest: the same region of semantic space is under
+  the same screen position in both panes, so "A is dense here, B is empty here" is directly
+  readable. Unlinked panes would make the two maps incomparable.
+- **Shared papers highlighted in both panes.** The intersection appears in each side, in the
+  same accent, so it is visible without needing a third category on a single crowded surface.
+- Each pane is labelled with its side and paper count, permanently — an unlabelled pane in a
+  screenshot is unattributable.
 
-Colour must be colour-blind safe, so **not** red/green. Blue for A, amber for B, white for
-both. Amber is already the app's "citer" colour and teal its "reference" colour, so the compare
-palette deliberately avoids teal to keep those meanings intact; and because compare colouring
-and a selected paper's citation colouring can be on screen together, that separation matters.
+Colour: each pane needs only ONE colour for its own papers plus the shared accent, so the
+palette pressure that pushed the overlay toward three simultaneous hues disappears. Panes can
+keep the existing subfield colouring if that turns out to read better, since they no longer
+have to encode side identity — position in the pane does that.
 
 ## Data model
 
@@ -58,19 +88,18 @@ no pipeline work**:
 ## Why this fits the renderer
 
 The GPU filter has **four channels and all four are taken** — date, org/author match, selection
-+ relevance, and zoom LOD — and deck.gl caps `filterSize` at 4. So compare must not ask for a
-fifth.
++ relevance, and zoom LOD — and deck.gl caps `filterSize` at 4. Split screen does not ask for a
+fifth: each pane renders its own points layer with its own `match` channel, and `layerFilter`
+decides which pane draws which layer. Two layers, one context, one picking pass.
 
-It does not need one. Membership in A/B/both is a **colour** question, not a visibility one:
+The mask still does the work: `useCompareMask` yields `0 | 1 | 2 | 3`, pane A shows
+`mask & 1`, pane B shows `mask & 2`, and the shared accent is `mask === 3` in both.
 
-- **Filter channel 1** (`match`) becomes `mask !== 0` — the existing "hide non-matching"
-  behaviour, unchanged.
-- **Colour** gains a `ColorMode` of `"compare"`, alongside `subfield | org | recency`. The
-  `rgb` memo in `usePointsLayer` already recomputes per colour mode; it gains the compare mask
-  as a dependency.
-
-Selection keeps working while comparing, and is better for it: click a shared paper and its
-citation network still lights up, with each neighbour still carrying its A/B/both colour.
+**What must be measured before this is called done:** rendering two point layers means the
+per-frame attribute work happens twice. The layers are the same 1M-element typed arrays with
+different filter values, so the incremental cost should be small — but "should be" is not a
+measurement, and D60 is a reminder that the expensive thing in this renderer was not where it
+was assumed to be.
 
 ## The comparison panel
 
@@ -118,10 +147,13 @@ This is where comparisons go wrong, so they are requirements, not nice-to-haves.
 
 - A **Compare** section in the sidebar with two slots. Each accepts an author or an
   organization through the existing search components — no new search UI.
-- Filling both slots switches colour mode to `compare` and hides everything else. Clearing
-  either slot returns to the previous mode.
-- **Mobile**: identical. The overlay needs no extra width, and the panel stacks under the map
-  the way the author panel already does. This is the main reason to prefer overlay over split.
+- Filling both slots splits the map. Clearing either returns to the single view.
+- **One viewState for both panes.** Zoom/pan is shared; there is no per-pane camera.
+- **Selection while comparing**: clicking a paper in either pane selects it globally and its
+  citation network lights up in both panes, which is informative — it shows whether the
+  selected paper's influence reaches the other side.
+- **Mobile**: panes stack vertically rather than side by side. Each gets roughly half the
+  height, which is why per-pane labels and counts matter more here than on desktop.
 
 ## Phasing
 
@@ -133,11 +165,17 @@ This is where comparisons go wrong, so they are requirements, not nice-to-haves.
 
 ## Risks
 
-- **Colour legibility.** Three categories over a dark background at a million points, where
-  dot size already encodes citations. Needs checking at the home view *and* zoomed in, on both
-  viewports, before phase 1 is called done.
-- **Two large orgs.** CMU (15,464) vs MIT (10,366) is a bigger on-screen set than any current
-  filter produces. The mask itself is a linear pass, but the visual result may be a wash; worth
-  measuring before assuming the design holds at that size.
-- **Mode collision.** `colorMode` is user-controlled; compare overrides it. The override has to
-  be visible and reversible, or it reads as the colour picker breaking.
+- **Half the map each.** This is split screen's real cost and it is not free: at the home view
+  a pane is ~720x900 on desktop and ~390x330 on mobile. Whether the semantic structure is still
+  legible at that size is the first thing to check, and it is the one finding that would send
+  this back to an overlay.
+- **Two point layers.** Per-frame attribute work happens twice. Expected to be small since both
+  layers share the same typed arrays, but measure it — D60 is the standing reminder that the
+  expensive operation in this renderer was not the obvious one.
+- **An empty pane reads as broken.** If one side has few papers at the current zoom, its pane
+  looks like a failure rather than a finding. It needs an explicit "N papers, none at this zoom
+  level" state.
+- **Linked zoom can mislead in the other direction.** Sharing a viewport is what makes panes
+  comparable, but if one side's work is concentrated somewhere the shared camera is not
+  looking, it is invisible in both. The per-pane count (always visible) is what keeps that
+  honest.

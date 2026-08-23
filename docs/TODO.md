@@ -13,11 +13,14 @@ titles sharded; token search index; NeoLabs curated; author affiliations. D49-D5
 ## 🔴 Open right now
 
 - [ ] **Compare feature — spec written, awaiting review** (`docs/COMPARE_SPEC.md`). Two authors
-      or two institutions on one map: A / B / both in three colours, plus a comparison panel
-      (counts, shared papers, topic and year profiles). Deliberately not split screen — the
-      question is overlap, and split screen hides exactly that. Needs no new artifacts for
-      phases 1-2; shared collaborators (phase 3) needs an s10 precompute because per-paper
-      author_ids left the resident index in D30.
+      or two institutions as **two linked panes on one deck.gl canvas** (multi-view +
+      layerFilter), with shared papers accented in both and a comparison panel (counts, shared
+      papers, topic and year profiles). The spec originally proposed a single-map overlay and
+      was reversed: at 25k dots an overlay's apparent A:B ratio is a draw-order artifact, the
+      intersection is usually too small to justify a third colour, and split's assumed cost
+      (two WebGL contexts) was wrong — deck.gl renders both panes in one. Needs no new
+      artifacts for phases 1-2; shared collaborators (phase 3) needs an s10 precompute because
+      per-paper author_ids left the resident index in D30.
 
 - [ ] **Two e2e tests fail and I broke one of them.** `title search selects a paper and opens
       details` has failed since search became asynchronous (D54/D55): results now come from an
