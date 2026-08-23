@@ -67,6 +67,20 @@ const REL_ALPHA_MAX = 255;
 const CITE_ANCHOR = 46;
 const CITE_ANCHOR_LOG = Math.log1p(CITE_ANCHOR);
 
+// How deep the AMBIENT citation web goes. Deliberately shallow.
+//
+// Edge tiers were originally loaded to whatever depth the zoom reached, which was wrong twice
+// over. Cost: tiers 5-9 are 7.4, 17.3, 24.5, 19.4 and 9.8 MB gzipped, so zooming in hard
+// pulled up to 83.6 MB and merged millions of edges into the adjacency maps on the main
+// thread — the "zooming aggressively janks" report.
+//
+// And it bought nothing. Zoomed in, every paper is connected to something off-screen, so the
+// ambient web degenerates into noise laid over everything; the citation view that is actually
+// useful is one paper's network, which comes from its own shard (ensureNodeEdges) and is
+// complete regardless of zoom. So the ambient layer keeps the backbone between important
+// papers — 400,471 edges, already loaded eagerly at 2.14 MB — and stops there.
+const AMBIENT_EDGE_MAX_LEVEL = 4;
+
 export function usePointsLayer({
   ds,
   colorMode,
@@ -116,9 +130,8 @@ export function usePointsLayer({
   useEffect(() => {
     if (!forceAll) {
       void ensurePointTiles(activeLevel + 1);
-      // Citation edges are tiered the same way and by the same rule — an edge is drawable only
-      // when both endpoints are — so the arrows for a zoom level arrive with its points.
-      void ensureEdgeTiles(activeLevel + 1);
+      // Ambient edges stop at AMBIENT_EDGE_MAX_LEVEL — they are NOT followed all the way in.
+      void ensureEdgeTiles(Math.min(activeLevel + 1, AMBIENT_EDGE_MAX_LEVEL));
     }
   }, [activeLevel, forceAll]);
 

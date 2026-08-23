@@ -1611,3 +1611,38 @@ grows from 14.4 MB to ~16 MB, but almost none of it is ever fetched.
 panel reads "77 papers in this corpus · merged from 19 author records" with her affiliations.
 **Home view: 21 requests / 4.3 MB, zero `authors.arrow` fetches.** Four queries plus a
 selection cost 5 index chunks (769 KB) and 1 author record shard (133 KB).
+
+## D60. Ambient citation edges stop at the eager depth — ACTIVE
+
+**Context.** D53 wired `ensureEdgeTiles` to follow the zoom level, so zooming in kept loading
+deeper edge tiers. Reported as "zooming in and out aggressively causes major performance bugs".
+
+Measured on the live site during a zoom storm: **8 edge tiers, 51.2 MB** fetched, with each
+tier merged into the adjacency maps on the main thread. Deep tiers are individually enormous —
+L5 7.4 MB, L6 17.3 MB, L7 24.5 MB gzipped — so following the zoom to the bottom costs up to
+**83.6 MB**.
+
+**And it bought nothing.** Zoomed in, every visible paper is connected to something off-screen,
+so the ambient web degenerates into noise laid over everything. The citation view that is
+actually useful at depth is *one paper's* network, and that already comes from its own shard
+(`ensureNodeEdges`), complete regardless of zoom.
+
+**Decision.** `AMBIENT_EDGE_MAX_LEVEL = 4`. The ambient layer keeps the backbone between
+important papers — 400,471 edges, already loaded eagerly at 2.14 MB — and never goes deeper.
+Selection-driven edges are untouched.
+
+**Measured after:** the same zoom storm fetches **5 tiers / 2.1 MB** instead of 8 / 51.2 MB.
+
+**What this did NOT fix, stated honestly.** Frame times in the headless test barely moved
+(p95 ~19 s both before and after). Profiling showed why: **96.2% of the time is `(program)`
+(native, outside JS) and 3.4% is `readPixels`** — deck.gl's picking pass, which re-renders and
+reads back a buffer on every pointer move. Under SwiftShader with a million points that takes
+seconds; on real hardware it is milliseconds. So this box cannot reproduce the user's jank
+faithfully, and the remaining frame cost measured here is an artefact of software rendering,
+not evidence about the app.
+
+If jank persists on real hardware, the next thing to try is **throttling or suspending picking
+while the view is actively changing** — it is the only per-pointer-move GPU readback in the
+render path. Changing the renderer (e.g. to a 2D canvas) is the wrong direction: the profile
+shows the cost is rasterisation and readback of a million points, which a CPU-side 2D canvas
+would make dramatically worse, not better.
