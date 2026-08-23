@@ -164,3 +164,23 @@ The ~17 MB static bundle is appropriate now. Past roughly 100k papers:
 - After pipeline changes, rerun affected stages and **look at the map in a browser** — the
   previous agent caught 4 real bugs (DOI mangling, topic-id parsing, zstd Arrow, label
   culling) *only* by rendering it, not from tests. Don't skip the visual check.
+
+---
+
+## 2026-08-23 — the bundle is publishable
+
+The work that made this hostable and visitable is done (D49-D58). A visit costs **5.7 MB across
+22 requests** where it cost ~143 MB, and no artifact exceeds GitHub's 100 MB per-file limit.
+
+What changed, in order of size: citation edges became zoom tiers plus per-paper shards (87 MB
+-> 10 KB at the home view, D53); titles became node shards fetched for what is on screen
+(31.1 MB -> 0.13-2.07 MB, D55); search moved onto a token index that also fixed a correctness
+bug — results used to depend on which title chunks had downloaded (D54); `orgs.json` shed the
+directory's membership (5.05 -> 0.67 MB, D50). The app deploys separately from its data behind
+one environment variable (D52).
+
+Strategically the next lever is the same one three times over: **`authors.arrow` is the last
+big eager stream** (~14.4 MB), and the name-token index that would replace it is the pattern
+already proven twice. After that, publishing is a decision rather than a project — the script
+is written and dry-run-verified, waiting on a go-ahead — and the 2026 affiliation gap is the
+only remaining *data* deficit, now unblocked by a working GPU.

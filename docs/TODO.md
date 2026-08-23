@@ -5,12 +5,29 @@ Concrete, checkable next steps for whoever picks this up. This is the *actionabl
 were made and what reverting costs. When you finish an item, check it off and note the
 commit; when you add one, keep it specific enough to act on without re-deriving context.
 
-Last updated: 2026-08-17 (1991-2026 backfill rebuild; true S2 citation counts; chunked author
-index; org top-researchers precomputed).
+Last updated: 2026-08-23 (publishable bundle: per-visit cost ~143 MB -> 5.7 MB; edges and
+titles sharded; token search index; NeoLabs curated; author affiliations. D49-D58).
 
 ---
 
 ## 🔴 Open right now
+
+- [ ] **Two e2e tests fail and I broke one of them.** `title search selects a paper and opens
+      details` has failed since search became asynchronous (D54/D55): results now come from an
+      index-chunk fetch instead of a scan over resident titles, and the dropdown re-renders as
+      each title shard lands, so Playwright's click never finds a stable element. Verified
+      failing against the committed spec at HEAD, so it is not a local artefact. The app itself
+      is fine — driving the same flow through the DOM opens the details panel with a clean
+      console on both viewports — this is a test-harness problem, not a product one.
+      Attempts that did NOT fix it: widening the expect timeouts to 30 s; waiting for the
+      title shimmer to clear before clicking; `dispatchEvent("click")` on the row and on its
+      inner button; clicking via `page.evaluate`. Next thing to try is probably running the
+      suite against a preview with the artifacts pre-warmed, or giving SearchBox a stable
+      `data-testid` row identity that survives re-render.
+- [ ] **Add a session-transition regression test.** The only thing that caught the React #310
+      hooks-order bug (fixed in e821913) was a full sweep — open a paper, close it, filter an
+      org, filter an author — because every per-feature check passed without ever CROSSING
+      between those states. Assert: no console errors across that sequence.
 
 - [ ] **Decide the scope of PDF affiliation parsing** (org attribution recall, task #9). This is
       the only item waiting on a human. Everything cheaper is ruled out with measurements —
@@ -170,3 +187,35 @@ index; org top-researchers precomputed).
       real bugs only by looking, not from tests.
 - [ ] Update `Features.md` (+ its test-coverage table), `Design.md`, and `DESIGN_DECISIONS.md`
       when a change affects capability / mechanism / a tradeoff.
+
+
+---
+
+## Where the per-visit budget stands (measured 2026-08-23, 1 MB/s, both viewports)
+
+| | requests | bytes |
+|---|---|---|
+| home view | 22 | **5.7 MB** |
+| + select a hub paper (Attention, 69,262 citers) | 38 | 15.1 MB |
+| + filter an organization (Tsinghua) | 40 | 17.8–20.8 MB |
+| + filter an author | 43–45 | 23.8–24.0 MB |
+
+Against the ~143 MB *before touching anything* that the work started from. No artifact exceeds
+GitHub's 100 MB per-file limit, so the bundle is hostable. Publish dry-run: **3,067 files,
+1.03 GB raw -> 0.52 GB gzipped**, excluding `papers.arrow` and `edges.arrow` (D47).
+
+## Biggest remaining wins, in order
+
+1. **`authors.arrow` is now the largest stream on the wire** — ~14.4 MB fetched eagerly in 13
+   chunks so the author box can substring-match names. It is the single biggest remaining item
+   and the same shape as the title index that replaced 31 MB (D54): a name-token -> author-id
+   index measured at **5.5 MB capped at 25 authors/token**, and it could be chunked
+   alphabetically like the title index so a query costs ~100 KB instead of 14 MB.
+2. **The real R2 upload has never run.** `tools/publish_artifacts.sh --confirm` is written,
+   dry-run-verified and waiting on an explicit go-ahead. Nothing has been published.
+3. **A custom domain in front of R2** is the highest-value cost/abuse mitigation left: a cached
+   response never reaches the bucket and costs no Class B operation, and it moves off
+   `pub-*.r2.dev`, which Cloudflare rate-limits and does not intend for production.
+4. **The 2026 affiliation gap.** Upstream extraction stops at December 2025, so 2026 sits at
+   ~6% attribution against 87-90% for 2021-2024. The GPU works now; the route is COMET's own
+   open-weight student model over page-1 text (no OCR needed for recent CS papers).
