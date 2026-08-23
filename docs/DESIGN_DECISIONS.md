@@ -1247,3 +1247,65 @@ immutable cache headers) and served the app from `/research-atlas/` on another: 
 **15 of 18 requests go to the data origin**, zero failed requests, zero console errors, on
 desktop 1440x900 and iPhone 13. Publish dry-run stages 1,303 files, 0.78 GB raw -> 0.40 GB gzipped
 (ratio 0.509, 380 MiB to transfer), correctly excluding `papers.arrow`.
+
+## D53. The citation graph arrives in two shapes: zoom tiers and per-node shards — ACTIVE
+
+**Context.** `edges.arrow` was 110 MB raw / 87 MB gzipped, fetched **whole** after first paint
+on every visit regardless of what the user did — the largest single item on the wire. It also
+exceeds GitHub's 100 MB per-file hard limit, so it made the project unhostable on its own.
+
+**Decision.** Two mechanisms, because there are two different questions.
+
+- **Zoom tiers** (`edges-L{N}.arrow`, D-4a) answer *"what is drawable right now"*. An edge needs
+  both endpoints on screen, so it belongs to the tier of its deeper endpoint and is loaded
+  alongside the point tile of the same level.
+- **Per-node shards** (`edges-by-node-{N}.arrow`, D-4b) answer *"everything connected to THIS
+  paper"*, which ignores zoom entirely.
+
+`completeNodes` records which nodes have their authoritative lists. Tiers are disjoint so
+merging never duplicates; a node shard **replaces** rather than merges, because it is a
+superset of anything the tiers contributed.
+
+**The distinction is not an optimisation detail, it is a correctness requirement.** Everything a
+panel says about a specific paper must come from its shard. From the home view a reader has 408
+edges loaded; answering "how many of this paper's references are in the map?" from that would
+have announced *"3 of 78"* for "Attention Is All You Need" — not merely incomplete but
+confidently false. The reference note is therefore gated on **that paper's** shard, not on
+`useEdgesReady` (which now means only "some tier has landed").
+
+**Three consequences that had to be handled, not assumed:**
+
+1. `autoRelevanceThreshold` (D48) ran at selection time, before the shard arrived, so a hub
+   looked like an ordinary paper and the slider stayed at "show everything" — re-creating
+   exactly the flood D48 exists to prevent. It is now recomputed when the shard lands
+   (`syncAutoRelevance`), unless the user has already moved the slider (`relevanceTouched`).
+2. Relevance scoring does a **second hop** (each candidate's own references, for bibliographic
+   coupling). Candidates are scattered across the corpus, so fetching all of them would be
+   hundreds of round trips. `SECOND_HOP_SHARDS = 12` spends the budget on the highest-cited
+   candidates; the rest keep their direct-link score and are **reported** as unscored via the
+   existing `scored`/`total` fields rather than silently ranked on partial lists.
+3. `useEdgeLayer` and `useRelevantLabels` depend on an edges epoch, or they freeze at whatever
+   fraction of the graph existed when the paper was clicked.
+
+**Tradeoffs.** Storage roughly doubles for the graph (tiers 86 MB + node shards 127 MB raw,
+against one 110 MB file) because each edge is stored in a tier and in both endpoints' adjacency
+lists. That buys a ~29,000x reduction in what a home-view visit downloads for edges. Selecting
+a paper costs one ~200-550 KB request, and a hub's full relevance ranking up to twelve more.
+
+**`edges.arrow` is now `LOCAL_ONLY` (D47).** Nothing fetches it; it is still emitted as the
+source the tiers and shards derive from, and as the obvious thing to inspect locally.
+
+**Revert condition.** If a feature ever needs whole-graph statistics in the browser (global
+PageRank, community detection), no amount of tiering helps and this would need a precomputed
+per-node summary in the pipeline instead of the raw graph.
+
+**Verified** at 1 MB/s on desktop 1440x900 and iPhone 13, identical on both:
+
+| | measured |
+|---|---|
+| home view | 23 requests / 4.3 MB total; edge tiers 2 files / **10 KB**; `edges.arrow` fetched **0 times** |
+| select "Attention Is All You Need" | References **30** · Cited by **69,262** · Both **69,292** |
+| reference note | "**30 of 78** references are in this map — the other 48 cite work outside it" |
+| node shards | 1 (555 KB) for the selection, **13 total** — the 12-shard second-hop cap, exactly |
+| relevance slider | auto-opened to **top 2%** (1 − 1500/69,292), proving the post-shard recompute |
+| console | clean |

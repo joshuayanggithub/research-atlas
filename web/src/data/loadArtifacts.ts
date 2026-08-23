@@ -737,18 +737,184 @@ function makeShardLoader<T>(
   };
 }
 
-function buildAdjacency(table: Table) {
-  const citesOut = new Map<number, number[]>();
-  const citedBy = new Map<number, number[]>();
+// ---------------------------------------------------------------------------------------
+// Citation graph, in two pieces.
+//
+// edges.arrow is 110 MB (87 MB gzipped) and used to be fetched WHOLE after first paint, on
+// every visit, regardless of where the user looked. It is also over GitHub's 100 MB per-file
+// limit, so it cannot be hosted at all. Two mechanisms replace it, because there are two
+// different questions:
+//
+//   TIERS (edges-L{N}.arrow) — "what is drawable right now". An edge needs BOTH endpoints on
+//   screen, so it belongs to the tier of its deeper endpoint. The home view needs 408 of
+//   14,303,089 edges (3 KB); the eager depth needs 400,471 (2.1 MB).
+//
+//   NODE SHARDS (edges-by-node-{N}.arrow) — "everything connected to THIS paper", which
+//   ignores zoom entirely: "Attention Is All You Need" has 69,262 citers, overwhelmingly in
+//   tiers the reader has not loaded.
+//
+// Tiers are disjoint (an edge belongs to exactly one), so merging them never duplicates. A
+// node shard is AUTHORITATIVE for its nodes and replaces whatever the tiers contributed, which
+// is what `completeNodes` records — the difference between "these are its references" and
+// "these are the references we happen to have", which the UI must not confuse.
+// ---------------------------------------------------------------------------------------
+
+/** Nodes whose adjacency lists are known to be COMPLETE (their node shard has landed). */
+const completeNodes = new Set<number>();
+
+export function hasCompleteEdges(node: number): boolean {
+  return completeNodes.has(node);
+}
+
+/** Merge one tier into the adjacency maps and the flat arrays the ambient layer scans. */
+function mergeEdgeTier(
+  table: Table,
+  edges: { src: Int32Array; dst: Int32Array },
+  citesOut: Map<number, number[]>,
+  citedBy: Map<number, number[]>,
+): void {
   const src = table.getChild("src")!.toArray() as Int32Array;
   const dst = table.getChild("dst")!.toArray() as Int32Array;
+  const grown = new Int32Array(edges.src.length + src.length);
+  grown.set(edges.src);
+  grown.set(src, edges.src.length);
+  const grownDst = new Int32Array(edges.dst.length + dst.length);
+  grownDst.set(edges.dst);
+  grownDst.set(dst, edges.dst.length);
+  edges.src = grown;
+  edges.dst = grownDst;
   for (let i = 0; i < src.length; i++) {
     const s = src[i];
     const d = dst[i];
-    (citesOut.get(s) ?? citesOut.set(s, []).get(s)!).push(d);
-    (citedBy.get(d) ?? citedBy.set(d, []).get(d)!).push(s);
+    // A node whose shard already landed holds the authoritative list; adding tier edges to it
+    // would duplicate entries it already has.
+    if (!completeNodes.has(s)) (citesOut.get(s) ?? citesOut.set(s, []).get(s)!).push(d);
+    if (!completeNodes.has(d)) (citedBy.get(d) ?? citedBy.set(d, []).get(d)!).push(s);
   }
-  return { edges: { src, dst }, citesOut, citedBy };
+}
+
+// Refs the tier/shard loaders need. Set once the dataset is built; before that there is
+// nothing to merge into.
+let edgesRef: { src: Int32Array; dst: Int32Array } | null = null;
+let citesOutRef: Map<number, number[]> | null = null;
+let citedByRef: Map<number, number[]> | null = null;
+
+let loadedEdgeTier = -1;
+let wantedEdgeTier = -1;
+let edgeTierPending: Promise<void> | null = null;
+
+/**
+ * Load edge tiers 0..level. Mirrors ensurePointTiles, including its hard-won detail: a deeper
+ * request arriving mid-flight must not be dropped, or the graph silently stops at whatever
+ * depth happened to be in flight when the user zoomed.
+ */
+export function ensureEdgeTiles(level: number): Promise<void> {
+  const manifest = manifestRef;
+  if (!manifest || !edgesRef || !citesOutRef || !citedByRef) return Promise.resolve();
+  const tiles = manifest.edge_tiles ?? [];
+  if (tiles.length === 0) return Promise.resolve();
+  const want = Math.min(level, tiles[tiles.length - 1].level);
+  if (want <= loadedEdgeTier) return Promise.resolve();
+  wantedEdgeTier = Math.max(wantedEdgeTier, want);
+  if (edgeTierPending) return edgeTierPending;
+
+  edgeTierPending = (async () => {
+    while (loadedEdgeTier < wantedEdgeTier) {
+      const next = loadedEdgeTier + 1;
+      const tile = tiles.find((t) => t.level === next);
+      if (tile) {
+        try {
+          const table = await fetchArrow(tile.path, next <= 1 ? "high" : "low");
+          mergeEdgeTier(table, edgesRef!, citesOutRef!, citedByRef!);
+        } catch {
+          break; // leave loadedEdgeTier where it is so a later call can retry
+        }
+      }
+      loadedEdgeTier = next;
+      edgesReady = true;
+      for (const fn of edgesReadyWaiters) fn();
+      for (const fn of edgeWaiters) fn();
+    }
+    edgeTierPending = null;
+  })();
+  return edgeTierPending;
+}
+
+const edgeWaiters: (() => void)[] = [];
+
+/** Bumps whenever more of the graph lands — tier or node shard. */
+export function onEdgesChanged(fn: () => void): () => void {
+  edgeWaiters.push(fn);
+  return () => {
+    const i = edgeWaiters.indexOf(fn);
+    if (i >= 0) edgeWaiters.splice(i, 1);
+  };
+}
+
+const edgeNodeShards = new Map<number, Promise<void>>();
+
+/**
+ * The COMPLETE network of specific papers, from their node shards.
+ *
+ * Everything the UI says about a selected paper — "30 of 78 references are in this map", the
+ * citer list, the arrows, the relevance ranking — has to be answered from complete lists. The
+ * tiers cannot do that: they hold only what is drawable at the current zoom.
+ *
+ * Capped like ensurePositionsFor: a request for more than this many shards means the caller is
+ * asking about a large slice of the corpus, and a few hundred round trips would cost far more
+ * than the bytes saved.
+ */
+export const EDGE_SHARD_CAP = 24;
+
+export async function ensureNodeEdges(nodes: number[]): Promise<void> {
+  const manifest = manifestRef;
+  if (!manifest || !citesOutRef || !citedByRef) return;
+  const rows = manifest.position_shard_rows ?? 0;
+  const count = manifest.n_edge_node_shards ?? 0;
+  if (rows <= 0 || count <= 0) {
+    // Bundle without node shards: the whole graph is the only complete source.
+    await ensureEdgeTiles(Number.MAX_SAFE_INTEGER);
+    return;
+  }
+  const want = new Set<number>();
+  for (const node of nodes) {
+    if (node < 0 || completeNodes.has(node)) continue;
+    const shard = Math.floor(node / rows);
+    if (shard < count && !edgeNodeShards.has(shard)) want.add(shard);
+  }
+  if (want.size === 0) {
+    // Still wait on anything already in flight for these nodes.
+    const inflight = nodes
+      .map((n) => edgeNodeShards.get(Math.floor(n / rows)))
+      .filter((p): p is Promise<void> => !!p);
+    await Promise.all(inflight);
+    return;
+  }
+  if (want.size > EDGE_SHARD_CAP) {
+    for (const shard of [...want].slice(EDGE_SHARD_CAP)) want.delete(shard);
+  }
+  await Promise.all([...want].map((shard) => {
+    const pending = fetchArrow(`edges-by-node-${shard}.arrow`, "high")
+      .then((table) => {
+        const ids = table.getChild("node_id")!.toArray() as Int32Array;
+        const out = table.getChild("cites_out")!;
+        const inn = table.getChild("cited_by")!;
+        for (let i = 0; i < ids.length; i++) {
+          const node = ids[i];
+          const o = out.get(i);
+          const c = inn.get(i);
+          // REPLACE, not merge: this list is authoritative, and whatever the tiers contributed
+          // is a subset of it.
+          citesOutRef!.set(node, o ? (Array.from(o) as number[]) : []);
+          citedByRef!.set(node, c ? (Array.from(c) as number[]) : []);
+          completeNodes.add(node);
+        }
+        for (const fn of edgeWaiters) fn();
+      })
+      .catch(() => { edgeNodeShards.delete(shard); });
+    edgeNodeShards.set(shard, pending);
+    return pending;
+  }));
 }
 
 function validateDataset(dataset: Dataset): void {
@@ -823,10 +989,10 @@ async function loadDatasetImpl(onProgress?: ProgressFn): Promise<Dataset> {
   // and, on a ~1 MB/s link, a minute of staring at nothing. Only titles are unique to it —
   // cited_by_count and year already ship in points.arrow — so the map is built without it and
   // titles stream in afterwards (see the background fill below).
-  // edges.arrow is deferred too. It is the WORST byte-per-value artifact in the bundle: node
-  // ids are near-random int32 so gzip only reaches 1.33x (31.9 MB -> 24 MB), making it the
-  // largest item on the wire once titles moved off. The map paints from points.arrow alone;
-  // citation links light up a moment later.
+  // The citation graph is no longer fetched whole: it is the worst byte-per-value artifact in
+  // the bundle (node ids are near-random int32, so gzip reaches only 1.33x) and at 110 MB it
+  // exceeds GitHub's per-file limit. Zoom tiers + per-node shards replaced it; see the block
+  // above mergeEdgeTier.
   // Only the first few point tiles are on the critical path. s11 emits points-L0..L15 and the
   // home view renders level 0 alone; L0-L4 is 2.66 MB against 33.1 MB for the monolithic
   // points.arrow, and deeper levels stream in as the user zooms (ensurePointTiles).
@@ -882,7 +1048,7 @@ async function loadDatasetImpl(onProgress?: ProgressFn): Promise<Dataset> {
 
   // Decoding weights come from the measured split at 912k (adjacency 1.8s, index 2.2s, points
   // 15ms), so the tail of the bar advances at roughly the rate the work actually takes.
-  // Empty until edges.arrow lands; filled in place below.
+  // Empty until the first edge tier lands; grown in place as tiers and node shards arrive.
   const regions: { parent: Int32Array; level: Int16Array } = {
     parent: new Int32Array(0),
     level: new Int16Array(0),
@@ -969,18 +1135,15 @@ async function loadDatasetImpl(onProgress?: ProgressFn): Promise<Dataset> {
     })
     .catch(() => { /* label-region filtering degrades to unavailable */ });
 
-  void fetchArrow("edges.arrow", "low")
-    .then((table) => {
-      const built = buildAdjacency(table);
-      edges.src = built.edges.src as Int32Array;
-      edges.dst = built.edges.dst as Int32Array;
-      for (const [k, v] of built.citesOut) citesOut.set(k, v);
-      for (const [k, v] of built.citedBy) citedBy.set(k, v);
-      edgesReady = true;
-      for (const fn of edgesReadyWaiters) fn();
-      edgesReadyWaiters.length = 0;
-    })
-    .catch(() => { /* map + filters still work without the citation graph */ });
+  // Citation graph: only the tiers that are drawable at the eager depth. The rest arrives as
+  // the user zooms (ensureEdgeTiles) or selects a paper (ensureNodeEdges). This replaced a
+  // single 87 MB gzipped fetch that every visit paid before drawing a single arrow.
+  edgesRef = edges;
+  citesOutRef = citesOut;
+  citedByRef = citedBy;
+  void ensureEdgeTiles(EAGER_TILE_LEVEL).catch(() => {
+    /* map + filters still work without the citation graph */
+  });
 
   // Authors, also after first paint. Waiting for the first keystroke to START a 55.9 MB
   // (~31 MB gzipped) fetch meant the first author search rendered an empty list and only

@@ -130,6 +130,12 @@ export interface Manifest {
   files: Record<string, FileMeta>;
   /** One Arrow file per reveal level, so points can be fetched progressively (s11). */
   point_tiles?: PointTileMeta[];
+  /** One Arrow file per reveal level for citation edges, loaded alongside the point tile of
+   *  the same level: an edge is drawable only when both its endpoints are. */
+  edge_tiles?: PointTileMeta[];
+  /** Per-node adjacency shards (edges-by-node-N.arrow), keyed by `position_shard_rows`.
+   *  0/absent means the bundle predates them and the whole graph is the only complete source. */
+  n_edge_node_shards?: number;
   /** s12 thinning constant; on-screen point separation is viewport_width / this. */
   tiling_base_divisor?: number;
   // Related-works neighbors are sharded for on-demand loading: shard = node_id // size.

@@ -14,6 +14,7 @@ import { lodRamp, relevanceCutoff } from "../importance";
 import {
   UNLOADED_LEVEL,
   ensurePointTiles,
+  ensureEdgeTiles,
   ensurePositionsFor,
   onPointTiles,
 } from "../../data/loadArtifacts";
@@ -113,7 +114,12 @@ export function usePointsLayer({
   const [tileTick, setTileTick] = useState(0);
   useEffect(() => onPointTiles(() => setTileTick((n) => n + 1)), []);
   useEffect(() => {
-    if (!forceAll) void ensurePointTiles(activeLevel + 1);
+    if (!forceAll) {
+      void ensurePointTiles(activeLevel + 1);
+      // Citation edges are tiered the same way and by the same rule — an edge is drawable only
+      // when both endpoints are — so the arrows for a zoom level arrive with its points.
+      void ensureEdgeTiles(activeLevel + 1);
+    }
   }, [activeLevel, forceAll]);
 
   // A filter or selection can reveal papers at ANY depth, and reveal-level tiles are ordered by

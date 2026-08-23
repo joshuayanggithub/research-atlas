@@ -18,6 +18,7 @@ import type { FilterArrays } from "../../filters/useFilterMask";
 import type { EdgeMode } from "../../state/store";
 import { importanceWeight, relevanceCutoff } from "../importance";
 import { CITER, GLOBAL_EDGE, REFERENCE } from "../citationColors";
+import { useEdgesEpoch, useNodeEdges } from "../../data/useNodeEdges";
 
 type Position = [number, number];
 type Color = [number, number, number, number];
@@ -146,6 +147,11 @@ export function useEdgeLayer({
   // match the points, which are GPU-culled), so a filtered view shows only intra-set links.
   const hideNonMatch = filter.anyOrgAuthorActive;
 
+  // More of the citation graph keeps arriving: zoom tiers for the ambient web, and the
+  // selected paper's own shard for its complete network.
+  const edgesEpoch = useEdgesEpoch();
+  useNodeEdges(ds, selectedNode);
+
   const selectedEdges = useMemo(() => {
     if (selectedNode === null) return [];
 
@@ -229,7 +235,11 @@ export function useEdgeLayer({
     }
     return edges;
   }, [ds, edgeMode, screenScale, selectedNode, relevance, relevanceThreshold,
-      monthMin, monthMax, hideNonMatch, filter.matchValue]);
+      monthMin, monthMax, hideNonMatch, filter.matchValue,
+      // The selected paper's adjacency is replaced wholesale when its shard lands, and the
+      // ambient arrays grow as zoom tiers arrive. Without this the arrows freeze at whatever
+      // fraction of the graph existed when the paper was clicked.
+      edgesEpoch]);
 
   // Match the points layer's reveal-level LOD (usePointsLayer): a global edge is only drawn
   // when BOTH endpoints are currently revealed, so the edge web thins out with the points at

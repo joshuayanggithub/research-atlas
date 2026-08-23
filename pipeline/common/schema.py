@@ -86,7 +86,11 @@ ALL_FILES = [
 # it exceeds GitHub's 100 MB per-file limit, so it must not reach a remote repo or a CDN.
 #
 # Anything added here must also be absent from the manifest, or the frontend will try to fetch it.
-LOCAL_ONLY_FILES = frozenset({PAPERS})
+# EDGES joined PAPERS here once the frontend switched to tiers + per-node shards: nothing
+# fetches the whole graph any more, and at 110 MB it is over GitHub's per-file hard limit.
+# Still emitted, because it is the source the tiers and shards are derived from and the
+# obvious thing to inspect locally.
+LOCAL_ONLY_FILES = frozenset({PAPERS, EDGES})
 
 # ---------------------------------------------------------------------------
 # Arrow schemas (large columnar artifacts).

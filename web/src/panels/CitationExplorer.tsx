@@ -9,7 +9,7 @@ import {
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import type { Dataset } from "../data/types";
 import { useStore, type EdgeMode } from "../state/store";
-import { useEdgesReady } from "../data/usePapersReady";
+import { useNodeEdges } from "../data/useNodeEdges";
 import { PaperTitle } from "./PaperTitle";
 import { PaperYear } from "./PaperYear";
 import { importanceWeight } from "../map/importance";
@@ -274,19 +274,22 @@ function CitationRows({
 export function CitationExplorer(
   { ds, node, referenceCount = -1 }: { ds: Dataset; node: number; referenceCount?: number },
 ) {
-  const edgesReady = useEdgesReady();
   const edgeMode = useStore((s) => s.edgeMode);
   const setEdgeMode = useStore((s) => s.setEdgeMode);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState(false);
 
+  // The tiers hold only what is drawable at this zoom; a paper's own shard is what makes its
+  // reference and citer lists complete. Until it lands these are empty BY DEFINITION, not
+  // because the paper has no network — `edgesReady` is what tells them apart.
+  const nodeEdgesReady = useNodeEdges(ds, node);
   const incoming = useMemo(
-    () => ranked(ds.citedBy.get(node) ?? [], ds),
-    [ds, node],
+    () => (nodeEdgesReady ? ranked(ds.citedBy.get(node) ?? [], ds) : []),
+    [ds, node, nodeEdgesReady],
   );
   const outgoing = useMemo(
-    () => ranked(ds.citesOut.get(node) ?? [], ds),
-    [ds, node],
+    () => (nodeEdgesReady ? ranked(ds.citesOut.get(node) ?? [], ds) : []),
+    [ds, node, nodeEdgesReady],
   );
 
   useEffect(() => {
@@ -364,10 +367,11 @@ export function CitationExplorer(
       {/* "References 5" on a paper that cites 18 works reads as a fact about the PAPER when it is
           really the shape of the MAP: only edges whose other end is also in this corpus can be
           drawn. Users reported this as a bug twice before it was stated.
-          Gated on edgesReady: the citation graph streams in after first paint, so before it
-          lands `outgoing` is empty and this would confidently announce "0 of 18 — the other 18
-          cite work outside it", which is false. Same placeholder-as-fact trap as D39/D41/D44. */}
-      {edgesReady && referenceCount > outgoing.length && edgeMode !== "in" && (
+          Gated on this PAPER's shard, not on the graph generally: the zoom tiers hold only what
+          is drawable at the current zoom, so before the shard lands `outgoing` is a fraction of
+          the truth and this would confidently announce "3 of 78 — the other 75 cite work
+          outside it", which is false. Same placeholder-as-fact trap as D39/D41/D44. */}
+      {nodeEdgesReady && referenceCount > outgoing.length && edgeMode !== "in" && (
         <p className="citation-note subtle">
           {outgoing.length} of {referenceCount.toLocaleString()} references are in this map — the
           other {(referenceCount - outgoing.length).toLocaleString()} cite work outside it

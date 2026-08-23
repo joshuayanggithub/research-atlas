@@ -28,6 +28,9 @@
 
 import { useMemo } from "react";
 import type { Dataset } from "../data/types";
+import { useEffect } from "react";
+import { ensureNodeEdges, hasCompleteEdges } from "../data/loadArtifacts";
+import { useEdgesEpoch, useNodeEdges } from "../data/useNodeEdges";
 
 /** Direction codes stored in `direction` (dense, one byte per paper). */
 export const DIR_NONE = 0;
@@ -58,12 +61,51 @@ export interface RelevanceScores {
   total: number;
 }
 
+// Second-hop shard budget. Bibliographic coupling needs each CANDIDATE's own references, and
+// candidates are scattered across the corpus — asking for all of them would be hundreds of
+// round trips. Candidates are ranked by citation count first, so the budget is spent on the
+// papers a reader is most likely to look at; the rest keep their direct-link score and are
+// reported as unscored rather than silently ranked on partial data.
+const SECOND_HOP_SHARDS = 12;
+
 export function useRelevanceScores(
   ds: Dataset | null,
   selectedNode: number | null,
 ): RelevanceScores | null {
+  // The selected paper's OWN network must be complete before any of this means anything: the
+  // zoom tiers would give a first hop that is a small, zoom-dependent fraction of the truth.
+  const firstHopReady = useNodeEdges(ds, selectedNode);
+  const edgesEpoch = useEdgesEpoch();
+
+  // Pull a bounded set of candidate shards for the second hop, best candidates first.
+  useEffect(() => {
+    if (!ds || selectedNode === null || selectedNode < 0 || !firstHopReady) return;
+    const rows = ds.manifest.position_shard_rows ?? 0;
+    if (!rows) return;
+    const cited = ds.points.citedByCount;
+    const network = [
+      ...(ds.citesOut.get(selectedNode) ?? []),
+      ...(ds.citedBy.get(selectedNode) ?? []),
+    ].filter((p) => p !== selectedNode);
+    network.sort((a, b) => cited[b] - cited[a]);
+    const shards = new Set<number>();
+    const wanted: number[] = [];
+    for (const p of network) {
+      const shard = Math.floor(p / rows);
+      if (!shards.has(shard)) {
+        if (shards.size >= SECOND_HOP_SHARDS) break;
+        shards.add(shard);
+      }
+      wanted.push(p);
+    }
+    if (wanted.length) void ensureNodeEdges(wanted);
+  }, [ds, selectedNode, firstHopReady]);
+
   return useMemo(() => {
     if (!ds || selectedNode === null || selectedNode < 0) return null;
+    // Before the paper's shard lands there is no honest answer; null keeps every consumer in
+    // its "no relevance data" branch instead of ranking against a fraction of the network.
+    if (!firstHopReady) return null;
 
     const n = ds.points.count;
     const refsOf = (m: number): number[] => ds.citesOut.get(m) ?? [];
@@ -96,13 +138,19 @@ export function useRelevanceScores(
     }
 
     let max = 0;
+    let fullyScored = 0;
     const raw = new Float32Array(candidates.length);
     for (let i = 0; i < candidates.length; i++) {
       const p = candidates[i];
+      // Coupling and co-citation need the CANDIDATE's own lists. Where its shard was not in
+      // budget, those lists are the zoom tiers' partial view, and counting them would rank a
+      // paper by how much of it happens to be downloaded. Fall back to the direct-link score.
+      const second = hasCompleteEdges(p);
+      if (second) fullyScored++;
       let coupling = 0;
-      for (const r of refsOf(p)) if (selRefs.has(r)) coupling++;
+      if (second) for (const r of refsOf(p)) if (selRefs.has(r)) coupling++;
       let cocitation = 0;
-      for (const c of citersOf(p)) if (selCiters.has(c)) cocitation++;
+      if (second) for (const c of citersOf(p)) if (selCiters.has(c)) cocitation++;
       // A direct link gets a +1 floor so it never scores 0 just because it happens to share no
       // other references/citers with the selected paper.
       const direct = selRefs.has(p) || selCiters.has(p) ? 1 : 0;
@@ -124,6 +172,8 @@ export function useRelevanceScores(
     inNetwork.sort((a, b) => a - b);
     const sorted = Float32Array.from(inNetwork);
 
-    return { score, direction, sorted, selected: selectedNode, scored: candidates.length, total };
-  }, [ds, selectedNode]);
+    return { score, direction, sorted, selected: selectedNode, scored: fullyScored, total };
+    // edgesEpoch: candidate shards arrive after the first pass, and the ranking improves as
+    // they do. Without it the scores freeze at the direct-link fallback.
+  }, [ds, selectedNode, firstHopReady, edgesEpoch]);
 }

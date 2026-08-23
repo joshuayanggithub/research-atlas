@@ -98,6 +98,10 @@ interface AppState {
   focusLabel: (label: Label) => void;
   setHover: (id: number | null) => void;
   setRelevanceThreshold: (t: number) => void;
+  /** Re-apply the automatic threshold once a paper's full network is known. */
+  syncAutoRelevance: (node: number) => void;
+  /** True once the user has moved the relevance slider for this selection. */
+  relevanceTouched: boolean;
   setYearRange: (min: number, max: number) => void;
   setMonthRange: (min: number, max: number) => void;
   toggleOrg: (key: string) => void;
@@ -199,6 +203,7 @@ export const useStore = create<AppState>((set) => ({
   hoverNode: null,
   focusedLabel: null,
   relevanceThreshold: 0,
+  relevanceTouched: false,
 
   filters: { ...DEFAULT_FILTERS },
   readingList: null,
@@ -236,11 +241,24 @@ export const useStore = create<AppState>((set) => ({
       // to expose. The slider was the intended remedy but started at "all", so the first thing a
       // user saw was the flood. Small networks are unaffected and still open fully.
       relevanceThreshold: id === null ? 0 : autoRelevanceThreshold(st.dataset, id),
+      // The threshold above is computed from whatever of the graph is resident. At selection
+      // time that is the zoom tiers, which for a hub is a small fraction of its network — so
+      // this has to be recomputed once the paper's own shard lands (syncAutoRelevance), unless
+      // the user has meanwhile moved the slider themselves.
+      relevanceTouched: false,
     })),
+  /** Recompute the auto threshold now that `node`'s complete network is known. */
+  syncAutoRelevance: (node) =>
+    set((st) => {
+      if (st.relevanceTouched || st.selectedNode !== node) return {};
+      const next = autoRelevanceThreshold(st.dataset, node);
+      return next === st.relevanceThreshold ? {} : { relevanceThreshold: next };
+    }),
   focusLabel: (label) =>
     set((s) => ({
       selectedNode: null,
       relevanceThreshold: 0,
+      relevanceTouched: false,
       focusedLabel: {
         id: label.id,
         x: label.x,
@@ -250,7 +268,8 @@ export const useStore = create<AppState>((set) => ({
       },
     })),
   setHover: (id) => set({ hoverNode: id }),
-  setRelevanceThreshold: (t) => set({ relevanceThreshold: Math.max(0, Math.min(1, t)) }),
+  setRelevanceThreshold: (t) =>
+    set({ relevanceThreshold: Math.max(0, Math.min(1, t)), relevanceTouched: true }),
   setYearRange: (min, max) =>
     set((s) => {
       const yearMin = s.dataset ? parseInt(s.dataset.manifest.corpus.date_from.slice(0, 4)) : 2020;

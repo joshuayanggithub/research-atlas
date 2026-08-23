@@ -32,6 +32,7 @@ import { useMemo } from "react";
 import type { Dataset } from "../data/types";
 import type { FilterArrays } from "../filters/useFilterMask";
 import { useRegionsReady } from "../data/usePapersReady";
+import { useEdgesEpoch } from "../data/useNodeEdges";
 
 // A label must cover at least this share of what you are looking at...
 const SHARE = 0.05;
@@ -58,6 +59,7 @@ export function useRelevantLabels(
   selectedNode: number | null = null,
 ): Set<number> | null {
   // regions.arrow streams in after first paint; until it lands membership cannot be resolved.
+  const edgesEpoch = useEdgesEpoch();
   const regionsReady = useRegionsReady();
   return useMemo(() => {
     if (!ds) return null;
@@ -129,5 +131,7 @@ export function useRelevantLabels(
       });
     }
     return relevant;
-  }, [ds, filter, selectedNode, regionsReady]);
+    // The selection's network grows as its shard and deeper tiers land; labels chosen
+    // from a partial network describe a fraction of what the map is showing.
+  }, [ds, filter, selectedNode, regionsReady, edgesEpoch]);
 }

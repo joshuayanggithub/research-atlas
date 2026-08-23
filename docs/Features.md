@@ -175,6 +175,10 @@ silently dropped.
 - **Combined paper and map-label search** with type-ahead. Paper results select and focus a
   paper; map-label results pan and zoom to the named semantic region and emphasize its label.
 - Paper, map-label, and author search support keyboard selection.
+- **Citation arrows cost what you can see, not what exists.** The graph arrives as zoom tiers
+  (an edge loads with the points that make it drawable) plus a per-paper shard on selection, so
+  the home view downloads 10 KB of edges instead of 87 MB — and a selected paper's counts still
+  come from its complete network, not from whatever happened to be on screen (D53).
 - **The app can be deployed independently of its data.** `VITE_DATA_BASE` points the browser
   at whatever origin hosts the artifact bundle, so GitHub Pages serves the app shell and the
   1,303-file bundle lives in object storage; `tools/publish_artifacts.sh` pushes it pre-gzipped
