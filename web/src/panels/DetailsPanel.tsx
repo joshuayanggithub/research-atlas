@@ -100,6 +100,11 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
     if (selectedNode !== null) headingRef.current?.focus();
   }, [selectedNode]);
 
+  // The selected paper's own title shard. MUST be above the early returns below: React
+  // requires the same hooks on every render, and this component returns null when nothing is
+  // selected. An empty array is the no-op case.
+  useTitles(selectedNode !== null ? [selectedNode] : []);
+
   if (selectedNode === null) return null;
   const p = ds.papers[selectedNode];
   if (!p) return null;
@@ -126,8 +131,6 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
     setAuthors(addAuthorToSelection(id, authors, selectedAuthorIds));
     selectNode(null);
   };
-  // The selected paper's own title shard.
-  useTitles(selectedNode !== null ? [selectedNode] : []);
   // "—" only when the date is KNOWN to be absent; while the index is still in flight the
   // panel says so rather than asserting a paper has no publication date.
   const dateText = detail?.publicationDate || p.publicationDate

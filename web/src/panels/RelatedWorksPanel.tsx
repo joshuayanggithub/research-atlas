@@ -25,14 +25,16 @@ export function RelatedWorksPanel({ ds, node }: { ds: Dataset; node: number }) {
     };
   }, [ds, node]);
 
+  // Titles are per-node; this panel lists a handful, so fetch exactly those. MUST be above
+  // the early returns below — this component returns before rendering while neighbours load,
+  // and a hook called on only some renders is a hooks-order violation (React #310).
+  useTitles(neighbors ? Array.from(neighbors.ids).slice(0, 30) : []);
+
   if (neighbors === null) {
     return <div className="related loading">Loading related works…</div>;
   }
   const { ids, scores } = neighbors;
   if (ids.length === 0) return <div className="related empty">No related works.</div>;
-
-  // Titles are per-node; this panel lists a handful, so fetch exactly those.
-  useTitles(Array.from(ids).slice(0, 30));
 
   return (
     <div className="related">
