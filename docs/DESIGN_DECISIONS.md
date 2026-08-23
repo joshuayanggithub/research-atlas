@@ -1395,3 +1395,52 @@ depending on how much of the app is used. Both viewports, console clean.
 headless environment is not trustworthy — the same fetch measured ~18 s *identically with and
 without a 1 MB/s throttle*, because SwiftShader rendering 1M points dominates. Quote bytes and
 request counts.
+
+## D56. The sidebar is grouped by field, and an author's work sits with the author — ACTIVE
+
+Three user-reported layout problems, all confirmed worse than described.
+
+**The topic filter listed 243 subfields flat and alphabetically.** `topics.json` has always
+carried a 26-entry `field` level and a `parent` link on every subfield; nothing used either. So
+a map that is **70% computer science** opened its topic control with "Rehabilitation",
+"Renewable Energy", "Reproductive Medicine" and "Rheumatology".
+
+It now shows the 26 fields as collapsible rows ordered by size, with the largest open by
+default and any field holding a selected subfield forced open. Measured counts:
+
+| field | papers | subfields |
+|---|---|---|
+| Computer Science | **701,297** | 11 |
+| Engineering | 110,514 | 16 |
+| Statistics | 61,020 | 4 |
+
+**Counts are computed in `s10`, not in the browser.** The obvious implementation — count
+`ds.points.subfieldId` — would have been wrong in a way that looks right: the browser can only
+count points it has DOWNLOADED, and reveal-level tiles are ordered by importance, so facets
+would be ranked by which tiles had arrived and would re-order as more did. Same
+placeholder-read-as-fact trap as D49/D51, avoided by putting the number where the data is.
+
+**The reading list was the first thing in the sidebar** (`App.tsx`), so the panel opened with a
+paragraph about Zotero above the filters the map exists for. It now follows the corpus facets.
+
+**An author's identity and their work were in opposite corners** — `.panel.author-view` at
+`top: 74px; right: 16px`, `.paper-list` at `left: 16px; bottom: 16px`. With an author selected
+the list now takes the same column: measured on desktop, author panel and list both at
+**x = 1000, width 424** (the list was at x = 16). On mobile both stack full-width, which is
+correct for a 390 px viewport.
+
+**Tradeoffs.** The topic panel costs one click to reach a non-CS field — acceptable, since the
+previous arrangement made every field equally hard to find. Anchoring the list bottom-right
+rather than directly beneath the author panel avoids measuring that panel's variable height;
+the two can overlap only if the author panel grows past ~700 px, which needs a dozen merged
+author records.
+
+**Verified** at 1 MB/s on both viewports, console clean: sidebar order ends
+`… DATES → Reading list → legend`; topic panel renders **26 field rows and only the open
+field's 11 chips** instead of 243; selecting an author yields 58 papers, 58 rows, titles filling
+in, and the list in the author's column.
+
+**Still open (needs an s10 rerun):** 6a — the curated tree is 8 companies, 4 universities and
+**one** independent lab (Redwood Research, 28 papers), while `AGENTS.md` names Anthropic,
+DeepSeek, Kimi and MiniMax as NeoLabs and none exist as roots. 6e — the author panel still shows
+no affiliation, which needs an author → org join.

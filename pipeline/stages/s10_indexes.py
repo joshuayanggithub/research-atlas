@@ -352,6 +352,15 @@ def _build_topics(corpus: pl.DataFrame) -> TopicsDoc:
             nodes[("topic", row["topic_id"])] = TopicNode(
                 id=row["topic_id"], name=row["topic_name"] or "",
                 level="topic", parent=row["subfield_id"])
+    # Exact paper counts, so the frontend can rank facets by size instead of alphabetically.
+    counts: dict[tuple[str, int], int] = {}
+    for level, col in (("field", "field_id"), ("subfield", "subfield_id"), ("topic", "topic_id")):
+        for row in corpus.group_by(col).len().iter_rows():
+            key, n = row
+            if key and key > 0:
+                counts[(level, key)] = n
+    for key, node in nodes.items():
+        node.count = counts.get(key, 0)
     return TopicsDoc(nodes=list(nodes.values()))
 
 

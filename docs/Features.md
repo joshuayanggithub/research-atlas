@@ -175,6 +175,11 @@ silently dropped.
 - **Combined paper and map-label search** with type-ahead. Paper results select and focus a
   paper; map-label results pan and zoom to the named semantic region and emphasize its label.
 - Paper, map-label, and author search support keyboard selection.
+- **Topics are browsable by field.** The filter shows 26 fields ordered by how much of the
+  corpus each holds, expanding to their subfields, instead of 243 subfields in one flat
+  alphabetical list; counts are exact, computed offline rather than from downloaded points (D56).
+- **An author's papers appear beside the author.** Selecting a researcher puts their paper list
+  in the same column as their identity panel rather than the opposite corner of the screen (D56).
 - **Search finds the paper you typed, not the one that happens to have downloaded.** Titles are
   matched through a token index covering all 1,000,490 papers from the first keystroke, so
   results no longer depend on load progress; prefixes work ("atten" finds Attention) and an

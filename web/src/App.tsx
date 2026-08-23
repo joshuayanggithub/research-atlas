@@ -161,12 +161,16 @@ export default function App() {
             </button>
           </div>
         </div>
-        <ReadingListPanel ds={dataset} />
+        {/* Corpus filters first. The reading list is a personal feature that is empty until
+            someone imports a library, and it used to sit above Organizations — so the panel
+            opened with a paragraph about Zotero rather than with the filters the map is for.
+            It stays in the sidebar, just after the facets. */}
         <OrgFilterPanel ds={dataset} />
         <TopicFilter ds={dataset} />
         <AuthorFilter ds={dataset} />
         <CitationFilter ds={dataset} />
         <DateRangeSlider ds={dataset} />
+        <ReadingListPanel ds={dataset} />
         <Legend ds={dataset} />
       </aside>
 

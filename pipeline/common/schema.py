@@ -316,6 +316,11 @@ class TopicNode(BaseModel):
     name: str
     level: str  # domain | field | subfield | topic
     parent: Optional[int] = None
+    # Papers in the corpus under this node (a field sums its subfields). Counted offline
+    # because the browser can only count the points it has DOWNLOADED, and reveal-level tiles
+    # are ordered by importance — so an in-browser count would rank facets by which tiles had
+    # arrived, and would keep changing as more did.
+    count: int = 0
 
 
 class TopicsDoc(BaseModel):

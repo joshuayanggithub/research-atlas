@@ -81,6 +81,9 @@ export interface TopicNode {
   name: string;
   level: string;
   parent: number | null;
+  /** Papers in the corpus under this node (a field sums its subfields). Counted offline by
+   *  s10 — the browser can only count downloaded points, and tiles are importance-ordered. */
+  count?: number;
 }
 
 export interface TopicsDoc {

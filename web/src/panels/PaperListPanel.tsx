@@ -48,6 +48,7 @@ export function PaperListPanel({ ds }: { ds: Dataset }) {
   const [titleFrom, setTitleFrom] = useState(0);
 
   const anyFilter = !!filter?.anyOrgAuthorActive;
+  const authorActive = filters.authorIds.length > 0 && selectedNode === null;
 
 
   const { rows, total, sample } = useMemo(() => {
@@ -88,7 +89,10 @@ export function PaperListPanel({ ds }: { ds: Dataset }) {
   if (!anyFilter) return null;
 
   return (
-    <div className={`paper-list ${open ? "open" : ""}`}>
+    // With an author selected, the list moves to the right-hand column so a researcher's
+    // identity and their work are in the same place. It used to sit bottom-left while the
+    // author panel sat top-right — diagonally opposite corners of the screen.
+    <div className={`paper-list ${open ? "open" : ""} ${authorActive ? "with-author" : ""}`}>
       <button
         type="button"
         className="paper-list-toggle"
