@@ -612,6 +612,51 @@ def _emit_edge_tiles(edges: pa.Table, reveal_levels: np.ndarray) -> list[S.EdgeT
     return tiles
 
 
+def _emit_edge_node_shards(edges: pa.Table, n_nodes: int) -> int:
+    """A selected paper's full network, keyed by node.
+
+    The zoom tiers answer "what is drawable right now". They cannot answer "show everything
+    connected to THIS paper", because a hub's neighbours sit at every depth: "Attention Is All
+    You Need" has 74,228 citers, overwhelmingly in tiers a reader at that zoom has not loaded.
+    Selecting it must not require the whole graph.
+
+    Sharded exactly like points-by-node-N.arrow (same POSITION_SHARD_ROWS), so a selection's
+    positions and its network come from the same shard index.
+    """
+    src = edges.column("src").to_numpy().astype(np.int64)
+    dst = edges.column("dst").to_numpy().astype(np.int64)
+    valid = (src >= 0) & (src < n_nodes) & (dst >= 0) & (dst < n_nodes)
+    if not valid.all():
+        src, dst = src[valid], dst[valid]
+
+    # Sort by each endpoint once; a shard is then a contiguous slice of both orders, and each
+    # node's neighbours are a contiguous run inside it.
+    by_src = np.argsort(src, kind="stable")
+    src_sorted, src_partner = src[by_src], dst[by_src]
+    by_dst = np.argsort(dst, kind="stable")
+    dst_sorted, dst_partner = dst[by_dst], src[by_dst]
+    outdeg = np.bincount(src, minlength=n_nodes)
+    indeg = np.bincount(dst, minlength=n_nodes)
+
+    rows = S.POSITION_SHARD_ROWS
+    n_shards = (n_nodes + rows - 1) // rows
+    for shard in range(n_shards):
+        lo, hi = shard * rows, min((shard + 1) * rows, n_nodes)
+        a, b = np.searchsorted(src_sorted, [lo, hi])
+        c, d = np.searchsorted(dst_sorted, [lo, hi])
+        out = np.split(src_partner[a:b], np.cumsum(outdeg[lo:hi])[:-1])
+        inn = np.split(dst_partner[c:d], np.cumsum(indeg[lo:hi])[:-1])
+        table = pa.table({
+            "node_id": pa.array(np.arange(lo, hi, dtype=np.int32), pa.int32()),
+            "cites_out": pa.array([x.tolist() for x in out], pa.list_(pa.int32())),
+            "cited_by": pa.array([x.tolist() for x in inn], pa.list_(pa.int32())),
+        }, schema=S.EDGE_NODES_SCHEMA)
+        write_arrow(table, WEB_DATA_DIR / S.edges_by_node(shard))
+    log.info(f"edge node shards: {n_shards} x {rows} nodes "
+             f"(max in-degree {int(indeg.max()):,}, max out-degree {int(outdeg.max()):,})")
+    return n_shards
+
+
 def _emit_org_nodes(orgs: dict) -> tuple[int, int]:
     """Move DIRECTORY institutions' node_ids out of orgs.json into shards, in place.
 
@@ -692,6 +737,7 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     neighbor_shards, neighbor_shard_size = _emit_neighbor_shards(_neighbors_table())
     _edges = _edges_table(corpus, cfg.emit.max_edges_per_paper)
     edge_tiles = _emit_edge_tiles(_edges, reveal_levels)
+    n_edge_node_shards = _emit_edge_node_shards(_edges, corpus.height)
     # The whole graph is still written for local inspection and as a fallback for older
     # frontends, but it is 110 MB — over GitHub's per-file limit — and is NOT published.
     write_arrow(_edges, WEB_DATA_DIR / S.EDGES)
@@ -830,6 +876,7 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
         n_org_shards=n_org_shards,
         org_shard_orgs=org_shard_orgs,
         edge_tiles=edge_tiles,
+        n_edge_node_shards=n_edge_node_shards,
         author_chunk_rows=S.AUTHOR_CHUNK_ROWS,
         n_paper_shards=len(paper_shards),
         figures=(S.FiguresMeta(count=len(figure_nodes)) if figure_nodes else None),

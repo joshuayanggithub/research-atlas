@@ -389,6 +389,9 @@ class Manifest(BaseModel):
     # level (0 = coarsest). Empty/omitted for a legacy single-points.arrow bundle.
     point_tiles: list[PointTile] = []
     edge_tiles: list[EdgeTile] = []
+    # Per-node adjacency shards; they use `position_shard_rows` for their key, deliberately,
+    # so a selection's positions and its network come from the same shard index.
+    n_edge_node_shards: int = 0
     # s12's thinning constant. The frontend derives its max dot radius from it, because the
     # on-screen separation the thinning guarantees is viewport_width / base_divisor.
     tiling_base_divisor: float = 40.0
@@ -515,6 +518,25 @@ def org_nodes_shard(shard: int) -> str:
 
 def edges_tile(level: int) -> str:
     return f"edges-L{level}.arrow"
+
+
+# A selected paper's OWN network, keyed by node like points-by-node-N.arrow and using the same
+# POSITION_SHARD_ROWS, so the two are fetched together for the same selection.
+#
+# Zoom tiers (edges_tile) answer "what can be drawn right now"; they cannot answer "show me
+# everything connected to THIS paper", because a hub's neighbours live at every depth —
+# "Attention Is All You Need" has 74,228 citers, overwhelmingly in deep tiers a reader at that
+# zoom has not loaded. Measured, a shard averages 211 KB gzipped (412 KB for the one holding
+# the biggest hub), so a selection costs a single request.
+EDGE_NODES_SCHEMA = pa.schema([
+    ("node_id", pa.int32()),
+    ("cites_out", pa.list_(pa.int32())),   # papers this one references (in corpus)
+    ("cited_by", pa.list_(pa.int32())),    # papers that cite this one (in corpus)
+])
+
+
+def edges_by_node(shard: int) -> str:
+    return f"edges-by-node-{shard}.arrow"
 
 # `verified` replaces openalex_id for the one thing the resident index still needs it for:
 # telling a real OpenAlex identity from a name-hash fallback. One byte instead of ~27.
