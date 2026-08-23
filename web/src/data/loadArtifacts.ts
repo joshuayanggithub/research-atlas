@@ -447,7 +447,10 @@ export function deferredProgress(): DeferredProgress[] {
   const tiles = m.point_tiles?.length ?? 0;
   const out: DeferredProgress[] = [
     { key: "tiles", label: "map detail", loaded: Math.max(0, loadedTileLevel + 1), total: tiles },
-    { key: "titles", label: "titles", loaded: titleChunksLoaded, total: m.n_title_chunks ?? 0 },
+    // Titles are no longer a stream with an end: they are fetched per view (ensureTitles), so
+    // there is no honest "N of 489" to report. The loading pill covers the streams that DO
+    // run to completion; a pending title shows its own shimmer where it will appear.
+
     { key: "authors", label: "authors", loaded: authorChunksLoaded, total: m.n_author_chunks ?? 0 },
     { key: "edges", label: "citations", loaded: edgesReady ? 1 : 0, total: 1 },
   ];
@@ -917,6 +920,180 @@ export async function ensureNodeEdges(nodes: number[]): Promise<void> {
   }));
 }
 
+// ---------------------------------------------------------------------------------------
+// Title search.
+//
+// Search used to scan every resident title with `includes(q)`, which made results depend on
+// DOWNLOAD PROGRESS: measured during D53 verification, searching "Attention Is All You Need"
+// early in a session returned "Element-wise Attention Is All You Need" and "...Until You Need
+// Retention" but never the real paper, because the title chunk holding it had not arrived.
+// A search box that silently answers from a fraction of the corpus is the placeholder-as-fact
+// bug wearing a different hat.
+//
+// s11 emits a token -> papers index, split ALPHABETICALLY into 64 chunks (~115 KB gzipped,
+// 224 KB worst case). Alphabetical order is what makes prefix search possible without shipping
+// the vocabulary: "atten" is a contiguous run of tokens, so it lives in one or two known files.
+// ---------------------------------------------------------------------------------------
+
+const searchChunkCache = new Map<number, Promise<Map<string, number[]>>>();
+
+/** How many index chunks one query may fetch. A query with more distinct tokens than this is
+ *  answered from the ones that matter most (longest tokens are the most selective). */
+const SEARCH_CHUNK_CAP = 4;
+/** How many distinct tokens a prefix may expand to inside its chunk. */
+const PREFIX_EXPANSION_CAP = 64;
+
+function loadSearchChunk(chunk: number): Promise<Map<string, number[]>> {
+  let pending = searchChunkCache.get(chunk);
+  if (!pending) {
+    pending = fetchArrow(`title-tokens-${chunk}.arrow`, "high")
+      .then((t) => {
+        const tokens = t.getChild("token")!;
+        const lists = t.getChild("node_ids")!;
+        const out = new Map<string, number[]>();
+        for (let i = 0; i < t.numRows; i++) {
+          const v = lists.get(i);
+          out.set(String(tokens.get(i) ?? ""), v ? (Array.from(v) as number[]) : []);
+        }
+        return out;
+      })
+      .catch((e) => {
+        searchChunkCache.delete(chunk);
+        throw e;
+      });
+    searchChunkCache.set(chunk, pending);
+  }
+  return pending;
+}
+
+/** Chunks whose alphabetical range could contain `token` (or tokens starting with it). */
+function chunksFor(token: string): number[] {
+  const chunks = manifestRef?.search_chunks ?? [];
+  const hits: number[] = [];
+  for (const c of chunks) {
+    // A prefix matches a chunk when it is not entirely after `last` nor before `first`.
+    // Compare against `last` on the prefix length so "atten" still matches a chunk whose
+    // last token is "attention…".
+    const beforeStart = token < c.first.slice(0, token.length);
+    const afterEnd = token > c.last.slice(0, Math.max(token.length, c.last.length));
+    if (!beforeStart && !afterEnd) hits.push(c.chunk);
+  }
+  return hits;
+}
+
+export interface TitleSearchResult {
+  nodes: number[];
+  /** True while an index chunk this query needs is still being fetched. */
+  pending: boolean;
+}
+
+/**
+ * Node ids whose titles contain every token of `query`.
+ *
+ * The LAST token is treated as a prefix, because the user is probably still typing it.
+ */
+export async function searchTitles(query: string): Promise<number[]> {
+  const words = query.toLowerCase().match(/[a-z0-9]+/g)?.filter((w) => w.length >= 2) ?? [];
+  if (words.length === 0) return [];
+  // Longest first: the most selective tokens are the ones worth spending the chunk budget on.
+  const ordered = [...new Set(words)].sort((a, b) => b.length - a.length);
+  const isLastWord = (w: string) => w === words[words.length - 1];
+
+  let result: Set<number> | null = null;
+  let fetched = 0;
+  for (const word of ordered) {
+    const wanted = chunksFor(word);
+    if (wanted.length === 0) continue;
+    if (fetched >= SEARCH_CHUNK_CAP) break;
+    fetched += wanted.length;
+    const tables = await Promise.all(wanted.map((c) => loadSearchChunk(c).catch(() => null)));
+    const hits = new Set<number>();
+    for (const table of tables) {
+      if (!table) continue;
+      const exact = table.get(word);
+      if (exact) for (const n of exact) hits.add(n);
+      if (isLastWord(word)) {
+        // Prefix expansion: the user is mid-word, so "atten" should also find "attention".
+        let expanded = 0;
+        for (const [tok, nodes] of table) {
+          if (tok.length > word.length && tok.startsWith(word)) {
+            for (const n of nodes) hits.add(n);
+            if (++expanded >= PREFIX_EXPANSION_CAP) break;
+          }
+        }
+      }
+    }
+    if (hits.size === 0) return [];          // a token nothing matches means no result
+    result = result === null
+      ? hits
+      : new Set<number>([...result].filter((n: number) => hits.has(n)));
+    if (result.size === 0) return [];
+  }
+  return result ? [...result] : [];
+}
+
+// Titles, fetched for the papers a view actually shows.
+//
+// Measured against real access patterns at 2048 rows/shard: a citation panel costs 19 requests
+// / 1.2 MB, a reference list 21 / 1.4 MB, ten search results 10 / 0.6 MB — against 31.1 MB
+// streamed on every visit before. The one expensive pattern is a 500-row list (322 shards), so
+// callers pass the rows on SCREEN rather than every row they could show.
+
+const titleShards = new Map<number, Promise<void>>();
+
+/** Shards whose titles have landed, so "" can be read as "no title" rather than "not yet". */
+const loadedTitleShards = new Set<number>();
+
+export function titleLoaded(node: number): boolean {
+  const rows = manifestRef?.title_chunk_rows ?? 0;
+  if (rows <= 0) return arePapersReady();
+  return loadedTitleShards.has(Math.floor(node / rows));
+}
+
+/** Ceiling per call. A caller asking for more than this is asking about a slice of the corpus,
+ *  not a screenful, and should be passing visible rows instead. */
+export const TITLE_SHARD_CAP = 24;
+
+export async function ensureTitles(nodes: number[]): Promise<void> {
+  const manifest = manifestRef;
+  const papers = papersRef;
+  if (!manifest || !papers) return;
+  const rows = manifest.title_chunk_rows ?? 0;
+  const count = manifest.n_title_chunks ?? 0;
+  if (rows <= 0 || count <= 0) return;
+
+  const want: number[] = [];
+  for (const node of nodes) {
+    if (node < 0) continue;
+    const shard = Math.floor(node / rows);
+    if (shard < count && !titleShards.has(shard) && !want.includes(shard)) want.push(shard);
+    if (want.length >= TITLE_SHARD_CAP) break;
+  }
+  if (want.length === 0) {
+    await Promise.all(nodes
+      .map((n) => titleShards.get(Math.floor(n / rows)))
+      .filter((p): p is Promise<void> => !!p));
+    return;
+  }
+  await Promise.all(want.map((shard) => {
+    const pending = fetchArrow(`papers-titles-${shard}.arrow`, "high")
+      .then((table) => {
+        const ids = table.getChild("node_id")!.toArray() as Int32Array;
+        const titles = table.getChild("title")!;
+        for (let i = 0; i < ids.length; i++) {
+          const row = papers[ids[i]];
+          if (row) row.title = titles.get(i);
+        }
+        loadedTitleShards.add(shard);
+        titleChunksLoaded = loadedTitleShards.size;
+        for (const fn of papersReadyWaiters) fn();
+      })
+      .catch(() => { titleShards.delete(shard); });
+    titleShards.set(shard, pending);
+    return pending;
+  }));
+}
+
 function validateDataset(dataset: Dataset): void {
   const { manifest, points, papers, edges } = dataset;
   if (manifest.schema_version !== SUPPORTED_SCHEMA_VERSION) {
@@ -1115,7 +1292,9 @@ async function loadDatasetImpl(onProgress?: ProgressFn): Promise<Dataset> {
   // identity, so `ds.citesOut` / `ds.edges.src` stay valid references for every consumer.
   // Cell tree for exact label-region membership (2.72 MB). Needed the moment someone clicks a
   // label, so it is fetched right after paint rather than on demand.
-  void fetchArrow("regions.arrow")
+  // "low" so the interactive gate can hold it back: measured, an ungated 2.9 MB fetch made
+  // the first search-index chunk take 18.5s on a 1 MB/s link.
+  void fetchArrow("regions.arrow", "low")
     .then((table) => {
       const id = table.getChild("id")!.toArray() as Int32Array;
       const par = table.getChild("parent")!.toArray() as Int32Array;
@@ -1152,39 +1331,12 @@ async function loadDatasetImpl(onProgress?: ProgressFn): Promise<Dataset> {
   // types, and useAuthors still de-dupes so nothing is fetched twice.
   void loadAuthors().catch(() => { /* author features degrade to empty */ });
 
-  // Titles arrive as sequential chunks and are filled in place, so they appear progressively
-  // instead of all at once when a single 28 MB artifact finally lands. Each chunk notifies, so
-  // hover cards, the list and search all improve as they stream.
-  const nTitleChunks = manifest.n_title_chunks ?? 0;
-  void (async () => {
-    // Let the map paint FIRST. Decoding 16 chunks and writing 912k titles is real main-thread
-    // work, and starting it immediately delayed first render from 10.5s to 26.2s — the fetches
-    // are cheap but the Arrow decode is not. Yielding between chunks keeps the map interactive
-    // while titles fill in behind it.
-    await new Promise((r) => setTimeout(r, 1500));
-    for (let c = 0; c < nTitleChunks; c++) {
-      try {
-        const table = await fetchArrow(`papers-titles-${c}.arrow`, "low");
-        const ids = table.getChild("node_id")!.toArray() as Int32Array;
-        const titles = table.getChild("title")!;
-        for (let i = 0; i < ids.length; i++) {
-          const row = papers[ids[i]];
-          if (row) row.title = titles.get(i);
-        }
-        titleChunksLoaded = c + 1;
-        for (const fn of papersReadyWaiters) fn();
-        // Hand the main thread back between chunks so panning/zooming stays smooth.
-        await new Promise((r) => setTimeout(r, 0));
-      } catch {
-        break; // remaining titles stay blank; everything else still works
-      }
-    }
-    papersReady = true;
-    for (const fn of papersReadyWaiters) fn();
-    papersReadyWaiters.length = 0;
-  })();
-
-  void fetchArrow("papers-index.arrow")
+  // Titles are NOT streamed any more. They were 17 chunks / 31.1 MB gzipped fetched in full
+  // on every visit, to display a few dozen strings — and on a slow link they saturated the
+  // sockets, so the search index chunks a user was actively waiting on queued behind them.
+  // They are now sharded by node (2048 rows, ~72 KB gzipped) and fetched for the papers a view
+  // actually renders; see ensureTitles.
+  void fetchArrow("papers-index.arrow", "low")
     .then((table) => {
       fillPapersIndex(papers, table);
       // NOT papersReady. This file carries citation counts and availability flags; titles left
@@ -1193,7 +1345,10 @@ async function loadDatasetImpl(onProgress?: ProgressFn): Promise<Dataset> {
       // rendered as "(untitled)", a claim about the paper rather than about the download. Only
       // the chunk loop below may declare titles ready. Legacy bundles with no chunks are handled
       // where nTitleChunks is read.
-      if ((manifest.n_title_chunks ?? 0) === 0) papersReady = true;
+      // papers-index carries counts and availability flags for all N rows. Titles are no
+      // longer part of any "everything has arrived" moment — they are per-node now — so this
+      // flag means only "the resident index is in", which is what its consumers need.
+      papersReady = true;
       for (const fn of papersReadyWaiters) fn();
       papersReadyWaiters.length = 0;
     })

@@ -396,6 +396,8 @@ class Manifest(BaseModel):
     # Per-node adjacency shards; they use `position_shard_rows` for their key, deliberately,
     # so a selection's positions and its network come from the same shard index.
     n_edge_node_shards: int = 0
+    # Alphabetical ranges of the title search index chunks (see SEARCH_INDEX_CHUNKS).
+    search_chunks: list["SearchChunk"] = []
     # s12's thinning constant. The frontend derives its max dot radius from it, because the
     # on-screen separation the thinning guarantees is viewport_width / base_divisor.
     tiling_base_divisor: float = 40.0
@@ -470,14 +472,25 @@ AUTHOR_PAPERS_SCHEMA = pa.schema([
 ])
 
 
-# Titles, split into sequential chunks so the browser can fill them in progressively.
+# Titles, sharded by node id (shard = node_id // TITLE_CHUNK_ROWS).
 #
-# Titles are 71.6 MB of papers-index (28.1 MB gzipped, ~28s on a 1 MB/s link) and they cannot be
-# sharded by node the way detail is: search needs every title, and a citation panel's papers are
-# scattered across the corpus, so node-sharding would cost ~11 MB of fetches to render one panel.
-# Chunking instead keeps the total identical but lets titles appear as each chunk lands rather
-# than all at once at the end.
-TITLE_CHUNK_ROWS = 60000
+# These were 17 sequential chunks of 60,000 rows, streamed in full after first paint: 31.1 MB
+# gzipped on EVERY visit, to display a few dozen strings. The reason given for not sharding them
+# by node was that "search needs every title" and that a citation panel's scattered papers would
+# cost ~11 MB of fetches. The first premise stopped being true when the token search index
+# landed (SEARCH_INDEX_CHUNKS) — search no longer reads titles at all — and the second was
+# re-measured against real access patterns rather than estimated:
+#
+#     rows/shard   shard size   citation panel (20)   references (30)   search results (10)
+#           2048        65 KB      19 req / 1.2 MB    21 req / 1.4 MB     10 req / 0.6 MB
+#           8192       244 KB      17 req / 4.2 MB    10 req / 2.4 MB     10 req / 2.4 MB
+#
+# 2048 wins on every panel, and matches the key already used by position, detail and edge
+# shards, so a selection's title, position, detail and network all come from the same index.
+#
+# The one expensive case is the 500-row list panel (322 shards / 20.8 MB if fetched at once),
+# which is why titles there are fetched for the rows actually on screen rather than all matches.
+TITLE_CHUNK_ROWS = 2048
 
 def titles_chunk(chunk: int) -> str:
     return f"papers-titles-{chunk}.arrow"
@@ -541,6 +554,43 @@ EDGE_NODES_SCHEMA = pa.schema([
 
 def edges_by_node(shard: int) -> str:
     return f"edges-by-node-{shard}.arrow"
+
+
+# Title search: token -> the papers whose title contains it.
+#
+# Search used to scan every resident title with `includes(q)`, which forced all 1,000,490
+# titles onto the wire (31 MB gzipped in chunks) before the box could match anything — and
+# until the chunk holding it arrived, a search for "Attention Is All You Need" returned
+# parodies of the title instead of the paper. Measured during 4c verification.
+#
+# The index is 202,002 tokens / 7.1 MB gzipped whole, which is better but still an eager wait.
+# Split ALPHABETICALLY into chunks it becomes ~115 KB per query instead (max 224 KB), and the
+# ordering does something a flat index cannot: a prefix ("atten") lands in one or two known
+# chunks, so type-ahead works without shipping the whole vocabulary.
+#
+# Capped at the 200 most-cited papers per token. 97.9% of tokens are under the cap; the ones
+# over it are stopword-like, and the box shows ten results ranked by citations anyway.
+SEARCH_TOKEN_CAP = 200
+SEARCH_INDEX_CHUNKS = 64
+
+SEARCH_INDEX_SCHEMA = pa.schema([
+    ("token", pa.string()),
+    ("node_ids", pa.list_(pa.int32())),
+])
+
+
+def search_index_chunk(chunk: int) -> str:
+    return f"title-tokens-{chunk}.arrow"
+
+
+class SearchChunk(BaseModel):
+    """Which tokens live in one search-index chunk, so a query can pick the right file."""
+
+    chunk: int
+    first: str
+    last: str
+    tokens: int
+    bytes: int
 
 # `verified` replaces openalex_id for the one thing the resident index still needs it for:
 # telling a real OpenAlex identity from a name-hash fallback. One byte instead of ~27.

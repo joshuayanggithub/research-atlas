@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as _dt
 
+import re
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -657,6 +658,60 @@ def _emit_edge_node_shards(edges: pa.Table, n_nodes: int) -> int:
     return n_shards
 
 
+def _emit_search_index(corpus: pl.DataFrame) -> list[S.SearchChunk]:
+    """Title token -> papers, split into alphabetical chunks.
+
+    Search scanned every resident title with a substring test, which forced all 1,000,490
+    titles onto the wire before the box could match anything. Worse, it made results depend on
+    download progress: during verification a search for "Attention Is All You Need" returned
+    "Element-wise Attention Is All You Need" and "...Until You Need Retention", because the
+    chunk holding the real paper had not arrived.
+
+    Alphabetical chunking is what makes prefix search possible without the whole vocabulary:
+    "atten" is a contiguous run of tokens, so it lives in one or two known files.
+    """
+    tokenizer = re.compile(r"[a-z0-9]+")
+    cited = np.zeros(corpus.height, dtype=np.int64)
+    cited[corpus["node_id"].to_numpy()] = corpus["cited_by_count"].fill_null(0).to_numpy()
+
+    postings: dict[str, list[int]] = {}
+    for node, title in zip(corpus["node_id"].to_list(), corpus["title"].to_list()):
+        if not title:
+            continue
+        for word in set(tokenizer.findall(title.lower())):
+            if len(word) >= 2:
+                postings.setdefault(word, []).append(node)
+
+    items: list[tuple[str, list[int]]] = []
+    truncated = 0
+    for word in sorted(postings):
+        nodes = postings[word]
+        if len(nodes) > S.SEARCH_TOKEN_CAP:
+            truncated += 1
+            # Keep the most-cited: the box shows ten results ranked by citations, so the
+            # papers dropped here could never have been displayed anyway.
+            nodes = sorted(nodes, key=lambda n: -cited[n])[:S.SEARCH_TOKEN_CAP]
+        items.append((word, sorted(nodes)))
+
+    per = (len(items) + S.SEARCH_INDEX_CHUNKS - 1) // S.SEARCH_INDEX_CHUNKS
+    chunks: list[S.SearchChunk] = []
+    for c in range(S.SEARCH_INDEX_CHUNKS):
+        part = items[c * per:(c + 1) * per]
+        if not part:
+            continue
+        table = pa.table({
+            "token": pa.array([w for w, _ in part], pa.string()),
+            "node_ids": pa.array([n for _, n in part], pa.list_(pa.int32())),
+        }, schema=S.SEARCH_INDEX_SCHEMA)
+        path = WEB_DATA_DIR / S.search_index_chunk(c)
+        write_arrow(table, path)
+        chunks.append(S.SearchChunk(chunk=c, first=part[0][0], last=part[-1][0],
+                                    tokens=len(part), bytes=path.stat().st_size))
+    log.info(f"search index: {len(items):,} tokens in {len(chunks)} chunks "
+             f"({truncated:,} capped at {S.SEARCH_TOKEN_CAP})")
+    return chunks
+
+
 def _emit_org_nodes(orgs: dict) -> tuple[int, int]:
     """Move DIRECTORY institutions' node_ids out of orgs.json into shards, in place.
 
@@ -732,6 +787,7 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
     author_paper_paths, author_papers_shard_size, n_indexed_authors = _emit_author_papers(corpus)
     title_paths, title_chunk_rows = _emit_title_chunks(corpus)
     has_import_index = _emit_import_index(corpus)
+    search_chunks = _emit_search_index(corpus)
 
     # Neighbors are sharded for on-demand related-works loading (not shipped whole).
     neighbor_shards, neighbor_shard_size = _emit_neighbor_shards(_neighbors_table())
@@ -877,6 +933,7 @@ def run(cfg: Config | None = None, built_at: str | None = None) -> str:
         org_shard_orgs=org_shard_orgs,
         edge_tiles=edge_tiles,
         n_edge_node_shards=n_edge_node_shards,
+        search_chunks=search_chunks,
         author_chunk_rows=S.AUTHOR_CHUNK_ROWS,
         n_paper_shards=len(paper_shards),
         figures=(S.FiguresMeta(count=len(figure_nodes)) if figure_nodes else None),

@@ -1309,3 +1309,89 @@ per-node summary in the pipeline instead of the raw graph.
 | node shards | 1 (555 KB) for the selection, **13 total** — the 12-shard second-hop cap, exactly |
 | relevance slider | auto-opened to **top 2%** (1 − 1500/69,292), proving the post-shard recompute |
 | console | clean |
+
+## D54. Title search runs on a token index, not a scan of downloaded titles — ACTIVE
+
+**Context.** Search scanned every resident title with `includes(q)`. That made results depend on
+**download progress**, which is a correctness problem, not a performance one. Measured while
+verifying D53: searching the exact string "Attention Is All You Need" early in a session
+returned *"Element-wise Attention Is All You Need"* and *"Attention is All You Need Until You
+Need Retention"* — but never the paper itself, because the title chunk holding it had not
+arrived. The box looked like it was ranking badly; it was answering from a fraction of the
+corpus and saying nothing about it.
+
+**Decision.** s11 emits a token → papers index over all 1,000,490 titles, **split
+alphabetically into 64 chunks** (`SEARCH_INDEX_CHUNKS`). A query fetches the chunk(s) holding
+its tokens — ~115 KB, 224 KB worst case — rather than 7.1 MB for the whole index or 31 MB of
+titles.
+
+Alphabetical order is doing real work here, not just partitioning: **a prefix is a contiguous
+run of tokens**, so "atten" lives in one or two known files and type-ahead works without
+shipping the vocabulary. A hash-partitioned index could not do that.
+
+- `SEARCH_TOKEN_CAP = 200` most-cited papers per token. 97.9% of tokens are under it; those over
+  are stopword-like, and the box shows ten results ranked by citations anyway.
+- `SEARCH_CHUNK_CAP = 4` chunks per query, spent on the longest (most selective) tokens.
+- The last token is treated as a prefix, because the user is probably still typing it.
+
+**Tradeoffs.** Infix matching is gone: "ttenti" no longer finds "Attention", because there is no
+resident title to substring-scan. Prefix and whole-word matching cover ordinary type-ahead, and
+the alternative — keeping 31 MB of titles resident to serve infix queries — is what this
+replaced. An empty dropdown now says "searching titles…" while chunks are in flight, so
+"no matches" is never claimed before it is known.
+
+**Verified.** Exact-title query returns "Attention Is All You Need" first, followed by "Is
+Space-Time Attention All You Need for Video Understanding?" — on both viewports. Prefix "atten"
+returns the same paper first. Multi-token "residual learning image" returns "Deep Residual
+Learning for Image Recognition". A nonsense query returns empty. **7 index chunks / 903 KB**
+across a whole session of varied queries. Console clean.
+
+## D55. Titles are sharded by node — overturning D-era reasoning that they could not be — ACTIVE
+
+**Context.** Titles shipped as 17 sequential chunks of 60,000 rows, streamed in full after first
+paint: **31.1 MB gzipped on every visit**, to display a few dozen strings. They also saturated
+the sockets, so an interactive fetch a user was waiting on queued behind them.
+
+The schema comment explicitly argued this was necessary: *"they cannot be sharded by node the
+way detail is: search needs every title, and a citation panel's papers are scattered across the
+corpus, so node-sharding would cost ~11 MB of fetches to render one panel."*
+
+**Both premises were re-checked rather than trusted.** The first expired when D54 landed —
+search reads no titles at all now. The second was an estimate; measured against real access
+patterns it is wrong at the right shard size:
+
+| rows/shard | shard size | citation panel (20) | references (30) | search results (10) | list (500 rows) |
+|---|---|---|---|---|---|
+| **2048** | 72 KB | 19 req / **1.2 MB** | 21 / **1.4 MB** | 10 / **0.6 MB** | 322 / 20.8 MB |
+| 8192 | 244 KB | 17 / 4.2 MB | 10 / 2.4 MB | 10 / 2.4 MB | 123 / 30.1 MB |
+
+**Decision.** `TITLE_CHUNK_ROWS = 2048`, the same key already used by position, detail and edge
+shards — so a selection's title, position, detail and network all come from the same index.
+Views fetch titles for the rows they render (`ensureTitles`, `TITLE_SHARD_CAP = 24`).
+
+The one genuinely expensive pattern is the 500-row list panel, which is why it fetches a
+**24-row window that follows the scroll position** rather than every match.
+
+**Consequences.**
+- `papersReady` no longer means "all titles are in" — that moment does not exist. It now means
+  "the resident index is in". `PaperTitle` takes a `node` and asks whether **that paper's**
+  shard has landed, so "(untitled)" still means the paper has no title rather than "not yet".
+- The loading readout dropped its "titles" row: there is no honest "N of 489" for a stream that
+  never runs to completion.
+- Every view that renders a title must call `useTitles`, or it will shimmer forever.
+
+**Also fixed here:** `regions.arrow` and `papers-index.arrow` were fetched with **no priority**,
+so the interactive gate never applied and they could hold sockets while a user waited on a
+search. Both are now `"low"`.
+
+**Revert condition.** If a view ever needs titles for thousands of scattered papers at once
+(a CSV export, a client-side re-ranking pass), the window approach does not cover it and those
+would need a purpose-built artifact.
+
+**Verified.** Titles fell from a 31.1 MB stream on every visit to **2–28 shards / 0.13–2.07 MB**
+depending on how much of the app is used. Both viewports, console clean.
+
+**Measurement caveat recorded for whoever comes next:** per-request wall-clock timing in this
+headless environment is not trustworthy — the same fetch measured ~18 s *identically with and
+without a 1 MB/s throttle*, because SwiftShader rendering 1M points dominates. Quote bytes and
+request counts.

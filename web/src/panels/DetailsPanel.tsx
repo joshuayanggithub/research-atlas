@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dataset, PaperDetail } from "../data/types";
 import { useStore } from "../state/store";
 import { PaperTitle } from "./PaperTitle";
+import { useTitles } from "../data/useTitles";
 import { useAuthors } from "../data/useAuthors";
 import { addAuthorToSelection } from "../data/authorIdentity";
 import { ArxivPreview } from "./ArxivPreview";
@@ -125,6 +126,8 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
     setAuthors(addAuthorToSelection(id, authors, selectedAuthorIds));
     selectNode(null);
   };
+  // The selected paper's own title shard.
+  useTitles(selectedNode !== null ? [selectedNode] : []);
   // "—" only when the date is KNOWN to be absent; while the index is still in flight the
   // panel says so rather than asserting a paper has no publication date.
   const dateText = detail?.publicationDate || p.publicationDate
@@ -172,7 +175,7 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
       >
         <X size={18} aria-hidden="true" />
       </button>
-      <h3 ref={headingRef} tabIndex={-1}><PaperTitle title={p.title} /></h3>
+      <h3 ref={headingRef} tabIndex={-1}><PaperTitle title={p.title} node={selectedNode ?? undefined} /></h3>
       <div className="meta authors">
         {authorNames.length > 0
           ? (showAllAuthors ? authorNames : authorNames.slice(0, AUTHOR_PREVIEW)).map((name, i) => {

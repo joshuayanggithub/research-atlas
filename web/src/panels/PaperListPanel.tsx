@@ -17,11 +17,18 @@ import { useFilterMask } from "../filters/useFilterMask";
 import { usePapersReady, usePointTilesEpoch } from "../data/usePapersReady";
 import { useSetLabel } from "../data/useSetLabel";
 import { PaperTitle } from "./PaperTitle";
+import { useTitles } from "../data/useTitles";
 import { PaperYear } from "./PaperYear";
 
 // Rendering every row of a 900k-paper result would freeze the tab and help nobody; the list is
 // for inspecting a selection, and anything past this is better narrowed with another facet.
 const MAX_ROWS = 500;
+// Rough row height, used only to work out which rows are on screen so their titles can be
+// fetched. Being a few rows out costs one extra 72 KB shard, not correctness.
+const ROW_HEIGHT_PX = 46;
+// Rows whose titles are fetched around the scroll position. Matches TITLE_SHARD_CAP, so one
+// scroll never asks for more shards than the loader will serve in a single call.
+const TITLE_WINDOW = 24;
 // Papers sampled to characterise the selection. Enough for stable term statistics without
 // walking a 31k-paper region on every filter change.
 const TOPIC_SAMPLE = 2000;
@@ -37,8 +44,11 @@ export function PaperListPanel({ ds }: { ds: Dataset }) {
   const tilesEpoch = usePointTilesEpoch();
   const [open, setOpen] = useState(false);
   const [sort, setSort] = useState<Sort>("citations");
+  // First row whose title we have asked for; moves with the scroll position.
+  const [titleFrom, setTitleFrom] = useState(0);
 
   const anyFilter = !!filter?.anyOrgAuthorActive;
+
 
   const { rows, total, sample } = useMemo(() => {
     if (!filter || !anyFilter) return { rows: [] as number[], total: 0, sample: [] as number[] };
@@ -67,6 +77,9 @@ export function PaperListPanel({ ds }: { ds: Dataset }) {
     // tilesEpoch: matchValue is incomplete until every point tile has arrived (D23/D25).
     // papersReady: titles arrive separately and change what the rows read.
   }, [ds, filter, anyFilter, filters.monthMin, filters.monthMax, sort, tilesEpoch, papersReady]);
+
+  // Only the rows on screen need titles (see ROW_HEIGHT_PX).
+  useTitles(rows.slice(titleFrom, titleFrom + TITLE_WINDOW));
 
   // Characterise the whole filtered set, not just the rows shown. Uses the same c-TF-IDF idea
   // s07 uses for regions, over titles.
@@ -123,7 +136,15 @@ export function PaperListPanel({ ds }: { ds: Dataset }) {
             </div>
           </div>
 
-          <ol className="paper-list-rows">
+          <ol
+            className="paper-list-rows"
+            // Titles are per-node shards now. Fetching all 500 rows' titles would be 322
+            // requests and 20.8 MB (measured); fetching the ones on screen is ~24 x 72 KB.
+            onScroll={(e) => {
+              const first = Math.floor(e.currentTarget.scrollTop / ROW_HEIGHT_PX);
+              setTitleFrom(Math.max(0, first - 4));
+            }}
+          >
             {rows.map((node) => {
               const p = ds.papers[node];
               return (
@@ -134,7 +155,7 @@ export function PaperListPanel({ ds }: { ds: Dataset }) {
                     onClick={() => selectNode(node)}
                   >
                     <span className="paper-row-title">
-                      <PaperTitle title={p?.title} />
+                      <PaperTitle title={p?.title} node={node} />
                     </span>
                     <span className="paper-row-meta subtle">
                       <PaperYear paper={p} /> ·{" "}

@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import type { Dataset } from "../data/types";
 import { useStore, type EdgeMode } from "../state/store";
 import { useNodeEdges } from "../data/useNodeEdges";
+import { useTitles } from "../data/useTitles";
 import { PaperTitle } from "./PaperTitle";
 import { PaperYear } from "./PaperYear";
 import { importanceWeight } from "../map/importance";
@@ -213,6 +214,9 @@ function CitationRows({
   const selectNode = useStore((s) => s.selectNode);
   const setHover = useStore((s) => s.setHover);
   const shown = expanded ? ids : ids.slice(0, LIST_LIMIT);
+  // Titles are per-node now; fetch the ones this list renders. `shown` is already the
+  // truncated set, so an expanded 69,262-citer list still asks only for what it draws.
+  useTitles(shown.slice(0, 60));
 
   if (ids.length === 0) {
     // "No references in this corpus" and "nobody extracted this paper's references" look
@@ -259,7 +263,7 @@ function CitationRows({
                 )}
               </span>
               <span className="citation-paper">
-                <PaperTitle className="citation-title" title={paper.title} />
+                <PaperTitle className="citation-title" title={paper.title} node={id} />
                 <span className="citation-meta"><PaperYear paper={paper} /></span>
               </span>
               <span className="citation-count">{paper.citedByCount.toLocaleString()}</span>

@@ -175,6 +175,13 @@ silently dropped.
 - **Combined paper and map-label search** with type-ahead. Paper results select and focus a
   paper; map-label results pan and zoom to the named semantic region and emphasize its label.
 - Paper, map-label, and author search support keyboard selection.
+- **Search finds the paper you typed, not the one that happens to have downloaded.** Titles are
+  matched through a token index covering all 1,000,490 papers from the first keystroke, so
+  results no longer depend on load progress; prefixes work ("atten" finds Attention) and an
+  empty dropdown says it is still searching rather than claiming no matches (D54).
+- **Titles are fetched for what is on screen.** They were a 31.1 MB download on every visit; a
+  view now pulls only the ~72 KB shards holding the rows it renders, and a long list fetches a
+  window that follows the scroll position (D55).
 - **Citation arrows cost what you can see, not what exists.** The graph arrives as zoom tiers
   (an edge loads with the points that make it drawable) plus a per-paper shard on selection, so
   the home view downloads 10 KB of edges instead of 87 MB — and a selected paper's counts still

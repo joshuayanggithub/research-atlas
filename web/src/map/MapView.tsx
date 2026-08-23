@@ -14,6 +14,7 @@ import { useStore } from "../state/store";
 import { PaperTitle } from "../panels/PaperTitle";
 import { useHoverAuthors } from "../panels/useHoverAuthors";
 import { PaperYear } from "../panels/PaperYear";
+import { useTitles } from "../data/useTitles";
 import { useEdgesReady, usePapersReady } from "../data/usePapersReady";
 import { onPointTiles } from "../data/loadArtifacts";
 import { useFilterMask } from "../filters/useFilterMask";
@@ -283,6 +284,9 @@ export function MapView({ ds }: { ds: Dataset }) {
   const hoverPaper =
     hoverNode !== null && hoverNode !== selectedNode ? ds.papers[hoverNode] : null;
   const hoverAuthors = useHoverAuthors(ds, hoverPaper ? hoverNode : null);
+  // Titles are per-node shards; the hover card needs this one. The shard is 72 KB and is the
+  // same block the next hovered paper will almost certainly fall in.
+  useTitles(hoverNode !== null && hoverNode >= 0 ? [hoverNode] : []);
   const hoverLabel =
     hoverLabelId !== null ? ds.labels.labels.find((l) => l.id === hoverLabelId) ?? null : null;
 
@@ -310,7 +314,7 @@ export function MapView({ ds }: { ds: Dataset }) {
             top: Math.min(hoverPos.y + 14, viewportSize.height - 130),
           }}
         >
-          <div className="node-tooltip-title"><PaperTitle title={hoverPaper.title} /></div>
+          <div className="node-tooltip-title"><PaperTitle title={hoverPaper.title} node={hoverNode ?? undefined} /></div>
           {/* Authors arrive a beat after the title (detail shard). Rendered only once present —
               never as an em dash or an empty line, which would read as "this paper has no
               authors" rather than "not fetched yet". */}

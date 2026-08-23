@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import type { Dataset, NeighborList } from "../data/types";
 import { useStore } from "../state/store";
 import { PaperTitle } from "./PaperTitle";
+import { useTitles } from "../data/useTitles";
 import { PaperYear } from "./PaperYear";
 
 export function RelatedWorksPanel({ ds, node }: { ds: Dataset; node: number }) {
@@ -30,6 +31,9 @@ export function RelatedWorksPanel({ ds, node }: { ds: Dataset; node: number }) {
   const { ids, scores } = neighbors;
   if (ids.length === 0) return <div className="related empty">No related works.</div>;
 
+  // Titles are per-node; this panel lists a handful, so fetch exactly those.
+  useTitles(Array.from(ids).slice(0, 30));
+
   return (
     <div className="related">
       <h4>Related works</h4>
@@ -46,7 +50,7 @@ export function RelatedWorksPanel({ ds, node }: { ds: Dataset; node: number }) {
                 onMouseLeave={() => setHover(null)}
               >
                 <span className="score">{scores[i]?.toFixed(2)}</span>
-                <PaperTitle className="rtitle" title={p.title} />
+                <PaperTitle className="rtitle" title={p.title} node={nid} />
                 <span className="ryear"><PaperYear paper={p} /></span>
               </button>
             </li>

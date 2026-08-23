@@ -8,11 +8,17 @@
 // citation panel distinguishes missing data from a real zero (D29/D39).
 
 import { usePapersReady } from "../data/usePapersReady";
+import { titleLoaded } from "../data/loadArtifacts";
 
-export function PaperTitle({ title, className }: { title: string | undefined; className?: string }) {
+export function PaperTitle(
+  { title, className, node }: { title: string | undefined; className?: string; node?: number },
+) {
   const papersReady = usePapersReady();
   if (title) return <span className={className}>{title}</span>;
-  if (papersReady) {
+  // Titles are fetched per node now, so "has it arrived?" is a question about THIS paper's
+  // shard, not about a global stream. Without the node we can only fall back to the old flag.
+  const arrived = node === undefined ? papersReady : titleLoaded(node);
+  if (arrived) {
     return (
       <span className={className}>
         <span className="subtle">(untitled)</span>

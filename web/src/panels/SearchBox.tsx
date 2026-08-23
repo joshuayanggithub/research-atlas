@@ -11,6 +11,9 @@ import type { AuthorRow, Dataset } from "../data/types";
 import { useAuthors } from "../data/useAuthors";
 import { addAuthorToSelection } from "../data/authorIdentity";
 import { usePapersReady } from "../data/usePapersReady";
+import { useTitleSearch } from "../data/useTitleSearch";
+import { useTitles } from "../data/useTitles";
+import { PaperTitle } from "./PaperTitle";
 import { useStore } from "../state/store";
 
 type SearchMatch =
@@ -58,6 +61,12 @@ export function SearchBox({ ds }: { ds: Dataset }) {
 
   // Triggers the lazy authors.arrow fetch the moment the query is long enough to search.
   const authors = useAuthors(query.trim().length >= MIN_QUERY);
+  // Papers, from the token index rather than a scan over whatever titles have downloaded.
+  const titleSearch = useTitleSearch(query.trim(), query.trim().length >= MIN_QUERY);
+  const titleHits = titleSearch.nodes;
+  // The index says WHICH papers match; their titles still have to be fetched to show
+  // and to rank. Only the handful that can be displayed.
+  useTitles(titleHits.slice(0, 40));
   // Paper titles arrive after first paint; recompute matches once they do.
   const papersReady = usePapersReady();
   // 829k names: lowercase once per load, not once per keystroke. Author chunks arrive
@@ -121,13 +130,15 @@ export function SearchBox({ ds }: { ds: Dataset }) {
       });
     }
 
+    // Papers come from the token index (useTitleSearch), which covers the whole corpus from
+    // the first query. Ranking still uses the title when it is resident — the index answers
+    // WHICH papers match; how well they match is a property of the string.
     const paperMatches: { i: number; title: string; rank: number; index: number; citedByCount: number }[] = [];
-    for (let i = 0; i < ds.papers.length; i++) {
-      const title = ds.papers[i].title;
+    for (const i of titleHits) {
+      const title = ds.papers[i]?.title ?? "";
       const lower = title.toLowerCase();
-      if (!lower.includes(q)) continue;
-      const { rank, index } = titleMatchRank(lower, q);
-      paperMatches.push({ i, title, rank, index, citedByCount: ds.papers[i].citedByCount });
+      const { rank, index } = lower ? titleMatchRank(lower, q) : { rank: 0, index: 0 };
+      paperMatches.push({ i, title, rank, index, citedByCount: ds.points.citedByCount[i] ?? 0 });
     }
     paperMatches.sort((a, b) => b.rank - a.rank || a.index - b.index || b.citedByCount - a.citedByCount);
     const paperSlots = Math.max(0, 10 - out.length);
@@ -135,7 +146,8 @@ export function SearchBox({ ds }: { ds: Dataset }) {
       out.push({ kind: "paper", key: `paper-${m.i}`, nodeId: m.i, text: m.title });
     }
     return out;
-  }, [query, ds.labels.labels, ds.papers, authors, lowerNames, papersReady]);
+  }, [query, ds.labels.labels, ds.papers, ds.points.citedByCount, authors, lowerNames,
+      papersReady, titleHits]);
 
   const choose = (match: SearchMatch) => {
     if (match.kind === "paper") {
@@ -191,9 +203,20 @@ export function SearchBox({ ds }: { ds: Dataset }) {
           }
         }}
       />
+      {/* Same distinction for papers: an empty list means "no match" only once the index chunk
+          for this query has landed. Before that it means nothing at all. */}
+      {query.trim().length >= MIN_QUERY && titleSearch.pending && matches.length === 0 && (
+        <ul className="autocomplete" role="listbox" aria-live="polite">
+          <li role="option" aria-selected={false}>
+            <button type="button" disabled>
+              <span className="subtle">searching titles…</span>
+            </button>
+          </li>
+        </ul>
+      )}
       {/* An empty author section is indistinguishable from "no such author", so say which it
           is while the 55.9 MB author index is still streaming in. */}
-      {query.trim().length >= MIN_QUERY && authors.length === 0 && (
+      {query.trim().length >= MIN_QUERY && !titleSearch.pending && authors.length === 0 && (
         <ul className="autocomplete" role="listbox" aria-live="polite">
           <li role="option" aria-selected={false}>
             <button type="button" disabled>
@@ -217,7 +240,11 @@ export function SearchBox({ ds }: { ds: Dataset }) {
                 onMouseEnter={() => setActiveIndex(index)}
                 onClick={() => choose(m)}
               >
-                <span>{m.text}</span>
+                {/* A paper the index matched but whose title has not downloaded yet would
+                    render as an empty row labelled "Paper" — a result you cannot read and
+                    cannot tell from a bug. PaperTitle shows the same shimmer used everywhere
+                    else instead. */}
+                <span>{m.kind === "paper" ? <PaperTitle title={m.text} node={m.nodeId} /> : m.text}</span>
                 <span className="count">
                   {m.kind === "label"
                     ? `Map label · ${m.count.toLocaleString()}`
