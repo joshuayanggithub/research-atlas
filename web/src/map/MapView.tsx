@@ -26,6 +26,10 @@ import { useRelevantLabels } from "./useRelevantLabels";
 import { useRelevanceScores } from "./useRelevanceScores";
 import { coordsCenter, fitMatching, fitZoom } from "./zoom";
 
+// Left edge of the split on desktop: the sidebar is 296px at left:16, and a pane drawn
+// underneath it is a pane you cannot read.
+const SIDEBAR_INSET = 328;
+
 export function MapView({ ds }: { ds: Dataset }) {
   const [viewportSize, setViewportSize] = useState(() => ({
     width: window.innerWidth || 1200,
@@ -215,8 +219,9 @@ export function MapView({ ds }: { ds: Dataset }) {
     setHoverLabelPos(id !== null ? { x, y } : null);
   }, []);
 
-  // Declared before the layers that read it.
+  // Declared before the layers that read them.
   const compareMask = useCompareMask(ds, compare.a, compare.b);
+  const compareActive = compare.a !== null && compare.b !== null;
 
   const pointsLayers = usePointsLayer({
     ds,
@@ -236,7 +241,13 @@ export function MapView({ ds }: { ds: Dataset }) {
     compareMask: compareMask?.value ?? null,
   });
 
-  const labelLayers = useLabelLayers({
+  // Labels per pane. A pane showing one researcher's work must be named for THAT work —
+  // otherwise the split shows two identical labellings of the whole corpus, most of them
+  // hovering over regions the pane has no papers in.
+  const labelIdsA = useRelevantLabels(ds, filter, null, compareMask?.value ?? null, "a");
+  const labelIdsB = useRelevantLabels(ds, filter, null, compareMask?.value ?? null, "b");
+
+  const labelArgs = {
     labels: ds.labels.labels,
     levels: ds.manifest.levels,
     zoom,
@@ -252,11 +263,14 @@ export function MapView({ ds }: { ds: Dataset }) {
     // Clicking a label both navigates to it AND selects the papers under it, so "show me
     // World Models" is one click. Clicking it again removes the facet (toggle), and the chip
     // in the ActiveFilters bar is the other way out.
-    onClick: (label) => {
+    onClick: (label: (typeof ds.labels.labels)[number]) => {
       focusLabel(label);
       toggleLabel(label.id);
     },
-  });
+  };
+  const labelLayers = useLabelLayers(labelArgs);
+  const labelLayersA = useLabelLayers({ ...labelArgs, relevantLabelIds: labelIdsA, idSuffix: "-a" });
+  const labelLayersB = useLabelLayers({ ...labelArgs, relevantLabelIds: labelIdsB, idSuffix: "-b" });
   const edgeLayers = useEdgeLayer({
     ds,
     selectedNode,
@@ -271,6 +285,7 @@ export function MapView({ ds }: { ds: Dataset }) {
     relevanceThreshold,
     onSelect: selectNode,
     onHover: onHoverNode,
+    comparing: compareActive,
   });
 
   const layers = useMemo(
@@ -278,9 +293,9 @@ export function MapView({ ds }: { ds: Dataset }) {
       ...edgeLayers.background,
       ...pointsLayers,
       ...edgeLayers.foreground,
-      ...labelLayers,
+      ...(compareActive ? [...labelLayersA, ...labelLayersB] : labelLayers),
     ].filter(Boolean),
-    [pointsLayers, edgeLayers, labelLayers],
+    [pointsLayers, edgeLayers, labelLayers, labelLayersA, labelLayersB, compareActive],
   );
 
   const bg = ds.manifest.palette.background ?? [7, 9, 13];
@@ -290,21 +305,26 @@ export function MapView({ ds }: { ds: Dataset }) {
   // Two-sided comparison: two panes on ONE canvas, sharing one viewState so the same region
   // of semantic space sits at the same screen position in both. Unlinked cameras would make
   // the panes incomparable, which is the whole point of the split.
-  const compareActive = compare.a !== null && compare.b !== null;
   const compareViews = useMemo(() => {
     if (!compareActive) return new OrthographicView({ id: "ortho" });
     // Stack vertically on a narrow screen; side by side otherwise. Either way it is small
     // multiples — the panes must be the same size and share a camera.
     const stacked = viewportSize.width < 820;
-    return stacked
-      ? [
-          new OrthographicView({ id: "a", y: 0, height: "50%" }),
-          new OrthographicView({ id: "b", y: "50%", height: "50%" }),
-        ]
-      : [
-          new OrthographicView({ id: "a", x: 0, width: "50%" }),
-          new OrthographicView({ id: "b", x: "50%", width: "50%" }),
-        ];
+    if (stacked) {
+      return [
+        new OrthographicView({ id: "a", y: 0, height: "50%" }),
+        new OrthographicView({ id: "b", y: "50%", height: "50%" }),
+      ];
+    }
+    // Start the split clear of the sidebar. Pane A was drawing underneath it, so half the
+    // comparison sat behind a filter panel. The panes stay EQUAL width — unequal panes stop
+    // being small multiples, which is the entire reason for the split.
+    const inset = SIDEBAR_INSET;
+    const paneWidth = Math.max(160, (viewportSize.width - inset) / 2);
+    return [
+      new OrthographicView({ id: "a", x: inset, width: paneWidth }),
+      new OrthographicView({ id: "b", x: inset + paneWidth, width: paneWidth }),
+    ];
   }, [compareActive, viewportSize.width]);
 
   const hoverPaper =
@@ -323,8 +343,8 @@ export function MapView({ ds }: { ds: Dataset }) {
         // Each pane draws only its own points layer; labels and edges are shared context and
         // render in both.
         layerFilter={({ layer, viewport }) =>
-          layer.id === "points-a" ? viewport.id === "a"
-          : layer.id === "points-b" ? viewport.id === "b"
+          layer.id.endsWith("-a") ? viewport.id === "a"
+          : layer.id.endsWith("-b") ? viewport.id === "b"
           : true}
         viewState={viewState as never}
         onViewStateChange={onViewStateChange as never}
@@ -346,7 +366,8 @@ export function MapView({ ds }: { ds: Dataset }) {
           <span className="compare-divider" style={
             viewportSize.width < 820
               ? { left: 0, right: 0, top: "50%", height: 1 }
-              : { top: 0, bottom: 0, left: "50%", width: 1 }
+              : { top: 0, bottom: 0,
+                  left: SIDEBAR_INSET + (viewportSize.width - SIDEBAR_INSET) / 2, width: 1 }
           } />
           {([["a", compare.a, compareMask?.counts.a], ["b", compare.b, compareMask?.counts.b]] as const)
             .map(([slot, side, count], i) => (
@@ -360,7 +381,11 @@ export function MapView({ ds }: { ds: Dataset }) {
                 // the same y as on desktop where the sidebar is a column instead of a banner.
                 style={viewportSize.width < 820
                   ? { left: 12, top: i === 0 ? 124 : "calc(50% + 10px)" }
-                  : { left: i === 0 ? 324 : "calc(50% + 12px)", top: 74 }}
+                  : {
+                      left: SIDEBAR_INSET + 12
+                        + (i === 0 ? 0 : (viewportSize.width - SIDEBAR_INSET) / 2),
+                      top: 74,
+                    }}
               >
                 <span className={`compare-tag compare-tag-${slot}`}>{slot.toUpperCase()}</span>
                 {side.label}

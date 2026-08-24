@@ -120,7 +120,11 @@ export function usePointsLayer({
   const maxRadiusPixels = Math.max(1.5, Math.min(13, (separationPx * 0.55) / 2));
 
   const relOffset = Math.max(0, zoom - baseZoom);
-  const forceAll = selectedNode !== null || filter.anyOrgAuthorActive;
+  // Comparing counts as a forced view for the same reason a filter does: the chosen papers
+  // are scattered across every reveal level, so the LOD must be lifted AND their position
+  // shards fetched. Without this the panes drew nothing at all — every compared paper still
+  // sat at UNLOADED_LEVEL and was culled by the zoom channel.
+  const forceAll = selectedNode !== null || filter.anyOrgAuthorActive || compareMask !== null;
   // At the fit zoom (relOffset 0) show only level 0 — the sparsest, guaranteed-separated
   // set; each ~1 zoom step in reveals the next level. floor (not +1) so the home view is
   // the calibrated sparse set rather than already two levels deep.
@@ -143,17 +147,21 @@ export function usePointsLayer({
   // papers" used to mean downloading all 43 MB. Fetch the id-keyed shards holding exactly the
   // matched papers instead (~19 x 89 KB); ensurePositionsFor falls back to the full tiles when
   // the selection is broad enough that the shards stop being the cheaper option.
-  const matchKey = filter.anyOrgAuthorActive
-    ? `${selectedNode ?? -1}:${filter.matchValue.length}`
-    : "";
+  const matchKey = compareMask
+    ? `cmp:${compareMask.length}`
+    : filter.anyOrgAuthorActive
+      ? `${selectedNode ?? -1}:${filter.matchValue.length}`
+      : "";
   useEffect(() => {
     if (!forceAll) return;
     const needed: number[] = [];
     const { revealLevel } = ds.points;
     for (let i = 0; i < revealLevel.length; i++) {
-      if (revealLevel[i] === UNLOADED_LEVEL && (selectedNode === i || filter.matchValue[i] === 1)) {
-        needed.push(i);
-      }
+      if (revealLevel[i] !== UNLOADED_LEVEL) continue;
+      const wanted = compareMask
+        ? compareMask[i] !== 0
+        : selectedNode === i || filter.matchValue[i] === 1;
+      if (wanted) needed.push(i);
     }
     if (needed.length > 0) void ensurePositionsFor(needed);
     // Deliberately NOT keyed on the tile tick: useFilterMask already rebuilds matchValue when
@@ -217,11 +225,19 @@ export function usePointsLayer({
   // invisible, which reads as "the filter did nothing". Scale the dots up as the matching set
   // shrinks — a 7-paper result should look like seven papers, not dust.
   const matchCount = useMemo(() => {
+    // While comparing, the ordinary org/author filters are cleared, so this emphasis was
+    // switching off exactly when it was needed most: a pane showing 58 of a million papers
+    // drew them at ~3px, which is what "empty panes" looked like. Count the pane instead.
+    if (compareMask) {
+      let k = 0;
+      for (let i = 0; i < n; i++) if (compareMask[i] !== 0) k++;
+      return k;
+    }
     if (!filter.anyOrgAuthorActive) return -1;
     let k = 0;
     for (let i = 0; i < n; i++) if (filter.matchValue[i] === 1) k++;
     return k;
-  }, [filter.matchValue, filter.anyOrgAuthorActive, n]);
+  }, [filter.matchValue, filter.anyOrgAuthorActive, n, compareMask]);
   const emphasis =
     matchCount < 0 ? 1
       : matchCount <= 25 ? 4.0

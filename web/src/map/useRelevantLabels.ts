@@ -57,15 +57,21 @@ export function useRelevantLabels(
   ds: Dataset | null,
   filter: FilterArrays | null,
   selectedNode: number | null = null,
+  // While comparing, a pane's labels must describe THAT pane's papers. Without this both
+  // panes fell through to "no filter, no selection" and were handed the whole corpus's
+  // labels — names floating over empty space, describing work neither side did.
+  compareMask: Uint8Array | null = null,
+  compareSide: "a" | "b" | null = null,
 ): Set<number> | null {
   // regions.arrow streams in after first paint; until it lands membership cannot be resolved.
   const edgesEpoch = useEdgesEpoch();
   const regionsReady = useRegionsReady();
   return useMemo(() => {
     if (!ds) return null;
+    const comparing = compareMask !== null && compareSide !== null;
     const filterActive = !!filter?.anyOrgAuthorActive;
     const hasSelection = selectedNode !== null && selectedNode >= 0;
-    if (!filterActive && !hasSelection) return null;
+    if (!comparing && !filterActive && !hasSelection) return null;
 
     const { parent, level } = ds.regions;
     if (parent.length === 0) return null; // not loaded yet: treat every label as relevant
@@ -74,7 +80,15 @@ export function useRelevantLabels(
     // everything matching. A selection wins, being the tighter restriction and what the map draws.
     const { regionLeaf, count } = ds.points;
     const visibleIdx: number[] = [];
-    if (hasSelection) {
+    if (comparing) {
+      // Codes: 1 = A only, 2 = both, 3 = B only (useCompareMask). "Both" belongs to each side.
+      const lo = compareSide === "a" ? 1 : 2;
+      const hi = compareSide === "a" ? 2 : 3;
+      for (let i = 0; i < count; i++) {
+        const v = compareMask![i];
+        if (v >= lo && v <= hi) visibleIdx.push(i);
+      }
+    } else if (hasSelection) {
       const seen = new Set<number>([
         selectedNode,
         ...(ds.citesOut.get(selectedNode) ?? []),
@@ -133,5 +147,5 @@ export function useRelevantLabels(
     return relevant;
     // The selection's network grows as its shard and deeper tiers land; labels chosen
     // from a partial network describe a fraction of what the map is showing.
-  }, [ds, filter, selectedNode, regionsReady, edgesEpoch]);
+  }, [ds, filter, selectedNode, regionsReady, edgesEpoch, compareMask, compareSide]);
 }

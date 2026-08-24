@@ -26,6 +26,9 @@ interface Args {
   onHover?: (labelId: number | null, x: number, y: number) => void;
   // Clicking a label navigates to that region, the same way choosing it from search does.
   onClick?: (label: Label) => void;
+  /** Distinguishes the two label sets while comparing, so layerFilter can route each to its
+   *  own pane. Empty for the single-map case. */
+  idSuffix?: string;
 }
 
 interface PlacedLabel extends Label {
@@ -47,6 +50,7 @@ export function useLabelLayers({
   focusedLabelId,
   onHover,
   onClick,
+  idSuffix = "",
 }: Args) {
   if (!viewport) return [];
 
@@ -112,7 +116,7 @@ export function useLabelLayers({
   // One TextLayer for all placed labels (sizes vary per-datum via getSize accessor).
   return [
     new TextLayer<PlacedLabel>({
-      id: "labels",
+      id: `labels${idSuffix}`,
       data: placed,
       getPosition: (d) => [d.x, d.y] as [number, number],
       getText: (d) => d.text,

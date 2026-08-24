@@ -1733,3 +1733,37 @@ the first result → 328 / 58 / 4 co-authored.
 published bucket. The bundle is byte-identical, so pointing probes at the live site only spends
 R2 reads and Pages bandwidth without testing anything extra — worth doing once to prove a
 deployment works, not for iterating on UI.
+
+### D61 follow-up 2: the panes were labelled for the whole corpus and had no points
+
+Reported as "the two split screens show labels with empty points, instead of labels just
+relating to their papers and work". Both halves of that were true, and they had different
+causes. Found by testing locally.
+
+**No points at all.** `forceAll` — which lifts the zoom LOD *and* triggers
+`ensurePositionsFor` — was `selectedNode !== null || filter.anyOrgAuthorActive`. Comparing
+clears the org/author facets by design, so both were false: the compared papers' position
+shards were never fetched, every one stayed at `UNLOADED_LEVEL`, and the LOD channel culled
+them. The panes drew labels over nothing. Comparing now counts as a forced view.
+
+**Labels described the corpus, not the pane.** `useRelevantLabels` returns `null` — meaning
+"every label is relevant" — when there is no filter and no selection, which is exactly the
+compare state. Both panes were handed all 1M papers' labels, so names floated over regions
+neither side had a paper in. It now accepts the compare mask and a side, and `useLabelLayers`
+takes an `idSuffix` so each pane gets its own label set routed by `layerFilter`.
+
+**Dots were drawn at ~3px.** The emphasis that scales points up as the matching set shrinks
+also keyed off `filter.anyOrgAuthorActive`, so it switched off precisely when most needed — a
+pane showing 58 of a million papers. It now counts the compare mask.
+
+**Ambient edges sprawled across both panes.** They are drawn between whatever papers the zoom
+reveals, which in a comparison means links between papers belonging to *neither* side. They are
+suppressed while comparing; a selected paper's own network still draws, because that is scoped.
+
+**Pane A was underneath the sidebar.** The split now starts at `SIDEBAR_INSET`, with both panes
+kept equal width — unequal panes stop being small multiples, which is the whole point.
+
+**Verified locally**, desktop 1440x900, console clean: Neubig vs Raghunathan renders **3,209
+drawn pixels in pane A and 1,877 in pane B** (previously label text only), with pane A's dots
+under cs.AI: Large Language Models / Reinforcement Learning / cs.SE: Code Generation and pane
+B's under cs.LG: Deep Neural Networks / cs.AI: LLMs — each pane's labels naming that pane's work.

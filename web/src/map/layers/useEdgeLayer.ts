@@ -65,6 +65,8 @@ interface Args {
   // Hovering a connected paper's endpoint ring surfaces the same preview tooltip as
   // hovering a point (the ring sits atop the point layer and would otherwise swallow it).
   onHover: (node: number | null, x: number, y: number) => void;
+  /** True while two sides are being compared; suppresses the ambient web. */
+  comparing?: boolean;
 }
 
 // Edges encode exactly two things: HUE = direction (reference / citation / unrelated global
@@ -133,6 +135,7 @@ export function useEdgeLayer({
   relevanceThreshold,
   onSelect,
   onHover,
+  comparing = false,
 }: Args) {
   const relativeZoom = zoom - baseZoom;
   const sampleThreshold =
@@ -314,7 +317,11 @@ export function useEdgeLayer({
     monthMin,
   ]);
 
-  if (!show) {
+  if (!show || comparing) {
+    // Ambient edges are suppressed while comparing. They are drawn between whatever papers are
+    // revealed at this zoom, which in a comparison means links between papers that belong to
+    // NEITHER side — arrows sprawling across two panes that are meant to show one researcher's
+    // work each. The selection network still draws, because that is scoped to a paper.
     return { background: [], foreground: [] };
   }
 
