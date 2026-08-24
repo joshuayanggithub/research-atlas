@@ -3,6 +3,8 @@ import { loadDataset, type LoadProgress } from "./data/loadArtifacts";
 import { useStore } from "./state/store";
 import { MapView } from "./map/MapView";
 import { OrgFilterPanel } from "./filters/OrgFilterPanel";
+import { CompareSetup } from "./filters/ComparePanel";
+import { CompareResults } from "./panels/CompareResults";
 import { AuthorFilter } from "./filters/AuthorFilter";
 import { CitationFilter } from "./filters/CitationFilter";
 import { ActiveFilters } from "./filters/ActiveFilters";
@@ -179,6 +181,7 @@ export default function App() {
             someone imports a library, and it used to sit above Organizations — so the panel
             opened with a paragraph about Zotero rather than with the filters the map is for.
             It stays in the sidebar, just after the facets. */}
+        <CompareSetup ds={dataset} />
         <OrgFilterPanel ds={dataset} />
         <TopicFilter ds={dataset} />
         <AuthorFilter ds={dataset} />
@@ -191,6 +194,7 @@ export default function App() {
       <PaperListPanel ds={dataset} />
       <DetailsPanel ds={dataset} />
       <AuthorPanel ds={dataset} />
+      <CompareResults ds={dataset} />
     </div>
   );
 }

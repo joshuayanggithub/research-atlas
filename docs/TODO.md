@@ -12,7 +12,10 @@ titles sharded; token search index; NeoLabs curated; author affiliations. D49-D5
 
 ## 🔴 Open right now
 
-- [ ] **Compare feature — spec written, awaiting review** (`docs/COMPARE_SPEC.md`). Two authors
+- [x] **Compare feature phase 1 — built** (D61): two linked panes, counts, shared papers.
+      Phases 2 (topic/year profiles) and 3 (shared collaborators, needs an s10 precompute)
+      remain. Known rough edge: labels duplicate across panes and clip at the seam.
+- [ ] ~~Compare feature — spec written, awaiting review~~ (`docs/COMPARE_SPEC.md`). Two authors
       or two institutions as **two linked panes on one deck.gl canvas** (multi-view +
       layerFilter), with shared papers accented in both and a comparison panel (counts, shared
       papers, topic and year profiles). The spec originally proposed a single-map overlay and

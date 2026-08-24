@@ -19,6 +19,19 @@ export interface LabelFocus {
   requestId: number;
 }
 
+/** One side of a comparison: an author identity group, or an org (optionally with units). */
+export type CompareSide =
+  | { kind: "author"; ids: number[]; label: string }
+  | { kind: "org"; keys: string[]; label: string };
+
+/** Two-sided comparison. Deliberately separate from `filters`: it drives its own mask and its
+ *  own view split, and merging it into the filter facets would put two systems in charge of
+ *  what the map shows. */
+export interface CompareState {
+  a: CompareSide | null;
+  b: CompareSide | null;
+}
+
 export interface Filters {
   // Date range as month indices (months since corpus start month). monthMin/monthMax are
   // the source of truth for filtering; yearMin/yearMax are kept in sync for coarse display
@@ -68,6 +81,7 @@ interface AppState {
 
   // view
   colorMode: ColorMode;
+  compare: CompareState;
   orgDisplayMode: OrgDisplayMode;
   edgeMode: EdgeMode;
   showCitationEdges: boolean;
@@ -90,6 +104,8 @@ interface AppState {
   setDataset: (d: Dataset) => void;
   setError: (e: string) => void;
   setColorMode: (m: ColorMode) => void;
+  setCompareSide: (side: "a" | "b", value: CompareSide | null) => void;
+  clearCompare: () => void;
   setOrgDisplayMode: (m: OrgDisplayMode) => void;
   setEdgeMode: (m: EdgeMode) => void;
   setShowCitationEdges: (visible: boolean) => void;
@@ -194,6 +210,7 @@ export const useStore = create<AppState>((set) => ({
   error: null,
 
   colorMode: "subfield",
+  compare: { a: null, b: null },
   orgDisplayMode: "dim",
   edgeMode: "both",
   showCitationEdges: true,
@@ -225,6 +242,17 @@ export const useStore = create<AppState>((set) => ({
   },
   setError: (e) => set({ error: e, loading: false }),
   setColorMode: (m) => set({ colorMode: m }),
+  setCompareSide: (side, value) =>
+    set((st) => {
+      const compare = { ...st.compare, [side]: value };
+      // A comparison replaces the ordinary org/author facets rather than stacking with them:
+      // two systems deciding what is on screen is how a filter bar starts lying about counts.
+      const active = compare.a !== null && compare.b !== null;
+      return active
+        ? { compare, selectedNode: null, filters: { ...st.filters, orgKeys: [], authorIds: [] } }
+        : { compare };
+    }),
+  clearCompare: () => set({ compare: { a: null, b: null } }),
   setOrgDisplayMode: (m) => set({ orgDisplayMode: m }),
   setEdgeMode: (m) => set({ edgeMode: m }),
   setShowCitationEdges: (visible) => set({ showCitationEdges: visible }),

@@ -13,6 +13,7 @@ import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
 import { PaperTitle } from "../panels/PaperTitle";
 import { useHoverAuthors } from "../panels/useHoverAuthors";
+import { useCompareMask } from "../filters/useCompareMask";
 import { PaperYear } from "../panels/PaperYear";
 import { useTitles } from "../data/useTitles";
 import { useEdgesReady, usePapersReady } from "../data/usePapersReady";
@@ -71,6 +72,7 @@ export function MapView({ ds }: { ds: Dataset }) {
   const selectedNode = useStore((s) => s.selectedNode);
   const focusedLabel = useStore((s) => s.focusedLabel);
   const hoverNode = useStore((s) => s.hoverNode);
+  const compare = useStore((s) => s.compare);
   const selectNode = useStore((s) => s.selectNode);
   const focusLabel = useStore((s) => s.focusLabel);
   const toggleLabel = useStore((s) => s.toggleLabel);
@@ -213,7 +215,10 @@ export function MapView({ ds }: { ds: Dataset }) {
     setHoverLabelPos(id !== null ? { x, y } : null);
   }, []);
 
-  const pointsLayer = usePointsLayer({
+  // Declared before the layers that read it.
+  const compareMask = useCompareMask(ds, compare.a, compare.b);
+
+  const pointsLayers = usePointsLayer({
     ds,
     colorMode,
     filter: filter!,
@@ -228,6 +233,7 @@ export function MapView({ ds }: { ds: Dataset }) {
     viewportWidth: viewportSize.width,
     onClick: selectNode,
     onHover: onHoverNode,
+    compareMask: compareMask?.value ?? null,
   });
 
   const labelLayers = useLabelLayers({
@@ -270,17 +276,37 @@ export function MapView({ ds }: { ds: Dataset }) {
   const layers = useMemo(
     () => [
       ...edgeLayers.background,
-      pointsLayer,
+      ...pointsLayers,
       ...edgeLayers.foreground,
       ...labelLayers,
     ].filter(Boolean),
-    [pointsLayer, edgeLayers, labelLayers],
+    [pointsLayers, edgeLayers, labelLayers],
   );
 
   const bg = ds.manifest.palette.background ?? [7, 9, 13];
 
   // Hover card: title/year/citations come straight from the resident index (no fetch); author
   // names come from the paper's detail shard, which is cached per block (see useHoverAuthors).
+  // Two-sided comparison: two panes on ONE canvas, sharing one viewState so the same region
+  // of semantic space sits at the same screen position in both. Unlinked cameras would make
+  // the panes incomparable, which is the whole point of the split.
+  const compareActive = compare.a !== null && compare.b !== null;
+  const compareViews = useMemo(() => {
+    if (!compareActive) return new OrthographicView({ id: "ortho" });
+    // Stack vertically on a narrow screen; side by side otherwise. Either way it is small
+    // multiples — the panes must be the same size and share a camera.
+    const stacked = viewportSize.width < 820;
+    return stacked
+      ? [
+          new OrthographicView({ id: "a", y: 0, height: "50%" }),
+          new OrthographicView({ id: "b", y: "50%", height: "50%" }),
+        ]
+      : [
+          new OrthographicView({ id: "a", x: 0, width: "50%" }),
+          new OrthographicView({ id: "b", x: "50%", width: "50%" }),
+        ];
+  }, [compareActive, viewportSize.width]);
+
   const hoverPaper =
     hoverNode !== null && hoverNode !== selectedNode ? ds.papers[hoverNode] : null;
   const hoverAuthors = useHoverAuthors(ds, hoverPaper ? hoverNode : null);
@@ -293,8 +319,14 @@ export function MapView({ ds }: { ds: Dataset }) {
   return (
     <>
       <DeckGL
-        views={new OrthographicView({ id: "ortho" })}
-        viewState={viewState}
+        views={compareViews as never}
+        // Each pane draws only its own points layer; labels and edges are shared context and
+        // render in both.
+        layerFilter={({ layer, viewport }) =>
+          layer.id === "points-a" ? viewport.id === "a"
+          : layer.id === "points-b" ? viewport.id === "b"
+          : true}
+        viewState={viewState as never}
         onViewStateChange={onViewStateChange as never}
         controller={{ doubleClickZoom: false }}
         layers={layers as never}
@@ -305,6 +337,40 @@ export function MapView({ ds }: { ds: Dataset }) {
           if (!info.layer) selectNode(null);
         }}
       />
+      {/* Pane labels. Permanent, not on hover: a split screenshot with unlabelled halves is
+          unattributable, and the per-pane count is what keeps a shared camera honest — if one
+          side's work sits outside the current view, the count still says it exists.
+          Centred in each pane rather than pinned left, which put pane A behind the sidebar. */}
+      {compareActive && compare.a && compare.b && (
+        <div className="compare-pane-labels" aria-hidden="true">
+          <span className="compare-divider" style={
+            viewportSize.width < 820
+              ? { left: 0, right: 0, top: "50%", height: 1 }
+              : { top: 0, bottom: 0, left: "50%", width: 1 }
+          } />
+          {([["a", compare.a, compareMask?.counts.a], ["b", compare.b, compareMask?.counts.b]] as const)
+            .map(([slot, side, count], i) => (
+              <span
+                key={slot}
+                className="compare-pane-label"
+                // Left-aligned inside each pane, not centred: centring put pane A behind the
+                // sidebar and pane B behind the comparison panel. Pane A clears the sidebar,
+                // pane B starts just past the seam, which is well clear of the panel.
+                // Mobile pane A sits BELOW the search box (which owns the top strip), not at
+                // the same y as on desktop where the sidebar is a column instead of a banner.
+                style={viewportSize.width < 820
+                  ? { left: 12, top: i === 0 ? 124 : "calc(50% + 10px)" }
+                  : { left: i === 0 ? 324 : "calc(50% + 12px)", top: 74 }}
+              >
+                <span className={`compare-tag compare-tag-${slot}`}>{slot.toUpperCase()}</span>
+                {side.label}
+                <span className="subtle">
+                  {compareMask?.pending ? "…" : count?.toLocaleString()}
+                </span>
+              </span>
+            ))}
+        </div>
+      )}
       {hoverPaper && hoverPos && (
         <div
           className="node-tooltip"

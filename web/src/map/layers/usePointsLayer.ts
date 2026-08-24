@@ -49,6 +49,8 @@ interface Args {
   viewportWidth: number;
   onClick: (nodeId: number | null) => void;
   onHover: (nodeId: number | null, x: number, y: number) => void;
+  /** Side code per node (useCompareMask). Present only while comparing. */
+  compareMask?: Uint8Array | null;
 }
 
 // Level-of-detail thresholds and the visible-count / ramp math live in ../importance.ts
@@ -96,6 +98,7 @@ export function usePointsLayer({
   viewportWidth,
   onClick,
   onHover,
+  compareMask = null,
 }: Args) {
   const n = ds.points.count;
 
@@ -277,7 +280,13 @@ export function usePointsLayer({
 
       // --- filter channels: 0 month, 1 org/author match, 2 selection+relevance, 3 LOD ---
       filterValues[i * 4] = monthIndex[i];
-      filterValues[i * 4 + 1] = hideNonMatch ? filter.matchValue[i] : 1;
+      // Channel 1 normally carries org/author match (0/1). While comparing it carries the
+      // SIDE CODE instead (1 A, 2 both, 3 B), which lets each pane select a contiguous range
+      // without needing a fifth filter channel — deck.gl caps filterSize at 4 and the other
+      // three are the date, the selection/relevance cull and the zoom LOD.
+      filterValues[i * 4 + 1] = compareMask
+        ? compareMask[i]
+        : hideNonMatch ? filter.matchValue[i] : 1;
       filterValues[i * 4 + 2] = relScore === null
         ? 1000
         : i === selectedNode
@@ -289,10 +298,13 @@ export function usePointsLayer({
     }
     return { colors, radii, filterValues };
   }, [ds, n, rgb, geometry, relDir, relScore, selectedNode, hoverNode, hideNonMatch,
-      filter.matchValue, emphasis, tileTick]);
+      filter.matchValue, emphasis, tileTick, compareMask]);
 
-  return new ScatterplotLayer({
-    id: "points",
+  // While comparing, the SAME data object feeds two layers that differ only in which slice of
+  // channel 1 they accept — one set of typed arrays, one canvas, two panes (see the spec's
+  // reversal note: two WebGL contexts were never needed).
+  const makeLayer = (id: string, matchRange: [number, number]) => new ScatterplotLayer({
+    id,
     data: {
       length: n,
       attributes: {
@@ -356,7 +368,7 @@ export function usePointsLayer({
     extensions: [new DataFilterExtension({ filterSize: 4 })],
     filterRange: [
       [monthMin, monthMax],
-      [1, 1],
+      matchRange,
       // Selected node (1000) always passes; connected papers pass when score ≥ threshold.
       // Percentile, not raw score — see relevanceCutoff. A raw cutoff made the slider act like
       // an on/off switch in its first few percent.
@@ -366,4 +378,10 @@ export function usePointsLayer({
     // No updateTriggers: every varying attribute is now a typed array whose identity changes
     // when it is rebuilt, which is exactly the signal deck.gl needs.
   });
+
+  // Codes are ordered so each pane is a contiguous range and "both" (2) falls inside BOTH,
+  // which is what draws a shared paper in each pane. See useCompareMask.
+  return compareMask
+    ? [makeLayer("points-a", [1, 2]), makeLayer("points-b", [2, 3])]
+    : [makeLayer("points", [1, 1])];
 }

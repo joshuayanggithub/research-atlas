@@ -175,6 +175,9 @@ silently dropped.
 - **Combined paper and map-label search** with type-ahead. Paper results select and focus a
   paper; map-label results pan and zoom to the named semantic region and emphasize its label.
 - Paper, map-label, and author search support keyboard selection.
+- **Two authors or organizations can be compared side by side.** The map splits into two
+  linked panes sharing one camera, so the same region of semantic space is at the same place in
+  both; a panel gives the counts and lists the papers they share (D61).
 - **Author search costs a lookup, not a download.** Names are matched through a token index
   covering all 1,482,740 author records, so the 14.4 MB author list is no longer fetched on
   every visit; a query costs one or two ~127 KB chunks (D59).

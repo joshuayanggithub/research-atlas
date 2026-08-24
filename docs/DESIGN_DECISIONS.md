@@ -1646,3 +1646,55 @@ while the view is actively changing** — it is the only per-pointer-move GPU re
 render path. Changing the renderer (e.g. to a 2D canvas) is the wrong direction: the profile
 shows the cost is rasterisation and readback of a million points, which a CPU-side 2D canvas
 would make dramatically worse, not better.
+
+## D61. Compare is two linked panes on one canvas, phase 1 — ACTIVE
+
+Implements `docs/COMPARE_SPEC.md` phase 1: two authors or two organizations side by side, with
+counts and the shared papers themselves.
+
+**Two panes, one canvas, one set of buffers.** `views: [OrthographicView('a'),
+OrthographicView('b')]` with `layerFilter` routing each pane's points layer. The spec's first
+draft assumed split screen meant two WebGL contexts and therefore two picking readbacks — the
+operation D60 showed dominates — and that was wrong; deck.gl renders both views in one context.
+
+**The side is encoded in the filter channel that already exists.** `DataFilterExtension` caps
+`filterSize` at 4 and all four are taken (date, match, selection+relevance, zoom LOD), so
+compare could not have a channel of its own. It does not need one: the codes are ordered
+
+    0 neither   1 A only   2 both   3 B only
+
+so pane A accepts `[1, 2]`, pane B accepts `[2, 3]`, and **"both" sits in the middle precisely
+so it falls inside both ranges** and a shared paper is drawn in each pane. Both layers share the
+same typed arrays; only the range differs.
+
+**One shared `viewState`.** Panning or zooming either pane moves both, so the same region of
+semantic space sits at the same screen position in both — without that the panes are not
+comparable and the split is pointless.
+
+**The intersection is a list, not a colour.** Graham Neubig (328 papers) against Aditi
+Raghunathan (58) shares **4 co-authored papers**. Four dots would have been invisible as a third
+hue; as a list they are the most useful thing on screen. This is the measurement that justified
+reversing the overlay design.
+
+**Honesty carried through from the spec.** Counts render as a shimmer until both sides resolve
+(D51), an institutional comparison states the attribution caveat *where the number is* (~6% for
+2026, company matching per D43), and an empty intersection says "a real result, not a missing
+one" rather than looking broken.
+
+**Mobile needed a change the spec did not anticipate.** Stacked panes are correct, but the
+results panel as a bottom sheet covered the entire second pane — half of a split screen is not
+optional. It now starts collapsed on narrow screens, showing the counts with the list one tap
+away.
+
+**Known rough edges (phase 1, deliberate).**
+- Labels are duplicated across panes and clipped at the seam. Inherent to two views over the
+  same world region; each pane genuinely needs its own context. Thinning label density while
+  comparing is the obvious next step if it reads as too noisy.
+- Pane labels truncate on mobile (42vw, ellipsis).
+- Phase 2 (topic and year profiles) and phase 3 (shared collaborators, which needs an s10
+  precompute) are not built.
+
+**Verified** at 1 MB/s on desktop 1440x900 and iPhone 13, console clean on both: Neubig vs
+Raghunathan → 328 / 58 / **4 co-authored**, four shared papers listed; Carnegie Mellon vs MIT →
+15,464 / 10,366 / **328 jointly affiliated**, list capped at 50 with the cap stated. Both panes
+labelled with side and count at all times.
