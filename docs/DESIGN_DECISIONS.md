@@ -1698,3 +1698,38 @@ away.
 Raghunathan → 328 / 58 / **4 co-authored**, four shared papers listed; Carnegie Mellon vs MIT →
 15,464 / 10,366 / **328 jointly affiliated**, list capped at 50 with the cap stated. Both panes
 labelled with side and count at all times.
+
+### D61 follow-up: the picker was unusable, and compare now starts from a selection
+
+Reported after phase 1 shipped: "I can't just search up authors and don't have matching search
+results underneath each search."
+
+**Root cause — the dropdown was rendering off-screen.** `.compare-slot` had no
+`position: relative`, so the absolutely-positioned `.autocomplete` inside it anchored to
+`.sidebar` instead of the input. `top: calc(100% + 4px)` therefore meant "below the entire
+sidebar", i.e. out of view. Measured before the fix: every query returned results with
+`clipped: true`; after, the dropdown sits 4px below its input with `onScreen: true`.
+
+**Second cause — org substring matches crowded out the person.** Typing "Aditi" ranked
+"Shanghai Innovative Research Center of Tr**aditi**onal Medicine" above Aditi Raghunathan,
+because organizations were matched with a plain `includes`. Organizations now require a
+**word-boundary** match; the author is the first result.
+
+**Third — an empty box while the index loaded.** The author token index is a network fetch
+(D59), so the dropdown was blank for a beat with nothing to say. It now shows "searching…",
+the same distinction the paper search already makes.
+
+**And the interaction was backwards.** Two empty slots asked the user to name both sides from
+scratch, when the usual path is "I am already looking at this author — now show me them against
+someone else". A **Compare** button now appears on an author in the author panel and on a
+selected organization chip; it fills the first free slot (`compareWith`) and the remaining slot
+autofocuses. Reaching compare through the sidebar still works for starting cold.
+
+**Verified locally** at 1 MB/s on desktop 1440x900 and iPhone 13, console clean: select Graham
+Neubig → Compare → slot A filled → type "Aditi" in slot B → "Aditi Raghunathan Author · 58" is
+the first result → 328 / 58 / 4 co-authored.
+
+**Testing note:** these runs used a local build against `web/public/data` rather than the
+published bucket. The bundle is byte-identical, so pointing probes at the live site only spends
+R2 reads and Pages bandwidth without testing anything extra — worth doing once to prove a
+deployment works, not for iterating on UI.

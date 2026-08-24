@@ -12,7 +12,7 @@ import { useAuthorSearch } from "../data/useAuthorLookup";
 import { peekAuthorInfo } from "../data/loadArtifacts";
 import { searchDirectory, buildOrgTree } from "./orgHierarchy";
 
-function SlotPicker({ ds, slot }: { ds: Dataset; slot: "a" | "b" }) {
+function SlotPicker({ ds, slot, autoFocus }: { ds: Dataset; slot: "a" | "b"; autoFocus?: boolean }) {
   const [query, setQuery] = useState("");
   const setCompareSide = useStore((s) => s.setCompareSide);
   const q = query.trim();
@@ -21,10 +21,21 @@ function SlotPicker({ ds, slot }: { ds: Dataset; slot: "a" | "b" }) {
   const orgs = useMemo(() => {
     if (q.length < 2) return [];
     const lower = q.toLowerCase();
-    const curated = buildOrgTree(ds)
-      .filter((n) => n.inst.display_name.toLowerCase().includes(lower))
-      .map((n) => n);
-    return [...curated, ...searchDirectory(ds, q, 6)].slice(0, 6);
+    // Word-boundary matches only. A plain substring test put "Shanghai … of TrADITIonal
+    // Medicine" above the person when you typed "Aditi" — an organization matching inside a
+    // word is almost never what was meant, and it pushed the real answer off the list.
+    const word = new RegExp(`\\b${lower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i");
+    const curated = buildOrgTree(ds).filter((n) => word.test(n.inst.display_name));
+    const all = [...curated, ...searchDirectory(ds, q, 12).filter((n) => word.test(n.inst.display_name))];
+    // A name that STARTS with the query beats one that merely contains it, so typing
+    // "Neubig" is not crowded out by an institution with it buried mid-string.
+    return all
+      .sort((x, y) => {
+        const rank = (t: string) => (t.toLowerCase().startsWith(lower) ? 1 : 0);
+        return rank(y.inst.display_name) - rank(x.inst.display_name)
+          || y.inst.count - x.inst.count;
+      })
+      .slice(0, 3);
   }, [ds, q]);
 
   const choose = (side: CompareSide) => { setCompareSide(slot, side); setQuery(""); };
@@ -33,11 +44,19 @@ function SlotPicker({ ds, slot }: { ds: Dataset; slot: "a" | "b" }) {
     <div className="compare-slot">
       <input
         className="author-input"
+        autoFocus={autoFocus}
         aria-label={`Search for comparison side ${slot.toUpperCase()}`}
         placeholder="Author or organization…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
       />
+      {q.length >= 2 && authors.length === 0 && orgs.length === 0 && (
+        <ul className="autocomplete" role="listbox" aria-live="polite">
+          <li role="option" aria-selected={false}>
+            <button type="button" disabled><span className="subtle">searching…</span></button>
+          </li>
+        </ul>
+      )}
       {q.length >= 2 && (authors.length > 0 || orgs.length > 0) && (
         <ul className="autocomplete" role="listbox">
           {orgs.slice(0, 3).map((o) => (
@@ -51,7 +70,7 @@ function SlotPicker({ ds, slot }: { ds: Dataset; slot: "a" | "b" }) {
               </button>
             </li>
           ))}
-          {authors.slice(0, 3).map((a) => (
+          {authors.slice(0, 4).map((a) => (
             <li key={`author-${a.authorId}`} role="option" aria-selected={false}>
               <button
                 type="button"
@@ -111,7 +130,7 @@ export function CompareSetup({ ds }: { ds: Dataset }) {
                 <X size={11} aria-hidden="true" />
               </button>
             ) : (
-              <SlotPicker ds={ds} slot={slot} />
+              <SlotPicker ds={ds} slot={slot} autoFocus={compare[slot === "a" ? "b" : "a"] !== null} />
             )}
           </div>
         );

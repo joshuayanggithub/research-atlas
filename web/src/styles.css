@@ -790,7 +790,10 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 /* A and B need to be told apart at a glance in three places — the picker, the pane labels and
    the counts — so the tags carry the identity and nothing else has to. */
 .compare-row { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
-.compare-row .compare-slot { flex: 1 1 auto; min-width: 0; }
+/* MUST be positioned: the dropdown inside is absolutely positioned, and without this it
+   anchors to .sidebar instead — `top: 100%` then meant "below the whole sidebar", i.e. off
+   screen, which read as "search returns nothing". */
+.compare-row .compare-slot { flex: 1 1 auto; min-width: 0; position: relative; }
 .compare-row .compare-chip { flex: 1 1 auto; min-width: 0; justify-content: space-between; }
 .compare-tag {
   flex: 0 0 auto; font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
@@ -807,6 +810,10 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: var(--shadow); padding: 18px 20px; backdrop-filter: blur(12px);
 }
+.org-selected-row { display: flex; align-items: center; gap: 6px; width: 100%; }
+.org-selected-row .org-selected-chip { flex: 1 1 auto; min-width: 0; }
+.author-entry-actions { display: inline-flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+
 .compare-toggle {
   display: flex; align-items: center; gap: 6px; width: 100%; padding: 0; cursor: pointer;
   background: transparent; border: 0; color: var(--ink); text-align: left;

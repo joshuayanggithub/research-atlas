@@ -23,6 +23,7 @@ function provenanceTitle(methods: string[]): string {
 export function OrgFilterPanel({ ds }: { ds: Dataset }) {
   const filters = useStore((s) => s.filters);
   const toggleOrg = useStore((s) => s.toggleOrg);
+  const compareWith = useStore((s) => s.compareWith);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -152,16 +153,27 @@ export function OrgFilterPanel({ ds }: { ds: Dataset }) {
             const inst = ds.orgs.institutions[key];
             if (!inst) return null;
             return (
-              <button
-                type="button"
-                key={key}
-                className="chip active org-selected-chip"
-                aria-label={`Remove ${inst.display_name}`}
-                onClick={() => toggleOrg(key)}
-              >
-                <span className="org-name">{inst.display_name}</span>
-                <X size={11} aria-hidden="true" />
-              </button>
+              <span className="org-selected-row" key={key}>
+                <button
+                  type="button"
+                  className="chip active org-selected-chip"
+                  aria-label={`Remove ${inst.display_name}`}
+                  onClick={() => toggleOrg(key)}
+                >
+                  <span className="org-name">{inst.display_name}</span>
+                  <X size={11} aria-hidden="true" />
+                </button>
+                {/* Same entry point as the author panel: compare from what is already open. */}
+                <button
+                  type="button"
+                  className="text-btn"
+                  aria-label={`Compare ${inst.display_name} with another organization or author`}
+                  onClick={() =>
+                    compareWith({ kind: "org", keys: [key], label: inst.display_name })}
+                >
+                  Compare
+                </button>
+              </span>
             );
           })}
         </div>

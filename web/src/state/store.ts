@@ -106,6 +106,8 @@ interface AppState {
   setColorMode: (m: ColorMode) => void;
   setCompareSide: (side: "a" | "b", value: CompareSide | null) => void;
   clearCompare: () => void;
+  /** Put `side` into the first free comparison slot. */
+  compareWith: (side: CompareSide) => void;
   setOrgDisplayMode: (m: OrgDisplayMode) => void;
   setEdgeMode: (m: EdgeMode) => void;
   setShowCitationEdges: (visible: boolean) => void;
@@ -253,6 +255,20 @@ export const useStore = create<AppState>((set) => ({
         : { compare };
     }),
   clearCompare: () => set({ compare: { a: null, b: null } }),
+  /** Start (or complete) a comparison from something already selected.
+   *
+   *  Reaching compare through two empty slots meant naming both sides from scratch, when the
+   *  usual path is "I am looking at this author — now show me them against someone". This
+   *  fills the first free side and leaves the other for the picker. */
+  compareWith: (side) =>
+    set((st) => {
+      const slot = st.compare.a === null ? "a" : st.compare.b === null ? "b" : "a";
+      const compare = { ...st.compare, [slot]: side };
+      const active = compare.a !== null && compare.b !== null;
+      return active
+        ? { compare, selectedNode: null, filters: { ...st.filters, orgKeys: [], authorIds: [] } }
+        : { compare };
+    }),
   setOrgDisplayMode: (m) => set({ orgDisplayMode: m }),
   setEdgeMode: (m) => set({ edgeMode: m }),
   setShowCitationEdges: (visible) => set({ showCitationEdges: visible }),

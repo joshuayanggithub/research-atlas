@@ -56,6 +56,7 @@ export function AuthorPanel({ ds }: { ds: Dataset }) {
   const authorInfo = useAuthorInfo(authorIds);
   const authors = [...authorInfo.values()];
   const setAuthors = useStore((s) => s.setAuthors);
+  const compareWith = useStore((s) => s.compareWith);
   // Not for the paper lists — the filter already computes those — but because OpenAlex ids
   // live in these shards (D32). Awaiting them here re-renders once they land, which is what
   // makes the profile link appear instead of depending on some other render happening later.
@@ -101,14 +102,32 @@ export function AuthorPanel({ ds }: { ds: Dataset }) {
           <div className="author-entry" key={a.authorId}>
             <div className="author-entry-head">
               <strong>{a.name}</strong>
-              <button
-                type="button"
-                className="text-btn"
-                aria-label={`Remove ${a.name} from author filter`}
-                onClick={() => setAuthors(authorIds.filter((id) => id !== a.authorId))}
-              >
-                Remove
-              </button>
+              <span className="author-entry-actions">
+                {/* The usual route into a comparison: you are already looking at someone. */}
+                <button
+                  type="button"
+                  className="text-btn"
+                  aria-label={`Compare ${a.name} with another author or organization`}
+                  onClick={() => {
+                    const idn = resolveAuthorIdentity(a.authorId, authors);
+                    compareWith({
+                      kind: "author",
+                      ids: idn?.ids ?? [a.authorId],
+                      label: a.name,
+                    });
+                  }}
+                >
+                  Compare
+                </button>
+                <button
+                  type="button"
+                  className="text-btn"
+                  aria-label={`Remove ${a.name} from author filter`}
+                  onClick={() => setAuthors(authorIds.filter((id) => id !== a.authorId))}
+                >
+                  Remove
+                </button>
+              </span>
             </div>
             <div className="meta subtle">
               {(() => {
