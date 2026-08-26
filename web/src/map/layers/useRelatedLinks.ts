@@ -8,8 +8,8 @@
 // Drawn WITHOUT arrowheads and in violet, because similarity is symmetric and carries no
 // direction — the teal/amber axis is reserved for influence.
 
-import { useEffect, useState } from "react";
-import type { Dataset } from "../../data/types";
+import { useEffect, useMemo, useState } from "react";
+import type { Dataset, NeighborList } from "../../data/types";
 import { ensurePositionsFor, UNLOADED_LEVEL } from "../../data/loadArtifacts";
 import { usePointTilesEpoch } from "../../data/usePapersReady";
 import { useStore } from "../../state/store";
@@ -27,34 +27,43 @@ export type RelatedLink = {
  *  neighbour shard is never fetched. */
 export function useRelatedLinks(ds: Dataset, selectedNode: number | null): RelatedLink[] {
   const showRelated = useStore((s) => s.showRelated);
-  const [links, setLinks] = useState<RelatedLink[]>([]);
-  // Positions arrive per tile/shard, so a neighbour may not be placed yet on the first pass.
+  const [neighbors, setNeighbors] = useState<NeighborList | null>(null);
+  // Positions arrive per tile/shard, so a neighbour may not be placed on the first pass.
   const tilesEpoch = usePointTilesEpoch();
 
+  // Fetch ONLY on a real change of paper. An earlier version also listed tilesEpoch here and
+  // awaited inside the effect, so every tile that landed re-ran the effect, and its cleanup
+  // set `live = false` on the run still awaiting — with tiles arriving every few seconds the
+  // list never settled and a heavily-linked paper drew ZERO similarity links. Position
+  // readiness is a render-time question, so it belongs in the memo below, not here.
   useEffect(() => {
     if (selectedNode === null || !showRelated) {
-      setLinks([]);
+      setNeighbors(null);
       return;
     }
     let live = true;
-    void ds.getNeighbors(selectedNode).then(async (n) => {
-      if (!live || !n || n.ids.length === 0) return;
-      const ids = Array.from(n.ids);
-      // A neighbour whose tile has not landed has no position — drawing it would put a line
-      // through the origin. Fetch the shards it lives in, then draw whatever is placed.
-      await ensurePositionsFor(ids);
+    void ds.getNeighbors(selectedNode).then((n) => {
       if (!live) return;
-      const { x, y, revealLevel } = ds.points;
-      if (revealLevel[selectedNode] === UNLOADED_LEVEL) return;
-      const source: [number, number] = [x[selectedNode], y[selectedNode]];
-      setLinks(ids.flatMap((node, i) => (
-        revealLevel[node] === UNLOADED_LEVEL
-          ? []
-          : [{ source, target: [x[node], y[node]] as [number, number], node, score: n.scores[i] ?? 0 }]
-      )));
+      setNeighbors(n && n.ids.length > 0 ? n : null);
+      // Nudge the shards these neighbours live in; the memo picks them up as they land.
+      if (n && n.ids.length > 0) void ensurePositionsFor(Array.from(n.ids));
     });
     return () => { live = false; };
-  }, [ds, selectedNode, showRelated, tilesEpoch]);
+  }, [ds, selectedNode, showRelated]);
 
-  return links;
+  return useMemo(() => {
+    if (!neighbors || selectedNode === null || !showRelated) return [];
+    const { x, y, revealLevel } = ds.points;
+    // A neighbour whose tile has not landed has no position — drawing it would put a line
+    // through the origin. Skip it; it appears when its shard arrives (tilesEpoch).
+    if (revealLevel[selectedNode] >= UNLOADED_LEVEL) return [];
+    const source: [number, number] = [x[selectedNode], y[selectedNode]];
+    const ids = Array.from(neighbors.ids);
+    return ids.flatMap((node, i) => (
+      revealLevel[node] >= UNLOADED_LEVEL
+        ? []
+        : [{ source, target: [x[node], y[node]] as [number, number], node, score: neighbors.scores[i] ?? 0 }]
+    ));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [neighbors, ds, selectedNode, showRelated, tilesEpoch]);
 }

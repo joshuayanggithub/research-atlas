@@ -1962,3 +1962,42 @@ map with nothing attached.
 **Not done.** The panel's mini SVG is labelled "Citation network" and lays out incoming left /
 outgoing right. Similarity nodes would need a third position and a new label, so they were left
 out rather than putting non-citation links in a diagram that promises citations.
+
+### D70/D71 follow-up: the arrows were the selection's own, and the similarity links were deduped into nothing
+
+Three corrections after the user reported still seeing stray arrows and no similarity links.
+
+**1. The map drew 40 links per direction while the panel listed 7.** Turning the ambient web off
+(D70) was right but addressed the wrong arrows: the ones left on screen were the selected
+paper's OWN citation links, capped at 40 per direction, against a panel showing 7 rows. Most
+arrows therefore pointed at papers the reader could not find anywhere in the interface.
+`SELECTED_EDGE_LIMIT` is now 7, equal to `CitationExplorer`'s `LIST_LIMIT`, so the map and the
+list describe the same papers in the same order.
+
+**2. The relevance slider deleted the entire citation network.** `shown` required
+`passesRelevance`, and the auto threshold lands at **0.978 (top 2%)** for a heavily-cited paper.
+Measured: it rejected **40 of 40** citers and **30 of 30** references, so a selected paper ended
+up with NO arrows at all a few seconds after selection. First-hop links no longer consult it —
+the slider's own label is "hide less-related papers (shared references & co-citations)", which is
+a second-hop notion, and a paper the selection directly cites is not "less related" by any
+reading. It also depends on second-hop shards that are deliberately low priority (D67), so before
+they land every score is 0.
+
+**3. The dedup made similarity links invisible where they would be seen.** D71 skipped a
+neighbour already joined by a citation. Measured, all 15 of *Attention Is All You Need*'s nearest
+neighbours also cite it — so the feature drew **zero** links on exactly the papers people click
+first, while *Meshy T2* drew 15. Every neighbour is now drawn: "similar" and "cited" are
+different claims and a pair can honestly carry both.
+
+**4. A cancellation race meant the links never settled.** `useRelatedLinks` listed
+`tilesEpoch` as an effect dependency and awaited inside the effect, so each arriving tile re-ran
+it and the cleanup killed the run still awaiting. With tiles landing every few seconds a
+heavily-linked paper never produced a link. Fetching now depends only on the paper; position
+readiness is resolved in a `useMemo`, which is where a render-time question belongs.
+
+**Measurement note.** The pixel classifier used to verify D70 capped brightness at 430 and so
+counted only the ambient LINES (116,151,184), not the brighter ARROWHEADS (150,186,218) — about
+6% of the ambient ink. The reported "134 px → 0 px" was therefore not evidence for the claim it
+was attached to. Layer data lengths from the running app are authoritative here and confirm
+`ambient=0` while a paper is selected; canvas colour counts cannot separate ambient arrows from
+blue points and should not be used for this again.

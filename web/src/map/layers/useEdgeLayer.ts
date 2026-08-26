@@ -16,11 +16,15 @@ import { useMemo } from "react";
 import type { Dataset } from "../../data/types";
 import type { FilterArrays } from "../../filters/useFilterMask";
 import type { EdgeMode } from "../../state/store";
-import { importanceWeight, relevanceCutoff } from "../importance";
+import { importanceWeight } from "../importance";
 import { CITER, GLOBAL_EDGE, REFERENCE, SIMILAR } from "../citationColors";
 import { AMBIENT_EDGE_MAX_LEVEL } from "./usePointsLayer";
 import { useEdgesEpoch, useNodeEdges } from "../../data/useNodeEdges";
 import { useRelatedLinks, type RelatedLink } from "./useRelatedLinks";
+
+/** Links drawn per direction for a selected paper. Deliberately equal to CitationExplorer's
+ *  LIST_LIMIT so the arrows on the map and the rows in the panel are the same papers. */
+const SELECTED_EDGE_LIMIT = 7;
 
 type Position = [number, number];
 type Color = [number, number, number, number];
@@ -59,8 +63,9 @@ interface Args {
   filter: FilterArrays;
   monthMin: number;
   monthMax: number;
-  // Connected-Papers relevance per node for the selection + the slider threshold, so selected
-  // edges to papers hidden by the relevance slider are dropped too (matches the point cull).
+  // Connected-Papers relevance per node for the selection + the slider threshold. Kept as a
+  // render dependency (the slider still culls POINTS) but no longer gates first-hop citation
+  // links — see the note on `shown`.
   relevance: { score: Float32Array; sorted?: Float32Array } | null;
   relevanceThreshold: number;
   onSelect: (node: number) => void;
@@ -161,7 +166,11 @@ export function useEdgeLayer({
     if (selectedNode === null) return [];
 
     const edges: SelectedEdge[] = [];
-    const perDirectionLimit = edgeMode === "both" ? 40 : 80;
+    // Match what the panel LISTS. Drawing 40 links per direction while "References" showed 7
+    // rows meant most arrows on screen pointed at papers the reader could not find anywhere in
+    // the interface — reported as "random miscellaneous arrows unrelated to any paper shown in
+    // the selection". The map and the list now describe the same set, ordered the same way.
+    const perDirectionLimit = edgeMode === "both" ? SELECTED_EDGE_LIMIT : SELECTED_EDGE_LIMIT * 2;
     const prioritize = (ids: number[]) =>
       [...ids]
         .sort((a, b) => ds.papers[b].citedByCount - ds.papers[a].citedByCount)
@@ -222,11 +231,14 @@ export function useEdgeLayer({
 
     // Relevance slider: drop links to a paper scoring below the threshold, so the edge web
     // thins together with the points the slider hides.
-    const passesRelevance = (node: number) =>
-      relevanceThreshold <= 0
-      || (relevance ? relevance.score[node] : 0) >= relevanceCutoff(relevance?.sorted, relevanceThreshold);
-
-    const shown = (node: number) => visible(node) && passesRelevance(node);
+    //
+    // NOT applied to first-hop links. The slider hides "less-related papers (shared references
+    // & co-citations)" — a second-hop notion. A paper the selection directly cites is not
+    // "less related" to it by any reading, and relevance scores need the second-hop shards, so
+    // before those land every score is 0. Measured: with the auto threshold at top 2%, this
+    // predicate rejected 40 of 40 citers and 30 of 30 references, leaving a selected paper with
+    // NO citation arrows at all.
+    const shown = (node: number) => visible(node);
 
     if (edgeMode === "out" || edgeMode === "both") {
       const refs = prioritize(ds.citesOut.get(selectedNode) ?? []).filter(shown);
@@ -320,17 +332,6 @@ export function useEdgeLayer({
   ]);
 
   const relatedLinksAll = useRelatedLinks(ds, selectedNode);
-  // Papers already joined to the selection by a citation. A similarity link to one of them
-  // would sit on top of a citation link and mean something different, so it is dropped.
-  const connectedNodes = useMemo(() => {
-    const set = new Set<number>();
-    for (const edge of selectedEdges) {
-      set.add(edge.sourceNode);
-      set.add(edge.targetNode);
-    }
-    return set;
-  }, [selectedEdges]);
-
   // Ambient edges stop where their DATA stops. Only tiers 0-4 are loaded (D60), so past that
   // depth the web on screen is an arbitrary sliver of the real graph — and it grows as you
   // zoom, because a deeper zoom reveals more points and therefore qualifies more of those
@@ -377,9 +378,14 @@ export function useEdgeLayer({
     parameters: { depthCompare: "always" },
   });
 
-  // Similarity links to the selection's nearest neighbours. Skipped where a citation already
-  // connects the pair, so a link is never drawn twice in two different meanings.
-  const relatedLinks = relatedLinksAll.filter((link) => !connectedNodes.has(link.node));
+  // Similarity links to the selection's nearest neighbours.
+  //
+  // Every neighbour is drawn, including ones a citation already connects. Suppressing those
+  // made the feature invisible on exactly the papers people click first: measured, all 15 of
+  // Attention Is All You Need's nearest neighbours also cite it, so the dedup drew ZERO violet
+  // links there while Meshy T2 drew 15. "Similar" and "cited" are different claims and a pair
+  // can honestly carry both.
+  const relatedLinks = relatedLinksAll;
   const relatedLayers = relatedLinks.length === 0 ? [] : [
     new LineLayer<RelatedLink>({
       id: "related-links",
