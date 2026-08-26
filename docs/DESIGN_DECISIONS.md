@@ -1925,3 +1925,40 @@ the app previously showed a blank body.
 
 **Cost of reverting.** A few lines less markup, in exchange for a blank first second that reads
 as a broken page.
+
+## D70. A selected paper switches the ambient web off, not down — ACTIVE
+
+**Decision.** `ambientOff` now includes `selectedNode !== null`. The global sampled web is not
+drawn at all while a paper is selected.
+
+**Why.** Selecting a paper only dimmed it, to `baseAlpha = 18`. That still draws hundreds of
+faint arrows between papers with no relationship to the selection, sitting on the same canvas as
+the links that ARE about it — reported as "random miscellaneous arrows just showing, unrelated
+to any paper shown in the selection". Measured on the canvas: ambient ink went **134 px → 0 px**
+on selection, on both desktop and iPhone 13, while the selection's own teal/amber links are
+untouched. This extends D64's reasoning (ambient edges are an incomplete sample and stop where
+their data stops) from "zoomed in" to "focused on one paper", which is the same intent.
+
+**Cost of reverting.** The surrounding web stays visible as context, at the price of burying the
+one network the user asked to see.
+
+## D71. Similarity links are violet and headless — ACTIVE
+
+**Decision.** The map draws links from the selected paper to its s08 fused-kNN neighbours in
+violet (`SIMILAR`), with no arrowhead, skipping any neighbour already joined by a citation.
+
+**Why.** Teal/amber mean "influenced this" / "influenced by this". Similarity means neither, so
+it must not borrow that axis, and an arrowhead would assert a direction the data does not have.
+The dedup keeps one pair from carrying two different meanings at once — measured, *Attention Is
+All You Need* has all 15 neighbours already citation-linked (0 similarity links drawn) while
+*Meshy T2*, a 2026 preprint with no reference data at all, has 0 of 15 linked (all 15 drawn).
+That asymmetry is the point: the links appear exactly where the citation graph has nothing to
+say. A neighbour whose position has not loaded is skipped rather than drawn at the origin
+(the placeholder-read-as-fact rule).
+
+**Cost of reverting.** One less thing on the canvas; recent preprints go back to sitting on the
+map with nothing attached.
+
+**Not done.** The panel's mini SVG is labelled "Citation network" and lays out incoming left /
+outgoing right. Similarity nodes would need a third position and a new label, so they were left
+out rather than putting non-citation links in a diagram that promises citations.

@@ -17,9 +17,10 @@ import type { Dataset } from "../../data/types";
 import type { FilterArrays } from "../../filters/useFilterMask";
 import type { EdgeMode } from "../../state/store";
 import { importanceWeight, relevanceCutoff } from "../importance";
-import { CITER, GLOBAL_EDGE, REFERENCE } from "../citationColors";
+import { CITER, GLOBAL_EDGE, REFERENCE, SIMILAR } from "../citationColors";
 import { AMBIENT_EDGE_MAX_LEVEL } from "./usePointsLayer";
 import { useEdgesEpoch, useNodeEdges } from "../../data/useNodeEdges";
+import { useRelatedLinks, type RelatedLink } from "./useRelatedLinks";
 
 type Position = [number, number];
 type Color = [number, number, number, number];
@@ -143,9 +144,9 @@ export function useEdgeLayer({
     relativeZoom < 0.75 ? 360 : relativeZoom < 1.75 ? 560 : relativeZoom < 3 ? 800 : 1000;
   const maxScreenLength =
     relativeZoom < 0.75 ? 160 : relativeZoom < 1.75 ? 230 : relativeZoom < 3 ? 340 : 520;
-  const baseAlpha = selectedNode === null
-    ? relativeZoom < 0.75 ? 120 : 105
-    : 18;
+  // No selected branch: the ambient web is switched OFF entirely while a paper is selected
+  // (see ambientOff), rather than dimmed to near-invisibility and left on screen.
+  const baseAlpha = relativeZoom < 0.75 ? 120 : 105;
   const screenScale = 2 ** zoom;
   // Any active org/author filter hides edges touching a non-matching paper entirely (to
   // match the points, which are GPU-culled), so a filtered view shows only intra-set links.
@@ -318,6 +319,18 @@ export function useEdgeLayer({
     monthMin,
   ]);
 
+  const relatedLinksAll = useRelatedLinks(ds, selectedNode);
+  // Papers already joined to the selection by a citation. A similarity link to one of them
+  // would sit on top of a citation link and mean something different, so it is dropped.
+  const connectedNodes = useMemo(() => {
+    const set = new Set<number>();
+    for (const edge of selectedEdges) {
+      set.add(edge.sourceNode);
+      set.add(edge.targetNode);
+    }
+    return set;
+  }, [selectedEdges]);
+
   // Ambient edges stop where their DATA stops. Only tiers 0-4 are loaded (D60), so past that
   // depth the web on screen is an arbitrary sliver of the real graph — and it grows as you
   // zoom, because a deeper zoom reveals more points and therefore qualifies more of those
@@ -327,8 +340,14 @@ export function useEdgeLayer({
   // Also suppressed while comparing, where an ambient link joins papers belonging to NEITHER
   // pane. A selected paper's own network is unaffected in both cases: it is scoped to that
   // paper and complete from its shard, so it stays meaningful at any zoom.
+  // ALSO off whenever a paper is selected. Dimming it to alpha 18 still drew hundreds of
+  // faint arrows between papers that have nothing to do with the selection, which reads as
+  // "random miscellaneous arrows" next to the links that ARE about the selected paper. The
+  // selection view is one paper's own network plus its similarity links; anything else on
+  // screen is noise competing with it.
   const ambientOff =
-    !show || comparing || Math.floor(Math.max(0, zoom - baseZoom)) > AMBIENT_EDGE_MAX_LEVEL;
+    !show || comparing || selectedNode !== null
+    || Math.floor(Math.max(0, zoom - baseZoom)) > AMBIENT_EDGE_MAX_LEVEL;
   if (!show && selectedEdges.length === 0) {
     return { background: [], foreground: [] };
   }
@@ -358,12 +377,44 @@ export function useEdgeLayer({
     parameters: { depthCompare: "always" },
   });
 
+  // Similarity links to the selection's nearest neighbours. Skipped where a citation already
+  // connects the pair, so a link is never drawn twice in two different meanings.
+  const relatedLinks = relatedLinksAll.filter((link) => !connectedNodes.has(link.node));
+  const relatedLayers = relatedLinks.length === 0 ? [] : [
+    new LineLayer<RelatedLink>({
+      id: "related-links",
+      data: relatedLinks,
+      getSourcePosition: (link) => link.source,
+      getTargetPosition: (link) => link.target,
+      // Alpha carries similarity, matching the rule the citation palette follows. No
+      // arrowhead: similarity is symmetric and asserts no direction of influence.
+      getColor: (link) => [
+        SIMILAR[0], SIMILAR[1], SIMILAR[2],
+        Math.round(70 + 150 * Math.max(0, Math.min(1, link.score))),
+      ],
+      getWidth: 1.2,
+      widthUnits: "pixels",
+      widthMinPixels: 1,
+      widthMaxPixels: 2,
+      pickable: true,
+      autoHighlight: true,
+      highlightColor: [255, 255, 255, 255],
+      parameters: { depthCompare: "always" },
+      updateTriggers: { getColor: [selectedNode] },
+      onClick: (info) => { if (info.object) onSelect(info.object.node); },
+      onHover: (info) => onHover(info.object ? info.object.node : null, info.x, info.y),
+    }),
+  ];
+
   const background = ambientOff ? [] : [globalLines, globalArrows];
   if (selectedEdges.length === 0) {
-    return { background, foreground: [] };
+    // A paper with no citation data at all (a 2026 preprint) still gets its similarity links —
+    // this is exactly the case they exist for.
+    return { background, foreground: relatedLayers };
   }
 
   const foreground = [
+    ...relatedLayers,
     new LineLayer<SelectedEdge>({
       id: "citation-selected-lines",
       data: selectedEdges,

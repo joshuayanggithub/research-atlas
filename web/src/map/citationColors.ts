@@ -16,6 +16,11 @@ export const REFERENCE = [55, 214, 199] as const; // teal
 export const CITER = [244, 162, 97] as const; // amber
 /** Ambient, non-selection citation edges drawn across the whole map. */
 export const GLOBAL_EDGE = [116, 151, 184] as const; // muted blue
+/** Semantically similar to the selected paper (s08 fused kNN), with NO citation between them.
+ *  Deliberately off the teal/amber axis: those two mean "influenced" in one direction or the
+ *  other, and a similarity link means neither. */
+export const SIMILAR = [167, 139, 250] as const; // violet
+
 /** The selected paper itself. */
 export const SELECTED = [255, 255, 255] as const;
 

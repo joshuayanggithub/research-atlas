@@ -177,6 +177,12 @@ silently dropped.
   not indexed a 2026 paper's references, so e.g. *Meshy T2* is `references_available: false`
   with zero edges in either direction and an honestly empty citation panel, while its semantic
   neighbours are complete.
+  Related works are also drawn **on the map**: violet links from the selected paper to its
+  nearest neighbours, with **no arrowhead** (similarity is symmetric and asserts no influence).
+  A neighbour already joined by a citation is skipped so no pair is drawn twice in two
+  different meanings — measured, *Attention Is All You Need* has all 15 neighbours already
+  citation-linked (0 similarity links) while *Meshy T2* has none (15 drawn). The Hide toggle
+  removes the map links along with the panel rows.
 
 ## Search
 

@@ -363,6 +363,9 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 .edge-key-line.global { color: #7497b8; opacity: .85; }
 .edge-key-line.outgoing { color: #37d6c7; }
 .edge-key-line.incoming { color: #f4a261; }
+.edge-key-line.similar { color: #a78bfa; }
+/* Similarity links carry no direction, so their swatch carries no arrowhead. */
+.edge-key-line.similar::after { display: none; }
 
 .hint { font-size: 11px; margin-top: 12px; line-height: 1.5; padding-top: 12px;
   border-top: 1px solid var(--border); }

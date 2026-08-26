@@ -54,6 +54,9 @@ export function Legend({ ds }: { ds: Dataset }) {
             <span><i className="edge-key-line global" /> citations</span>
             <span><i className="edge-key-line outgoing" /> influenced this ← references</span>
             <span><i className="edge-key-line incoming" /> influenced by this → citations</span>
+            {/* No arrowhead in the swatch: similarity is symmetric, and the map draws it
+                without one for the same reason. */}
+            <span><i className="edge-key-line similar" /> similar work (no citation)</span>
           </div>
         )}
       </div>
