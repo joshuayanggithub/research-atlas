@@ -98,7 +98,10 @@ export function useRelevanceScores(
       }
       wanted.push(p);
     }
-    if (wanted.length) void ensureNodeEdges(wanted);
+    // Low: this is the SECOND hop, used only to rank how related other papers are. The first
+    // hop (useNodeEdges) is what the citation list needs, and titles for that list must not
+    // queue behind ~9 MB of speculative shards.
+    if (wanted.length) void ensureNodeEdges(wanted, "low");
   }, [ds, selectedNode, firstHopReady]);
 
   return useMemo(() => {

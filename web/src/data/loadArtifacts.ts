@@ -1164,7 +1164,14 @@ const edgeNodeShards = new Map<number, Promise<void>>();
  */
 export const EDGE_SHARD_CAP = 24;
 
-export async function ensureNodeEdges(nodes: number[]): Promise<void> {
+/** @param priority "high" for edges a panel cannot render without; "low" for speculative
+ *  second-hop fetches. Measured on a 1 MB/s link: selecting a heavily-cited paper asked for 24
+ *  node-edge shards (9.4 MB) at "high" to score second-hop relevance, which saturated every
+ *  socket ahead of the 1.6 MB of title shards the reference list was visibly waiting on -- so
+ *  "References" sat shimmering for ~40 s to decorate arrows the user had not asked about. */
+export async function ensureNodeEdges(
+  nodes: number[], priority: "high" | "low" = "high",
+): Promise<void> {
   const manifest = manifestRef;
   if (!manifest || !citesOutRef || !citedByRef) return;
   const rows = manifest.position_shard_rows ?? 0;
@@ -1192,7 +1199,7 @@ export async function ensureNodeEdges(nodes: number[]): Promise<void> {
     for (const shard of [...want].slice(EDGE_SHARD_CAP)) want.delete(shard);
   }
   await Promise.all([...want].map((shard) => {
-    const pending = fetchArrow(`edges-by-node-${shard}.arrow`, "high")
+    const pending = fetchArrow(`edges-by-node-${shard}.arrow`, priority)
       .then((table) => {
         const ids = table.getChild("node_id")!.toArray() as Int32Array;
         const out = table.getChild("cites_out")!;
@@ -1400,9 +1407,18 @@ export function titleLoaded(node: number): boolean {
   return loadedTitleShards.has(Math.floor(node / rows));
 }
 
-/** Ceiling per call. A caller asking for more than this is asking about a slice of the corpus,
- *  not a screenful, and should be passing visible rows instead. */
+/** How many title shards may be in flight at once. */
 export const TITLE_SHARD_CAP = 24;
+
+/** Hard ceiling per call. A caller asking for more than this is asking about a slice of the
+ *  corpus, not a screenful, and should be passing visible rows instead.
+ *
+ *  This is separate from TITLE_SHARD_CAP because the two answer different questions. When one
+ *  number did both jobs, anything past the 24th shard was dropped with no retry and no signal:
+ *  an expanded references list asks for 60 rows, so its last three dozen shimmered forever
+ *  while the panel looked like it was still loading. Requests beyond the batch now WAIT rather
+ *  than disappear. */
+export const TITLE_SHARD_TOTAL_CAP = 64;
 
 export async function ensureTitles(nodes: number[]): Promise<void> {
   const manifest = manifestRef;
@@ -1417,7 +1433,7 @@ export async function ensureTitles(nodes: number[]): Promise<void> {
     if (node < 0) continue;
     const shard = Math.floor(node / rows);
     if (shard < count && !titleShards.has(shard) && !want.includes(shard)) want.push(shard);
-    if (want.length >= TITLE_SHARD_CAP) break;
+    if (want.length >= TITLE_SHARD_TOTAL_CAP) break;
   }
   if (want.length === 0) {
     await Promise.all(nodes
@@ -1425,7 +1441,7 @@ export async function ensureTitles(nodes: number[]): Promise<void> {
       .filter((p): p is Promise<void> => !!p));
     return;
   }
-  await Promise.all(want.map((shard) => {
+  const fetchShard = (shard: number) => {
     const pending = fetchArrow(`papers-titles-${shard}.arrow`, "high")
       .then((table) => {
         const ids = table.getChild("node_id")!.toArray() as Int32Array;
@@ -1441,7 +1457,11 @@ export async function ensureTitles(nodes: number[]): Promise<void> {
       .catch(() => { titleShards.delete(shard); });
     titleShards.set(shard, pending);
     return pending;
-  }));
+  };
+  // Batched, not truncated: rows past the first batch resolve a beat later instead of never.
+  for (let i = 0; i < want.length; i += TITLE_SHARD_CAP) {
+    await Promise.all(want.slice(i, i + TITLE_SHARD_CAP).map(fetchShard));
+  }
 }
 
 function validateDataset(dataset: Dataset): void {

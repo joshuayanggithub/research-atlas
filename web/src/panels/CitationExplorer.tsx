@@ -17,6 +17,14 @@ import { importanceWeight } from "../map/importance";
 
 const GRAPH_LIMIT = 5;
 const LIST_LIMIT = 7;
+/** Ceiling on the EXPANDED list.
+ *
+ * "Show all" meant all: expanding Attention Is All You Need rendered 69,292 rows and froze the
+ * tab. It also promised titles it could never deliver — the list asked for the first 60 and the
+ * remaining thousands shimmered forever. The fans are sorted by citations, so a bounded top
+ * slice is the honest and useful thing to draw, and the button now says "top N of M" rather
+ * than claiming to show everything. */
+const EXPANDED_LIMIT = 60;
 
 interface GraphPaper {
   id: number;
@@ -213,10 +221,10 @@ function CitationRows({
 }) {
   const selectNode = useStore((s) => s.selectNode);
   const setHover = useStore((s) => s.setHover);
-  const shown = expanded ? ids : ids.slice(0, LIST_LIMIT);
-  // Titles are per-node now; fetch the ones this list renders. `shown` is already the
-  // truncated set, so an expanded 69,262-citer list still asks only for what it draws.
-  useTitles(shown.slice(0, 60));
+  const shown = ids.slice(0, expanded ? EXPANDED_LIMIT : LIST_LIMIT);
+  // Titles are per-node now; fetch exactly the rows this list renders, so no row is drawn that
+  // can never get a title.
+  useTitles(shown);
 
   if (ids.length === 0) {
     // "No references in this corpus" and "nobody extracted this paper's references" look
@@ -438,7 +446,11 @@ export function CitationExplorer(
           ) : (
             <ChevronDown size={15} aria-hidden="true" />
           )}
-          {expanded ? "Show fewer" : `Show all ${activeCount}`}
+          {expanded
+            ? "Show fewer"
+            : activeCount > EXPANDED_LIMIT
+              ? `Show top ${EXPANDED_LIMIT} of ${activeCount.toLocaleString()}`
+              : `Show all ${activeCount}`}
         </button>
       )}
     </section>

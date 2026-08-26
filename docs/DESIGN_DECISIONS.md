@@ -1828,3 +1828,64 @@ paper's shard, is complete, and stays meaningful at any zoom.
 
 **Measured locally:** ambient arrow pixels 134 at the home view → **0** when zoomed in
 (previously 74 and sprawling).
+
+## D65. A progressive-arrival signal must not saturate, and must not unsubscribe — ACTIVE
+
+**Decision.** `onPapersReady` keeps notifying for the whole session, and any memo that READS
+titles depends on `usePapersEpoch()` (a counter), never on `usePapersReady()` (a boolean).
+
+**Why.** Titles became per-node shards in D30, so "paper data arrived" is a repeating event, not
+a moment. Two things quietly assumed it was a moment:
+
+- `onPapersReady` cleared its entire waiter list when `papers-index.arrow` landed, and refused to
+  subscribe anyone who mounted afterwards. Every later title shard therefore notified nobody, and
+  the unsubscribe closure it handed callers stopped working.
+- `usePapersReady()` returns a boolean that saturates at `true`. A `useMemo` listing it as a
+  dependency stops recomputing the instant papers-index lands — so `SearchBox` and
+  `PaperListPanel` cached `title: ""` permanently while `PaperTitle` re-rendered underneath them
+  and rendered `(untitled)` over 22 downloaded-but-unread title shards.
+
+Measured consequence: searching the exact string "Attention Is All You Need" did not return
+"Attention Is All You Need" — it ranked outside the top 10 of its own query, because
+`titleMatchRank` scores the query against the title STRING and an unresident title scores as a
+non-match. Both queries the user reported now rank #1 (#2 on mobile for "3D Cal").
+
+**Cost of reverting.** Any consumer that goes back to the boolean silently freezes at whatever
+had loaded when it first ran. That failure is invisible in a fast local run and only appears on a
+slow link, which is why it survived several rounds of verification.
+
+**Related.** This is D39/D41/D44/D49/D51/D56 again — a placeholder read as fact — but one level
+up: not a stale value, a stale *subscription*.
+
+## D66. A cap that drops work is a bug; a cap that batches is a budget — ACTIVE
+
+**Decision.** `TITLE_SHARD_CAP` (24) is the in-flight batch size; `TITLE_SHARD_TOTAL_CAP` (64) is
+the hard ceiling. Requests between the two WAIT instead of being discarded. Lists render only as
+many rows as they have asked titles for.
+
+**Why.** One constant did both jobs, so anything past the 24th shard was dropped with no retry
+and no signal. An expanded references list asked for 60 rows and left three dozen shimmering
+forever; the search pool asked for 40 and ranked its overflow as non-matches. The ceiling is
+still real — `ensureTitles` will not walk the corpus — but exceeding the batch now costs a round
+trip rather than correctness.
+
+**Also.** "Show all" on Attention Is All You Need rendered **69,292 rows** and froze the tab. The
+fans are citation-sorted, so the expanded list is capped at `EXPANDED_LIMIT = 60` and the button
+says "Show top 60 of 69,292" rather than claiming to show everything.
+
+**Cost of reverting.** Fewer requests per click, in exchange for rows that can never resolve.
+
+## D67. Speculative second-hop edges are background traffic — ACTIVE
+
+**Decision.** `ensureNodeEdges` takes a priority. The first hop (what the citation list needs to
+exist at all) stays `"high"`; `useRelevanceScores`' second hop passes `"low"`.
+
+**Why.** Measured on a 1 MB/s link: selecting a heavily-cited paper requested **24 node-edge
+shards (9.4 MB)** at `"high"` to score second-hop relevance, saturating all six sockets ahead of
+the **1.6 MB** of title shards the visible reference list was waiting on. The user saw
+"References" shimmer indefinitely while the app downloaded decoration for arrows they had not
+asked about. Demoting the second hop lets the existing interactive gate hold it back: the
+reference titles now complete in ~65 s instead of never, on both desktop and iPhone 13.
+
+**Cost of reverting.** Relevance shading settles marginally sooner, at the cost of the panel the
+user is actually reading.
