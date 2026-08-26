@@ -420,8 +420,11 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 .panel .link { display: inline-flex; align-items: center; gap: 5px; margin: 10px 0;
   color: var(--accent); font-size: 12.5px; text-decoration: none; }
 .panel .link:hover { text-decoration: underline; }
-.details-tabs { display: grid; grid-template-columns: 1fr 1fr; width: 100%; margin-top: 2px; }
-.details-tabs button { display: flex; align-items: center; justify-content: center; gap: 6px;
+/* Three tabs (Citations / Similar / Paper) — two equal columns wrapped the third onto its
+   own row. */
+.details-tabs { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; margin-top: 2px; }
+.details-tabs button { display: flex; align-items: center; justify-content: center; gap: 5px;
+  min-width: 0; padding-inline: 6px; white-space: nowrap;
   min-height: 34px; }
 
 /* Citation explorer ----------------------------------------------------- */

@@ -183,6 +183,11 @@ silently dropped.
   different meanings — measured, *Attention Is All You Need* has all 15 neighbours already
   citation-linked (0 similarity links) while *Meshy T2* has none (15 drawn). The Hide toggle
   removes the map links along with the panel rows.
+  Related works is its own **Similar** tab (Citations / Similar / Paper), not the last section
+  of the citations panel — below the citation network, the coverage note, the link filter and
+  the whole references list it sat ~900 px down a 1,700 px panel in an 800 px viewport, present
+  but never seen. A paper with **no citing papers and no extracted reference list** opens on
+  Similar automatically, since its citation panel is empty by definition.
 
 ## Search
 

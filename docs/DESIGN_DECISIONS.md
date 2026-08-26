@@ -2001,3 +2001,27 @@ counted only the ambient LINES (116,151,184), not the brighter ARROWHEADS (150,1
 was attached to. Layer data lengths from the running app are authoritative here and confirm
 `ambient=0` while a paper is selected; canvas colour counts cannot separate ambient arrows from
 blue points and should not be used for this again.
+
+## D72. Related works is a tab, and the default tab follows the data — ACTIVE
+
+**Decision.** The details panel has three tabs: Citations / Similar / Paper. Related works lives
+in Similar. A paper with `citedByCount === 0` and `referencesAvailable === false` opens on
+Similar; everything else opens on Citations.
+
+**Why.** Related works was the last section of the citations panel, under the relevance slider,
+the citation mini-graph, the "N of M references are in this map" note, the link filter and the
+entire references list. Measured on *3D Cal* at 1440x900: the panel is **1,704 px** tall in an
+**804 px** viewport, putting the section roughly **900 px** below the fold. It rendered
+correctly and was reported as not showing at all, which is the same outcome.
+
+The default follows the data because the alternative is a panel of apologies: a 2026 preprint
+opening on Citations shows "No reference data available for this paper" and "No citing papers in
+this corpus" — two accurate messages and nothing to look at — while its 15 semantic neighbours
+sit one unclicked tab away. Counts come from `papers-index`, which is authoritative for every
+node; `ds.citedBy` is empty until the paper's edge shard lands and would misread every paper as
+uncited (the placeholder-read-as-fact rule).
+
+**Cost of reverting.** One less tab, at the price of a section that exists but is never seen.
+
+**Note.** Two equal grid columns wrapped the third tab onto its own row; the grid is now
+`repeat(3, 1fr)`. Verified one row, no text overflow, on desktop and iPhone 13.

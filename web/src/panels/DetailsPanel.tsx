@@ -1,7 +1,9 @@
 // Metadata and graph context for the selected paper.
 
-import { ExternalLink, FileText, Network, X } from "lucide-react";
+import { ExternalLink, FileText, Network, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+
+type DetailView = "citations" | "similar" | "paper";
 import type { Dataset, PaperDetail } from "../data/types";
 import { useStore } from "../state/store";
 import { PaperTitle } from "./PaperTitle";
@@ -39,7 +41,7 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
   const selectNode = useStore((s) => s.selectNode);
   const selectedAuthorIds = useStore((s) => s.filters.authorIds);
   const setAuthors = useStore((s) => s.setAuthors);
-  const [view, setView] = useState<"citations" | "paper">("citations");
+  const [view, setView] = useState<DetailView>("citations");
   const [showAllAuthors, setShowAllAuthors] = useState(false);
   const [detail, setDetail] = useState<PaperDetail | null>(null);
   // Author ids come from the paper's detail shard; fetch just those records so clicking one
@@ -80,9 +82,18 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
   };
 
   useEffect(() => {
-    setView("citations");
+    // A paper with no citing papers AND no extracted reference list has an empty citation
+    // panel by definition (a 2026 preprint: S2/OpenAlex have not indexed it). Landing on
+    // Citations there shows two "no data" messages; its semantic neighbours always exist, so
+    // open on those instead. Counts come from papers-index, which is authoritative for every
+    // node -- ds.citedBy is empty until the paper's edge shard lands and would misread every
+    // paper as uncited (the placeholder-read-as-fact rule).
+    const paper = selectedNode === null ? null : ds.papers[selectedNode];
+    const noCitationData =
+      !!paper && paper.citedByCount === 0 && paper.referencesAvailable === false;
+    setView(noCitationData ? "similar" : "citations");
     setShowAllAuthors(false); // a new paper starts collapsed
-  }, [selectedNode]);
+  }, [ds, selectedNode]);
 
   // Fetch the selected paper's full detail (author names, venue, ids, full date) on demand.
   useEffect(() => {
@@ -261,7 +272,9 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
           // Arrow keys move between tabs (standard tabs pattern).
           if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
             e.preventDefault();
-            setView((v) => (v === "citations" ? "paper" : "citations"));
+            const order: DetailView[] = ["citations", "similar", "paper"];
+            const step = e.key === "ArrowRight" ? 1 : order.length - 1;
+            setView((v) => order[(order.indexOf(v) + step) % order.length]);
           }
         }}
       >
@@ -281,6 +294,19 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
         <button
           type="button"
           role="tab"
+          id="tab-similar"
+          aria-controls="panel-similar"
+          tabIndex={view === "similar" ? 0 : -1}
+          className={view === "similar" ? "active" : ""}
+          aria-selected={view === "similar"}
+          onClick={() => setView("similar")}
+        >
+          <Sparkles size={14} aria-hidden="true" />
+          Similar
+        </button>
+        <button
+          type="button"
+          role="tab"
           id="tab-paper"
           aria-controls="panel-paper"
           tabIndex={view === "paper" ? 0 : -1}
@@ -293,15 +319,24 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
         </button>
       </div>
 
-      {view === "paper" ? (
+      {view === "paper" && (
         <div role="tabpanel" id="panel-paper" aria-labelledby="tab-paper">
           <ArxivPreview arxivId={detail?.arxivId ?? null} doi={detail?.doi ?? null} title={p.title} />
         </div>
-      ) : (
+      )}
+      {/* Its own tab, not the last section of the citations panel. Below the citation network,
+          the "N of M references are in this map" note, the link filter and the whole references
+          list, "Related works" sat ~900 px down a 1700 px panel in an 800 px viewport — present,
+          scrolled past, and reported as not showing at all. */}
+      {view === "similar" && (
+        <div role="tabpanel" id="panel-similar" aria-labelledby="tab-similar">
+          <RelatedWorksPanel ds={ds} node={selectedNode} />
+        </div>
+      )}
+      {view === "citations" && (
         <div role="tabpanel" id="panel-citations" aria-labelledby="tab-citations">
           {ds.manifest.corpus.citation_graph_source && <RelevanceSlider />}
           <CitationExplorer ds={ds} node={selectedNode} referenceCount={detail?.referenceCount ?? -1} />
-          <RelatedWorksPanel ds={ds} node={selectedNode} />
         </div>
       )}
     </div>
