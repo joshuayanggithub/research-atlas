@@ -169,6 +169,14 @@ silently dropped.
   neighbor data is **fetched on demand** — sharded by node id, so selecting a paper loads
   only its shard (~540KB) rather than the whole ~9MB (→50MB at 390k) neighbor table up
   front. Shards are cached, so re-selecting nearby papers is instant.
+  The panel shows the top 8 with **Show all N**, and a **Hide / Show** toggle in its heading
+  that persists across selections. Hiding is not cosmetic: it skips the neighbour shard and
+  its title shards entirely (measured 0 neighbour requests while hidden), which is worth
+  ~0.9 MB per selection on a slow link.
+  This section is the **only structural signal for a recent preprint** — S2 and OpenAlex have
+  not indexed a 2026 paper's references, so e.g. *Meshy T2* is `references_available: false`
+  with zero edges in either direction and an honestly empty citation panel, while its semantic
+  neighbours are complete.
 
 ## Search
 

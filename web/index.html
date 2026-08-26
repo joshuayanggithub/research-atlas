@@ -26,7 +26,24 @@
     <title>Research Atlas — a map of CS/AI research</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Static boot loader.
+         The app bundle is ~329 KB gzipped; until it has downloaded, parsed and mounted, an
+         empty #root paints as a blank window with nothing to say it is working. On a ~1 MB/s
+         link that is a second or more of apparent nothing before React's own progress panel
+         can exist. This markup needs no JS, no CSS request and no font, so it is on screen as
+         soon as the HTML is; React replaces it when it mounts. Colours are --void/--faint from
+         styles.css, hard-coded because the stylesheet may not have arrived either. -->
+    <div id="root">
+      <div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+                  background:#07090d;color:#8b93a7;font:14px/1.5 system-ui,sans-serif">
+        <div style="text-align:center">
+          <div style="width:34px;height:34px;margin:0 auto 14px;border:2px solid #1c2230;
+                      border-top-color:#8b93a7;border-radius:50%;animation:ra-spin 0.9s linear infinite"></div>
+          Starting Research Atlas…
+        </div>
+      </div>
+    </div>
+    <style>@keyframes ra-spin{to{transform:rotate(360deg)}}</style>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

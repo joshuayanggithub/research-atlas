@@ -1889,3 +1889,39 @@ reference titles now complete in ~65 s instead of never, on both desktop and iPh
 
 **Cost of reverting.** Relevance shading settles marginally sooner, at the cost of the panel the
 user is actually reading.
+
+## D68. Every fetch declares a priority, and background streams must be gated — ACTIVE
+
+**Decision.** `fetchArrow` is never called without a priority. User-initiated shard loads
+(neighbours, paper detail, author papers) are `"high"`; the background point-tile stream is
+`"low"`.
+
+**Why.** Three loaders had no priority at all, so they neither took an interactive slot nor
+waited on `awaitBackgroundSlot`. The point-tile streamer pulls 6-10 MB tiles (`points-L5`..
+`L15`, ~43 MB in total) and bypassed the gate completely; `makeShardLoader` — which backs both
+the neighbour and paper-detail fetches a click depends on — competed with it unprioritised.
+Measured on a 1 MB/s link: a **0.52 MB** neighbours shard requested **0.5 s** after selecting a
+paper did not finish for **44 s**, so "Related works" read as broken.
+
+**Cost of reverting.** Deep zoom detail arrives marginally sooner while every click feels dead.
+
+**Not a cause, checked rather than assumed.** Long-task profiling in headless showed 17-27 s
+blocks, which looked like `mergeEdgeTier` building `Map<number, number[]>` over millions of
+edges. Direct instrumentation disproved it: the largest tier merge is **80 ms** for 327,265
+edges. The blocking is deck.gl drawing through SwiftShader, which is a property of headless
+Chrome and not of the user's machine (see the verification note in the overnight plan). No code
+was changed on the strength of that measurement.
+
+## D69. The first paint belongs to the HTML, not the bundle — ACTIVE
+
+**Decision.** `index.html` ships a static, dependency-free boot loader inside `#root`, which
+React replaces when it mounts.
+
+**Why.** `#root` was empty, so nothing was on screen until 329 KB of JS had downloaded, parsed
+and mounted — a blank window with no indication the page was working, before React's own
+progress panel could even exist. The markup needs no JS, no CSS request and no webfont, so it
+paints as soon as the HTML lands: measured on screen at **250 ms** on a throttled link, where
+the app previously showed a blank body.
+
+**Cost of reverting.** A few lines less markup, in exchange for a blank first second that reads
+as a broken page.

@@ -548,7 +548,22 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 @keyframes arxiv-spin { to { transform: rotate(360deg); } }
 
 .related { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
-.related h4 { margin: 0 0 8px; font-size: 12.5px; }
+.related h4 { margin: 0; font-size: 12.5px; }
+/* Heading and its show/hide control share a row so the section can be collapsed without the
+   heading moving — the toggle is the affordance, so it must stay put when it is used. */
+.related-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin: 0 0 8px;
+}
+.related-toggle {
+  background: transparent; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--subtle); font: inherit; font-size: 11px; line-height: 1;
+  padding: 3px 8px; cursor: pointer;
+}
+.related-toggle:hover, .related-toggle:focus-visible { color: var(--text); border-color: var(--accent); }
+.related-toggle[aria-pressed="false"] { color: var(--accent); border-color: var(--accent); }
+/* The nested state divs re-use .related for colour but must not repeat its top border. */
+.related .related.empty, .related .related.loading { margin-top: 0; border-top: 0; padding-top: 0; }
 .related.empty, .related.loading { color: var(--subtle); font-size: 12px; }
 .related ol { margin: 0; padding: 0; list-style: none; }
 .related li { margin: 0; padding: 0; }

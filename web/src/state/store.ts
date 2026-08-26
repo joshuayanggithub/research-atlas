@@ -85,6 +85,10 @@ interface AppState {
   orgDisplayMode: OrgDisplayMode;
   edgeMode: EdgeMode;
   showCitationEdges: boolean;
+  /** Whether the details panel shows semantic neighbours. Off means the neighbour list and its
+   *  titles are never fetched, which is the point: for a paper with a full citation graph the
+   *  section is redundant, and it costs ~0.5 MB of title shards per selection. */
+  showRelated: boolean;
   currentZoom: number;
 
   // interaction
@@ -111,6 +115,7 @@ interface AppState {
   setOrgDisplayMode: (m: OrgDisplayMode) => void;
   setEdgeMode: (m: EdgeMode) => void;
   setShowCitationEdges: (visible: boolean) => void;
+  setShowRelated: (visible: boolean) => void;
   setZoom: (z: number) => void;
   selectNode: (id: number | null) => void;
   focusLabel: (label: Label) => void;
@@ -215,6 +220,7 @@ export const useStore = create<AppState>((set) => ({
   compare: { a: null, b: null },
   orgDisplayMode: "dim",
   edgeMode: "both",
+  showRelated: true,
   showCitationEdges: true,
   currentZoom: -3,
 
@@ -272,6 +278,7 @@ export const useStore = create<AppState>((set) => ({
   setOrgDisplayMode: (m) => set({ orgDisplayMode: m }),
   setEdgeMode: (m) => set({ edgeMode: m }),
   setShowCitationEdges: (visible) => set({ showCitationEdges: visible }),
+  setShowRelated: (visible) => set({ showRelated: visible }),
   setZoom: (z) => set({ currentZoom: z }),
   // Reset the relevance threshold on every selection change so a new paper always starts
   // showing its whole citation network.

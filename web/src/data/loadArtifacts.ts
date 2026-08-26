@@ -180,7 +180,12 @@ export function ensurePointTiles(level: number): Promise<void> {
         .filter((t) => t.level > loadedTileLevel && t.level <= wantedTileLevel)
         .sort((a, b) => a.level - b.level)[0];
       if (!next) break;
-      const table = await fetchArrow(next.path);
+      // "low", so the interactive gate can hold it. Unprioritised, this loop bypassed
+      // awaitBackgroundSlot entirely and streamed 6-10 MB tiles (points-L5..L15) straight
+      // through every socket: a 0.52 MB neighbours shard requested 0.5 s after a click did not
+      // finish for 44 s, so "Related works" looked broken while the map quietly downloaded
+      // detail for a zoom level nobody had asked for.
+      const table = await fetchArrow(next.path, "low");
       fillPointTile(points, table, papersRef ?? undefined);
       loadedTileLevel = Math.max(loadedTileLevel, next.level);
       // Notify per TILE, not per batch: the filter bar's "N on the map so far" should climb as
@@ -926,7 +931,8 @@ export function loadAuthorPapers(
   const shard = Math.floor(authorId / shardSize);
   let pending = authorPapersCache.get(shard);
   if (!pending) {
-    pending = fetchArrow(`author-papers-${shard}.arrow`)
+    // Interactive: this is fetched because the user selected an author.
+    pending = fetchArrow(`author-papers-${shard}.arrow`, "high")
       .then((t) => {
         const ids = t.getChild("author_id")!.toArray() as Int32Array;
         const lists = t.getChild("node_ids")!;
@@ -1011,7 +1017,12 @@ function makeShardLoader<T>(
   const shardCache = new Map<number, Promise<Map<number, T>>>();
 
   async function loadShard(shard: number): Promise<Map<number, T>> {
-    const table = await fetchArrow(filename(shard));
+    // "high": both loaders built on this (neighbours, paper detail) are fetched because the
+    // user just selected a paper, so they are exactly the interactive traffic the gate exists
+    // to protect. Unprioritised, a 0.52 MB neighbours shard competed on equal terms with the
+    // ~11 MB of edge and title shards the same selection kicks off, and "Related works" sat
+    // empty for ~25 s on a 1 MB/s link.
+    const table = await fetchArrow(filename(shard), "high");
     const byNode = new Map<number, T>();
     for (let i = 0; i < table.numRows; i++) {
       const row = table.get(i)! as unknown as Record<string, unknown>;
