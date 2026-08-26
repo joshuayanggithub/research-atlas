@@ -10,9 +10,10 @@ import { useMemo, useState } from "react";
 import type { AuthorRow, Dataset } from "../data/types";
 import { useAuthorSearchState } from "../data/useAuthorLookup";
 import { addAuthorToSelection } from "../data/authorIdentity";
-import { usePapersReady } from "../data/usePapersReady";
+import { usePapersReady, usePapersEpoch } from "../data/usePapersReady";
 import { useTitleSearch } from "../data/useTitleSearch";
 import { useTitles } from "../data/useTitles";
+import { TITLE_SHARD_CAP } from "../data/loadArtifacts";
 import { PaperTitle } from "./PaperTitle";
 import { useStore } from "../state/store";
 
@@ -67,9 +68,22 @@ export function SearchBox({ ds }: { ds: Dataset }) {
   const titleHits = titleSearch.nodes;
   // The index says WHICH papers match; their titles still have to be fetched to show
   // and to rank. Only the handful that can be displayed.
-  useTitles(titleHits.slice(0, 40));
+  // Rank BEFORE slicing. Titles are needed to score a match, but they are fetched per node —
+  // so taking the first 40 hits in set order meant scoring an arbitrary sample and the right
+  // paper could never surface. Citations are known for every hit without any fetch, so they
+  // order the pool that gets titles.
+  // searchTitles already returns its hits in relevance order (whole-token matches first, then
+  // citations from the RESIDENT index), so take the head of that. Re-sorting here by
+  // ds.points.citedByCount was wrong twice over: it discarded that order, and points carry a
+  // count of 0 for any paper whose tile has not downloaded — which is most of them — so
+  // "Attention Is All You Need" sorted to the bottom of its own search.
+  // Keep the pool inside TITLE_SHARD_CAP: a wider pool spans more shards than useTitles will
+  // fetch, so the overflow titles can never arrive and would be ranked as if they did not match.
+  const titlePool = useMemo(() => titleHits.slice(0, TITLE_SHARD_CAP), [titleHits]);
+  useTitles(titlePool);
   // Paper titles arrive after first paint; recompute matches once they do.
   const papersReady = usePapersReady();
+  const papersEpoch = usePapersEpoch();
   // 829k names: lowercase once per load, not once per keystroke. Author chunks arrive
   // progressively (D32) and each one hands back a NEW array, so this recomputes as they land.
   const lowerNames = useMemo(
@@ -135,20 +149,28 @@ export function SearchBox({ ds }: { ds: Dataset }) {
     // the first query. Ranking still uses the title when it is resident — the index answers
     // WHICH papers match; how well they match is a property of the string.
     const paperMatches: { i: number; title: string; rank: number; index: number; citedByCount: number }[] = [];
-    for (const i of titleHits) {
+    for (const i of titlePool) {
       const title = ds.papers[i]?.title ?? "";
       const lower = title.toLowerCase();
       const { rank, index } = lower ? titleMatchRank(lower, q) : { rank: 0, index: 0 };
-      paperMatches.push({ i, title, rank, index, citedByCount: ds.points.citedByCount[i] ?? 0 });
+      paperMatches.push({ i, title, rank, index, citedByCount: ds.papers[i]?.citedByCount ?? 0 });
     }
-    paperMatches.sort((a, b) => b.rank - a.rank || a.index - b.index || b.citedByCount - a.citedByCount);
+    // titleMatchRank scores the query against the title STRING, so it is only meaningful once
+    // the title is resident. Sorting a mixed set ranked an unloaded title as a non-match and
+    // buried it under weaker loaded ones -- "Attention Is All You Need" lost its own search to
+    // "Cross-Attention is all you need" purely because its shard had not landed. Until every
+    // pooled title is here, keep the index order, which already ranks whole-token matches
+    // ahead of prefix expansions and breaks ties on citations.
+    if (paperMatches.every((m) => m.title !== "")) {
+      paperMatches.sort((a, b) => b.rank - a.rank || a.index - b.index || b.citedByCount - a.citedByCount);
+    }
     const paperSlots = Math.max(0, 10 - out.length);
     for (const m of paperMatches.slice(0, paperSlots)) {
       out.push({ kind: "paper", key: `paper-${m.i}`, nodeId: m.i, text: m.title });
     }
     return out;
   }, [query, ds.labels.labels, ds.papers, ds.points.citedByCount, authors, lowerNames,
-      papersReady, titleHits]);
+      papersReady, papersEpoch, titlePool]);
 
   const choose = (match: SearchMatch) => {
     if (match.kind === "paper") {

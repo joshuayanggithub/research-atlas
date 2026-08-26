@@ -444,9 +444,12 @@ export interface DeferredProgress {
 export function deferredProgress(): DeferredProgress[] {
   const m = manifestRef;
   if (!m) return [];
-  const tiles = m.point_tiles?.length ?? 0;
   const out: DeferredProgress[] = [
-    { key: "tiles", label: "map detail", loaded: Math.max(0, loadedTileLevel + 1), total: tiles },
+    // Counted against ALL point tiles, this sat at "35%" forever: the home view loads 5 of 16
+    // and the rest arrive only if someone zooms to the bottom, so the denominator was one the
+    // reader could never reach. The honest statement is whether the eager set has landed.
+    { key: "tiles", label: "map detail",
+      loaded: loadedTileLevel >= EAGER_TILE_LEVEL ? 1 : 0, total: 1 },
     // Titles are no longer a stream with an end: they are fetched per view (ensureTitles), so
     // there is no honest "N of 489" to report. The loading pill covers the streams that DO
     // run to completion; a pending title shows its own shimmer where it will appear.
@@ -500,12 +503,16 @@ export function arePapersReady(): boolean {
   return papersReady;
 }
 
-/** Subscribe to the moment titles land; returns an unsubscribe. */
+/** Subscribe to paper data arriving; returns an unsubscribe.
+ *
+ * This fires for the resident index AND for every per-node title shard (D30), so it must keep
+ * notifying long after `papersReady` flips. Subscribing only while the flag was false, and
+ * firing once, meant a component that mounted after papers-index had landed never heard about
+ * its own titles: search results rendered a permanent shimmer with 22 title shards sitting
+ * downloaded in memory, and "Attention Is All You Need" lost its own search to papers whose
+ * titles happened to arrive before the flag flipped. */
 export function onPapersReady(fn: () => void): () => void {
-  if (papersReady) {
-    fn();
-    return () => {};
-  }
+  if (papersReady) fn();
   papersReadyWaiters.push(fn);
   return () => {
     const i = papersReadyWaiters.indexOf(fn);
@@ -1302,6 +1309,12 @@ export async function searchTitles(query: string): Promise<number[]> {
   // So complete lists FILTER, capped lists only RANK.
   let result: Set<number> | null = null;
   const sampled: Set<number>[] = [];
+  // How many query words a paper matched as a WHOLE TOKEN rather than through prefix
+  // expansion. Typing "3D Cal" must put the paper titled "3D Cal:" above one titled
+  // "…rigid 3D calibration": both contain a token starting with "cal", but only one contains
+  // the word. Without this the expansion (1,307 papers for `cal`) drowned the exact match,
+  // and no amount of citation ranking could rescue a 1-citation paper from that crowd.
+  const exactMatches = new Map<number, number>();
   let fetched = 0;
   for (const word of ordered) {
     const wanted = chunksFor(word);
@@ -1310,6 +1323,7 @@ export async function searchTitles(query: string): Promise<number[]> {
     fetched += wanted.length;
     const tables = await Promise.all(wanted.map((c) => loadSearchChunk(c).catch(() => null)));
     const hits = new Set<number>();
+    const exactHits = new Set<number>();
     // A word's hit set is the union of its exact list and (for the word being typed) every
     // token extending it. That union is complete only if EVERY contributor is — one capped
     // list anywhere makes the whole set a sample. Marking it complete because some OTHER
@@ -1320,7 +1334,7 @@ export async function searchTitles(query: string): Promise<number[]> {
       if (!table) continue;
       const exact = table.get(word);
       if (exact) {
-        for (const n of exact.nodes) hits.add(n);
+        for (const n of exact.nodes) { hits.add(n); exactHits.add(n); }
         if (exact.capped) complete = false;
       }
       if (isLastWord(word)) {
@@ -1340,6 +1354,7 @@ export async function searchTitles(query: string): Promise<number[]> {
       if (complete) return [];
       continue;
     }
+    for (const n of exactHits) exactMatches.set(n, (exactMatches.get(n) ?? 0) + 1);
     if (complete) {
       result = result === null
         ? hits
@@ -1350,22 +1365,21 @@ export async function searchTitles(query: string): Promise<number[]> {
     }
   }
 
+  const cited = (n: number) => papersRef?.[n]?.citedByCount ?? 0;
+  const rank = (a: number, b: number) =>
+    (exactMatches.get(b) ?? 0) - (exactMatches.get(a) ?? 0)
+    || sampled.filter((s) => s.has(b)).length - sampled.filter((s) => s.has(a)).length
+    || cited(b) - cited(a);
+
   if (result !== null) {
-    // Papers confirmed by every complete token. Those also present in the capped samples match
-    // more of the query, so surface them first.
-    const out = [...result];
-    if (sampled.length) {
-      out.sort((a, b) => sampled.filter((s) => s.has(b)).length
-        - sampled.filter((s) => s.has(a)).length);
-    }
-    return out;
+    return [...result].sort(rank);
   }
   // Every token was a common word: fall back to the papers all the samples agree on, which is
   // the "most-cited papers containing these words" answer the cap was designed to give.
   if (sampled.length === 0) return [];
   let acc = sampled[0];
   for (const s of sampled.slice(1)) acc = new Set<number>([...acc].filter((n) => s.has(n)));
-  return acc.size > 0 ? [...acc] : [...sampled[0]];
+  return (acc.size > 0 ? [...acc] : [...sampled[0]]).sort(rank);
 }
 
 // Titles, fetched for the papers a view actually shows.
@@ -1684,8 +1698,9 @@ async function loadDatasetImpl(onProgress?: ProgressFn): Promise<Dataset> {
       // longer part of any "everything has arrived" moment — they are per-node now — so this
       // flag means only "the resident index is in", which is what its consumers need.
       papersReady = true;
+      // Do NOT clear the list: title shards keep arriving and keep needing to notify, and
+      // dropping subscribers here also silently broke the unsubscribe returned above.
       for (const fn of papersReadyWaiters) fn();
-      papersReadyWaiters.length = 0;
     })
     .catch(() => { /* titles stay blank; the map, filters and citations still work */ });
 

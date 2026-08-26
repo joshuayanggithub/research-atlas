@@ -14,7 +14,7 @@ import { useMemo, useState } from "react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
 import { useFilterMask } from "../filters/useFilterMask";
-import { usePapersReady, usePointTilesEpoch } from "../data/usePapersReady";
+import { usePapersReady, usePapersEpoch, usePointTilesEpoch } from "../data/usePapersReady";
 import { useSetLabel } from "../data/useSetLabel";
 import { PaperTitle } from "./PaperTitle";
 import { useTitles } from "../data/useTitles";
@@ -41,6 +41,7 @@ export function PaperListPanel({ ds }: { ds: Dataset }) {
   const selectedNode = useStore((s) => s.selectedNode);
   const filter = useFilterMask(ds, filters);
   const papersReady = usePapersReady();
+  const papersEpoch = usePapersEpoch();
   const tilesEpoch = usePointTilesEpoch();
   const [open, setOpen] = useState(false);
   const [sort, setSort] = useState<Sort>("citations");
@@ -77,7 +78,7 @@ export function PaperListPanel({ ds }: { ds: Dataset }) {
     return { rows: hits.slice(0, MAX_ROWS), total: hits.length, sample };
     // tilesEpoch: matchValue is incomplete until every point tile has arrived (D23/D25).
     // papersReady: titles arrive separately and change what the rows read.
-  }, [ds, filter, anyFilter, filters.monthMin, filters.monthMax, sort, tilesEpoch, papersReady]);
+  }, [ds, filter, anyFilter, filters.monthMin, filters.monthMax, sort, tilesEpoch, papersReady, papersEpoch]);
 
   // Only the rows on screen need titles (see ROW_HEIGHT_PX).
   useTitles(rows.slice(titleFrom, titleFrom + TITLE_WINDOW));

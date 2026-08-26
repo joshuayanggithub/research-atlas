@@ -18,6 +18,18 @@ export function usePapersReady(): boolean {
   return arePapersReady();
 }
 
+/** Bumps each time more paper data lands — the resident index, then each per-node title shard.
+ *
+ * `usePapersReady` returns a boolean that saturates at true, so a `useMemo` listing it as a
+ * dependency stops recomputing the moment papers-index lands and never sees a title again. Any
+ * memo that READS titles must depend on this counter instead; the boolean only answers "is the
+ * resident index in?". (Same pattern, and same reason, as `usePointTilesEpoch`.) */
+export function usePapersEpoch(): number {
+  const [epoch, setEpoch] = useState(0);
+  useEffect(() => onPapersReady(() => setEpoch((n) => n + 1)), []);
+  return epoch;
+}
+
 /** Same idea for the citation graph, which is also fetched after first paint (24 MB gzipped —
  *  the largest single artifact on the wire once titles moved off the critical path). */
 export function useEdgesReady(): boolean {

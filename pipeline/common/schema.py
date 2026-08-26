@@ -666,8 +666,18 @@ def edges_by_node(shard: int) -> str:
 #
 # Capped at the 200 most-cited papers per token. 97.9% of tokens are under the cap; the ones
 # over it are stopword-like, and the box shows ten results ranked by citations anyway.
-SEARCH_TOKEN_CAP = 200
-SEARCH_INDEX_CHUNKS = 64
+# Raised from 200 after it broke real searches. At 200, "3d" and "calibration" were both
+# samples, so "3D Cal" could not intersect them and fell back to `cal` alone — 1,307 papers,
+# with the one actually named "3D Cal" buried among them. At 10,000 the intersection is 2
+# papers and the right one is first. Only 121 genuine stopword-like tokens remain capped
+# (from 4,328), and the index costs 20.3 MB total / 788 KB worst chunk instead of 7.4 / 224 —
+# paid per query, on the one or two chunks a query touches, and only when someone searches.
+SEARCH_TOKEN_CAP = 10_000
+# 512, not 64. Raising SEARCH_TOKEN_CAP fixed correctness but made each chunk 788 KB worst
+# case, so a search on a 1 MB/s link took ~20 s to show anything — trading a wrong answer for
+# a slow one. Chunk COUNT is free: at 512 the worst chunk is 137 KB and the mean 41 KB, which
+# is smaller per query than the original (broken) 200-cap/64-chunk layout managed.
+SEARCH_INDEX_CHUNKS = 512
 
 SEARCH_INDEX_SCHEMA = pa.schema([
     ("token", pa.string()),
