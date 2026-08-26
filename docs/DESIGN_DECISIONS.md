@@ -1767,3 +1767,64 @@ kept equal width — unequal panes stop being small multiples, which is the whol
 drawn pixels in pane A and 1,877 in pane B** (previously label text only), with pane A's dots
 under cs.AI: Large Language Models / Reinforcement Learning / cs.SE: Code Generation and pane
 B's under cs.LG: Deep Neural Networks / cs.AI: LLMs — each pane's labels naming that pane's work.
+
+## D62. A capped posting list is a sample: it may rank, never filter — ACTIVE
+
+**Context.** Reported: typing "3D Cal" found nothing, while reaching the same paper through its
+co-author worked. The paper is "3D Cal: An Open-Source Software Library for Depth
+Reconstruction…", **1 citation**.
+
+**Cause — the cap in D54 (and D59) was load-bearing in a way it should never have been.** Both
+indexes keep only the most-cited/most-prolific entries per token: 200 papers for a title token,
+25 authors for a name token. The justification was "the box shows ten results ranked by
+citations anyway", which is true for a ONE-word query and false for every other kind: a
+multi-token query intersects the lists, so a paper missing from any one of them is erased.
+
+`3d` and `calibration` are both capped, and a 1-citation paper is in neither — so its own title
+could not find it. The same flaw made **"Kaival Shah"** unfindable by full name: `shah` is
+capped to its 25 most prolific authors and he has one paper, so `kaival ∩ shah` was empty.
+
+**Decision.** The emitters record a `capped` flag per token, and the frontend treats a capped
+list as what it is — **a sample, which can confirm membership but never deny it**. Complete
+lists filter; capped lists only rank (a candidate appearing in more samples matched more of the
+query, so it sorts higher). When every token of a query is capped, the result falls back to the
+intersection of the samples, which is the "most-cited papers containing these words" answer the
+cap was designed to give.
+
+**A second-order bug found while verifying this.** Completeness was first computed
+disjunctively — a word counted as complete if *any* contributing list was. But a word's hit set
+is the union of its exact list and every token extending it, and a union is complete only if
+**every** contributor is. `shah` is capped while `shahid`, `shahab` and so on are not, so the
+word was wrongly marked complete and kept filtering. It is now conjunctive, and hitting the
+prefix-expansion cap also marks the set incomplete, because stopping early means more tokens
+exist.
+
+**Verified locally**: "3D Cal" returns the target paper (node 129314), "Kaival Shah" resolves to
+his author record, nonsense queries still return empty.
+
+## D63. Selecting a paper clears the org/author facets — ACTIVE
+
+Those facets **hide** every non-matching paper. With an author filter active, opening one of
+their papers left the filter on, so the paper's references and citers were culled down to that
+author's own work — the network looked far smaller than it is and most of it simply was not
+drawn. A selection asks to see one paper and everything around it, which is incompatible with a
+filter whose job is to hide everything else.
+
+Tradeoff: closing the paper returns to the whole map rather than the previous filter. The
+alternative — keeping the chip but silently ignoring it — leaves a control on screen that does
+nothing, which is worse.
+
+## D64. Ambient arrows stop where their data stops — ACTIVE
+
+Reported as "when we zoom in we still see tons of unrelated arrows", after D60 had already
+capped ambient edge *loading* at level 4. Loading stopped; **drawing did not**. A deeper zoom
+reveals more points, which qualifies more of the already-loaded L0–L4 edges, so the web grew
+denser as you zoomed into it — and every one of those arrows came from a sliver of the real
+graph, so it was misleading as well as noisy.
+
+The ambient layer now draws only while the active reveal level is within the tiers that are
+actually loaded. Past that, a selected paper's own network still draws: it comes from that
+paper's shard, is complete, and stays meaningful at any zoom.
+
+**Measured locally:** ambient arrow pixels 134 at the home view → **0** when zoomed in
+(previously 74 and sprawling).

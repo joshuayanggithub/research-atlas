@@ -10,6 +10,7 @@ import { X } from "lucide-react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
 import { useAuthorInfo, useAuthorSearch } from "../data/useAuthorLookup";
+import { peekAuthorInfo } from "../data/loadArtifacts";
 
 export function AuthorFilter({ ds: _ds }: { ds: Dataset }) {
   const [query, setQuery] = useState("");
@@ -39,9 +40,15 @@ export function AuthorFilter({ ds: _ds }: { ds: Dataset }) {
   const selectedNames = new Map([...info].map(([id, a]) => [id, a.name]));
 
   const choose = (authorId: number) => {
-    if (!filters.authorIds.includes(authorId)) {
-      setAuthors([...filters.authorIds, authorId]);
-    }
+    // Select the whole identity, not the single row that happened to be clicked. OpenAlex
+    // splits one person across several author records (210,084 names occupy more than one),
+    // so picking one row shows a fraction of their work — the same "only shows one paper"
+    // shape the search box already avoids via addAuthorToSelection.
+    const info = peekAuthorInfo(authorId);
+    const ids = info?.sameNameIds ?? [authorId];
+    const next = new Set(filters.authorIds);
+    for (const id of ids) next.add(id);
+    setAuthors([...next]);
     setQuery("");
     setActiveIndex(0);
   };

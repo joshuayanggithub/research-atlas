@@ -530,6 +530,11 @@ AUTHOR_INDEX_SCHEMA = pa.schema([
     ("names", pa.list_(pa.string())),
     ("counts", pa.list_(pa.int32())),
     ("verified", pa.list_(pa.bool_())),
+    # Same rule as the title index: a capped list is the 25 most prolific authors for that
+    # token, so it can confirm a name contains the token but never prove one does not.
+    # "Kaival Shah" has one paper and is not in `shah`'s top 25, so `kaival` AND `shah`
+    # intersected to nothing and the person could not be found by their own full name.
+    ("capped", pa.bool_()),
 ])
 
 
@@ -667,6 +672,13 @@ SEARCH_INDEX_CHUNKS = 64
 SEARCH_INDEX_SCHEMA = pa.schema([
     ("token", pa.string()),
     ("node_ids", pa.list_(pa.int32())),
+    # True when this token's list was truncated to SEARCH_TOKEN_CAP. A capped list is a SAMPLE
+    # of the most-cited papers, so it can confirm that a paper contains the token but can never
+    # prove one does not — and intersecting a multi-word query with a sample silently erases
+    # papers. "3D Cal: An Open-Source Software Library…" has 1 citation and appears in neither
+    # `3d` nor `calibration`, so it could not be found by typing its own title. The frontend
+    # therefore filters on complete lists only and uses capped ones for ranking.
+    ("capped", pa.bool_()),
 ])
 
 

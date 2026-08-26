@@ -684,16 +684,18 @@ def _emit_search_index(corpus: pl.DataFrame) -> list[S.SearchChunk]:
             if len(word) >= 2:
                 postings.setdefault(word, []).append(node)
 
-    items: list[tuple[str, list[int]]] = []
+    items: list[tuple[str, list[int], bool]] = []
     truncated = 0
     for word in sorted(postings):
         nodes = postings[word]
-        if len(nodes) > S.SEARCH_TOKEN_CAP:
+        capped = len(nodes) > S.SEARCH_TOKEN_CAP
+        if capped:
             truncated += 1
-            # Keep the most-cited: the box shows ten results ranked by citations, so the
-            # papers dropped here could never have been displayed anyway.
+            # Keep the most-cited, and RECORD that this happened. The dropped papers are not
+            # merely undisplayable — with a multi-word query they are unfindable, because the
+            # intersection needs the paper in every token's list.
             nodes = sorted(nodes, key=lambda n: -cited[n])[:S.SEARCH_TOKEN_CAP]
-        items.append((word, sorted(nodes)))
+        items.append((word, sorted(nodes), capped))
 
     per = (len(items) + S.SEARCH_INDEX_CHUNKS - 1) // S.SEARCH_INDEX_CHUNKS
     chunks: list[S.SearchChunk] = []
@@ -702,8 +704,9 @@ def _emit_search_index(corpus: pl.DataFrame) -> list[S.SearchChunk]:
         if not part:
             continue
         table = pa.table({
-            "token": pa.array([w for w, _ in part], pa.string()),
-            "node_ids": pa.array([n for _, n in part], pa.list_(pa.int32())),
+            "token": pa.array([w for w, _, _ in part], pa.string()),
+            "node_ids": pa.array([n for _, n, _ in part], pa.list_(pa.int32())),
+            "capped": pa.array([c for _, _, c in part], pa.bool_()),
         }, schema=S.SEARCH_INDEX_SCHEMA)
         path = WEB_DATA_DIR / S.search_index_chunk(c)
         write_arrow(table, path)
@@ -772,15 +775,16 @@ def _emit_author_index() -> tuple[list[S.SearchChunk], int]:
             if len(word) >= 2:
                 postings[word].append(author)
 
-    items: list[tuple[str, list[int]]] = []
+    items: list[tuple[str, list[int], bool]] = []
     capped = 0
     for word in sorted(postings):
         found = postings[word]
-        if len(found) > S.AUTHOR_TOKEN_CAP:
+        was_capped = len(found) > S.AUTHOR_TOKEN_CAP
+        if was_capped:
             capped += 1
             found = sorted(found, key=lambda a: -count_of[a])[:S.AUTHOR_TOKEN_CAP]
         # Most prolific first: the dropdown shows three and never pages.
-        items.append((word, sorted(found, key=lambda a: -count_of[a])))
+        items.append((word, sorted(found, key=lambda a: -count_of[a]), was_capped))
 
     per = (len(items) + S.AUTHOR_INDEX_CHUNKS - 1) // S.AUTHOR_INDEX_CHUNKS
     chunks: list[S.SearchChunk] = []
@@ -789,11 +793,12 @@ def _emit_author_index() -> tuple[list[S.SearchChunk], int]:
         if not part:
             continue
         table = pa.table({
-            "token": pa.array([w for w, _ in part], pa.string()),
-            "author_ids": pa.array([v for _, v in part], pa.list_(pa.int32())),
-            "names": pa.array([[name_of[a] for a in v] for _, v in part], pa.list_(pa.string())),
-            "counts": pa.array([[count_of[a] for a in v] for _, v in part], pa.list_(pa.int32())),
-            "verified": pa.array([[ver_of[a] for a in v] for _, v in part], pa.list_(pa.bool_())),
+            "token": pa.array([w for w, _, _ in part], pa.string()),
+            "author_ids": pa.array([v for _, v, _ in part], pa.list_(pa.int32())),
+            "names": pa.array([[name_of[a] for a in v] for _, v, _ in part], pa.list_(pa.string())),
+            "counts": pa.array([[count_of[a] for a in v] for _, v, _ in part], pa.list_(pa.int32())),
+            "verified": pa.array([[ver_of[a] for a in v] for _, v, _ in part], pa.list_(pa.bool_())),
+            "capped": pa.array([c for _, _, c in part], pa.bool_()),
         }, schema=S.AUTHOR_INDEX_SCHEMA)
         path = WEB_DATA_DIR / S.author_index_chunk(c)
         write_arrow(table, path)

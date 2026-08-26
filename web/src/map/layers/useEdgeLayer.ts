@@ -18,6 +18,7 @@ import type { FilterArrays } from "../../filters/useFilterMask";
 import type { EdgeMode } from "../../state/store";
 import { importanceWeight, relevanceCutoff } from "../importance";
 import { CITER, GLOBAL_EDGE, REFERENCE } from "../citationColors";
+import { AMBIENT_EDGE_MAX_LEVEL } from "./usePointsLayer";
 import { useEdgesEpoch, useNodeEdges } from "../../data/useNodeEdges";
 
 type Position = [number, number];
@@ -317,11 +318,18 @@ export function useEdgeLayer({
     monthMin,
   ]);
 
-  if (!show || comparing) {
-    // Ambient edges are suppressed while comparing. They are drawn between whatever papers are
-    // revealed at this zoom, which in a comparison means links between papers that belong to
-    // NEITHER side — arrows sprawling across two panes that are meant to show one researcher's
-    // work each. The selection network still draws, because that is scoped to a paper.
+  // Ambient edges stop where their DATA stops. Only tiers 0-4 are loaded (D60), so past that
+  // depth the web on screen is an arbitrary sliver of the real graph — and it grows as you
+  // zoom, because a deeper zoom reveals more points and therefore qualifies more of those
+  // edges. That is the "zoom in and still see tons of unrelated arrows" report: hundreds of
+  // links to papers that are not what you are looking at, drawn from an incomplete sample.
+  // Zoomed in, the citation view that means anything is one paper's own network.
+  // Also suppressed while comparing, where an ambient link joins papers belonging to NEITHER
+  // pane. A selected paper's own network is unaffected in both cases: it is scoped to that
+  // paper and complete from its shard, so it stays meaningful at any zoom.
+  const ambientOff =
+    !show || comparing || Math.floor(Math.max(0, zoom - baseZoom)) > AMBIENT_EDGE_MAX_LEVEL;
+  if (!show && selectedEdges.length === 0) {
     return { background: [], foreground: [] };
   }
 
@@ -350,8 +358,9 @@ export function useEdgeLayer({
     parameters: { depthCompare: "always" },
   });
 
+  const background = ambientOff ? [] : [globalLines, globalArrows];
   if (selectedEdges.length === 0) {
-    return { background: [globalLines, globalArrows], foreground: [] };
+    return { background, foreground: [] };
   }
 
   const foreground = [
@@ -404,5 +413,5 @@ export function useEdgeLayer({
     }),
   ];
 
-  return { background: [globalLines, globalArrows], foreground };
+  return { background, foreground };
 }

@@ -12,19 +12,31 @@ import {
 
 /** Type-ahead results for `query`. Empty until the index chunk lands. */
 export function useAuthorSearch(query: string, enabled: boolean): AuthorRow[] {
-  const [rows, setRows] = useState<AuthorRow[]>([]);
+  return useAuthorSearchState(query, enabled).rows;
+}
+
+/** Results plus whether the lookup is still in flight. An empty list means "no such author"
+ *  ONLY once `pending` is false — the index is a network fetch (D59). */
+export function useAuthorSearchState(
+  query: string,
+  enabled: boolean,
+): { rows: AuthorRow[]; pending: boolean } {
+  const [state, setState] = useState<{ rows: AuthorRow[]; pending: boolean }>(
+    { rows: [], pending: false },
+  );
   useEffect(() => {
-    if (!enabled || query.trim().length === 0) { setRows([]); return; }
+    if (!enabled || query.trim().length === 0) { setState({ rows: [], pending: false }); return; }
     let live = true;
+    setState((prev) => ({ rows: prev.rows, pending: true }));
     // Debounced: a chunk fetch per keystroke would be a request per character on a slow link.
     const timer = window.setTimeout(() => {
       void searchAuthors(query)
-        .then((r) => { if (live) setRows(r); })
-        .catch(() => { if (live) setRows([]); });
+        .then((r) => { if (live) setState({ rows: r, pending: false }); })
+        .catch(() => { if (live) setState({ rows: [], pending: false }); });
     }, 160);
     return () => { live = false; window.clearTimeout(timer); };
   }, [query, enabled]);
-  return rows;
+  return state;
 }
 
 /** Records for specific authors (name, count, and every row sharing the name). */

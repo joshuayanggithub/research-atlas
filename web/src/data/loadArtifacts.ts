@@ -560,11 +560,14 @@ export function onAuthorsChunk(fn: () => void): () => void {
 // author-info shard, which is what makes identity merging possible without the full index.
 // ---------------------------------------------------------------------------------------
 
-const authorTokenCache = new Map<number, Promise<Map<string, AuthorRow[]>>>();
+const authorTokenCache =
+  new Map<number, Promise<Map<string, { rows: AuthorRow[]; capped: boolean }>>>();
 const AUTHOR_CHUNK_CAP = 3;
 const AUTHOR_PREFIX_CAP = 48;
 
-function loadAuthorTokenChunk(chunk: number): Promise<Map<string, AuthorRow[]>> {
+function loadAuthorTokenChunk(
+  chunk: number,
+): Promise<Map<string, { rows: AuthorRow[]; capped: boolean }>> {
   let pending = authorTokenCache.get(chunk);
   if (!pending) {
     pending = fetchArrow(`author-tokens-${chunk}.arrow`, "high")
@@ -574,7 +577,8 @@ function loadAuthorTokenChunk(chunk: number): Promise<Map<string, AuthorRow[]>> 
         const names = t.getChild("names")!;
         const counts = t.getChild("counts")!;
         const verified = t.getChild("verified")!;
-        const out = new Map<string, AuthorRow[]>();
+        const cappedCol = t.getChild("capped");
+        const out = new Map<string, { rows: AuthorRow[]; capped: boolean }>();
         for (let i = 0; i < t.numRows; i++) {
           const idList = ids.get(i);
           const nameList = names.get(i);
@@ -591,7 +595,8 @@ function loadAuthorTokenChunk(chunk: number): Promise<Map<string, AuthorRow[]>> 
             rows.push(row);
             if (!authorInfoCache.has(row.authorId)) authorRowHint.set(row.authorId, row);
           }
-          out.set(String(tokens.get(i) ?? ""), rows);
+          out.set(String(tokens.get(i) ?? ""),
+            { rows, capped: Boolean(cappedCol?.get(i)) });
         }
         return out;
       })
@@ -619,7 +624,12 @@ export async function searchAuthors(query: string): Promise<AuthorRow[]> {
   const ordered = [...new Set(words)].sort((a, b) => b.length - a.length);
   const last = words[words.length - 1];
 
+  // Same rule as the title index: a CAPPED list holds only the 25 most prolific authors for
+  // that token, so it can confirm a name contains the token but never prove one does not.
+  // "Kaival Shah" has one paper and is absent from `shah`'s top 25, so intersecting
+  // `kaival` with `shah` erased him — his own full name could not find him.
   let result: Map<number, AuthorRow> | null = null;
+  const sampled: Map<number, AuthorRow>[] = [];
   let fetched = 0;
   for (const word of ordered) {
     const wanted = authorChunksFor(word);
@@ -628,25 +638,57 @@ export async function searchAuthors(query: string): Promise<AuthorRow[]> {
     fetched += wanted.length;
     const tables = await Promise.all(wanted.map((c) => loadAuthorTokenChunk(c).catch(() => null)));
     const hits = new Map<number, AuthorRow>();
+    // Complete only if every contributing list is (see the title index for the reasoning).
+    let complete = true;
     for (const table of tables) {
       if (!table) continue;
-      for (const row of table.get(word) ?? []) hits.set(row.authorId, row);
+      const exact = table.get(word);
+      if (exact) {
+        for (const row of exact.rows) hits.set(row.authorId, row);
+        if (exact.capped) complete = false;
+      }
       if (word === last) {
         let expanded = 0;
-        for (const [tok, rows] of table) {
+        for (const [tok, entry] of table) {
           if (tok.length > word.length && tok.startsWith(word)) {
-            for (const row of rows) hits.set(row.authorId, row);
-            if (++expanded >= AUTHOR_PREFIX_CAP) break;
+            for (const row of entry.rows) hits.set(row.authorId, row);
+            if (entry.capped) complete = false;
+            if (++expanded >= AUTHOR_PREFIX_CAP) { complete = false; break; }
           }
         }
       }
     }
-    if (hits.size === 0) return [];
-    if (result === null) result = hits;
-    else for (const id of [...result.keys()]) if (!hits.has(id)) result.delete(id);
-    if (result.size === 0) return [];
+    if (hits.size === 0) {
+      if (complete) return [];
+      continue;
+    }
+    if (complete) {
+      if (result === null) result = hits;
+      else for (const id of [...result.keys()]) if (!hits.has(id)) result.delete(id);
+      if (result.size === 0) return [];
+    } else {
+      sampled.push(hits);
+    }
   }
-  return result ? [...result.values()] : [];
+
+  if (result !== null) {
+    // Names confirmed by every complete token; those also in the capped samples matched more
+    // of the query, so rank them first.
+    const out = [...result.values()];
+    if (sampled.length) {
+      out.sort((a, b) => sampled.filter((s) => s.has(b.authorId)).length
+        - sampled.filter((s) => s.has(a.authorId)).length);
+    }
+    return out;
+  }
+  if (sampled.length === 0) return [];
+  let acc = sampled[0];
+  for (const s of sampled.slice(1)) {
+    const next = new Map<number, AuthorRow>();
+    for (const [id, row] of acc) if (s.has(id)) next.set(id, row);
+    acc = next;
+  }
+  return acc.size > 0 ? [...acc.values()] : [...sampled[0].values()];
 }
 
 const authorInfoCache =
@@ -1181,7 +1223,8 @@ export async function ensureNodeEdges(nodes: number[]): Promise<void> {
 // the vocabulary: "atten" is a contiguous run of tokens, so it lives in one or two known files.
 // ---------------------------------------------------------------------------------------
 
-const searchChunkCache = new Map<number, Promise<Map<string, number[]>>>();
+const searchChunkCache =
+  new Map<number, Promise<Map<string, { nodes: number[]; capped: boolean }>>>();
 
 /** How many index chunks one query may fetch. A query with more distinct tokens than this is
  *  answered from the ones that matter most (longest tokens are the most selective). */
@@ -1189,17 +1232,23 @@ const SEARCH_CHUNK_CAP = 4;
 /** How many distinct tokens a prefix may expand to inside its chunk. */
 const PREFIX_EXPANSION_CAP = 64;
 
-function loadSearchChunk(chunk: number): Promise<Map<string, number[]>> {
+function loadSearchChunk(
+  chunk: number,
+): Promise<Map<string, { nodes: number[]; capped: boolean }>> {
   let pending = searchChunkCache.get(chunk);
   if (!pending) {
     pending = fetchArrow(`title-tokens-${chunk}.arrow`, "high")
       .then((t) => {
         const tokens = t.getChild("token")!;
         const lists = t.getChild("node_ids")!;
-        const out = new Map<string, number[]>();
+        const cappedCol = t.getChild("capped");
+        const out = new Map<string, { nodes: number[]; capped: boolean }>();
         for (let i = 0; i < t.numRows; i++) {
           const v = lists.get(i);
-          out.set(String(tokens.get(i) ?? ""), v ? (Array.from(v) as number[]) : []);
+          out.set(String(tokens.get(i) ?? ""), {
+            nodes: v ? (Array.from(v) as number[]) : [],
+            capped: Boolean(cappedCol?.get(i)),
+          });
         }
         return out;
       })
@@ -1245,7 +1294,14 @@ export async function searchTitles(query: string): Promise<number[]> {
   const ordered = [...new Set(words)].sort((a, b) => b.length - a.length);
   const isLastWord = (w: string) => w === words[words.length - 1];
 
+  // A CAPPED posting list holds only the 200 most-cited papers for that token, so it can
+  // confirm that a paper contains the word but can never prove one does not. Intersecting with
+  // a sample silently erases papers: "3D Cal: An Open-Source Software Library…" has 1 citation
+  // and is in neither `3d` nor `calibration`, so typing its exact title found nothing.
+  //
+  // So complete lists FILTER, capped lists only RANK.
   let result: Set<number> | null = null;
+  const sampled: Set<number>[] = [];
   let fetched = 0;
   for (const word of ordered) {
     const wanted = chunksFor(word);
@@ -1254,28 +1310,62 @@ export async function searchTitles(query: string): Promise<number[]> {
     fetched += wanted.length;
     const tables = await Promise.all(wanted.map((c) => loadSearchChunk(c).catch(() => null)));
     const hits = new Set<number>();
+    // A word's hit set is the union of its exact list and (for the word being typed) every
+    // token extending it. That union is complete only if EVERY contributor is — one capped
+    // list anywhere makes the whole set a sample. Marking it complete because some OTHER
+    // token happened to be complete is how "Kaival Shah" stayed unfindable: `shah` itself is
+    // capped, but its prefix expansions are not.
+    let complete = true;
     for (const table of tables) {
       if (!table) continue;
       const exact = table.get(word);
-      if (exact) for (const n of exact) hits.add(n);
+      if (exact) {
+        for (const n of exact.nodes) hits.add(n);
+        if (exact.capped) complete = false;
+      }
       if (isLastWord(word)) {
         // Prefix expansion: the user is mid-word, so "atten" should also find "attention".
         let expanded = 0;
-        for (const [tok, nodes] of table) {
+        for (const [tok, entry] of table) {
           if (tok.length > word.length && tok.startsWith(word)) {
-            for (const n of nodes) hits.add(n);
-            if (++expanded >= PREFIX_EXPANSION_CAP) break;
+            for (const n of entry.nodes) hits.add(n);
+            if (entry.capped) complete = false;
+            if (++expanded >= PREFIX_EXPANSION_CAP) { complete = false; break; }
           }
         }
       }
     }
-    if (hits.size === 0) return [];          // a token nothing matches means no result
-    result = result === null
-      ? hits
-      : new Set<number>([...result].filter((n: number) => hits.has(n)));
-    if (result.size === 0) return [];
+    if (hits.size === 0) {
+      // Nothing at all for this word — including no capped sample — so it really is absent.
+      if (complete) return [];
+      continue;
+    }
+    if (complete) {
+      result = result === null
+        ? hits
+        : new Set<number>([...result].filter((n: number) => hits.has(n)));
+      if (result.size === 0) return [];
+    } else {
+      sampled.push(hits);
+    }
   }
-  return result ? [...result] : [];
+
+  if (result !== null) {
+    // Papers confirmed by every complete token. Those also present in the capped samples match
+    // more of the query, so surface them first.
+    const out = [...result];
+    if (sampled.length) {
+      out.sort((a, b) => sampled.filter((s) => s.has(b)).length
+        - sampled.filter((s) => s.has(a)).length);
+    }
+    return out;
+  }
+  // Every token was a common word: fall back to the papers all the samples agree on, which is
+  // the "most-cited papers containing these words" answer the cap was designed to give.
+  if (sampled.length === 0) return [];
+  let acc = sampled[0];
+  for (const s of sampled.slice(1)) acc = new Set<number>([...acc].filter((n) => s.has(n)));
+  return acc.size > 0 ? [...acc] : [...sampled[0]];
 }
 
 // Titles, fetched for the papers a view actually shows.

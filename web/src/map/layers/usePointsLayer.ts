@@ -81,7 +81,7 @@ const CITE_ANCHOR_LOG = Math.log1p(CITE_ANCHOR);
 // useful is one paper's network, which comes from its own shard (ensureNodeEdges) and is
 // complete regardless of zoom. So the ambient layer keeps the backbone between important
 // papers — 400,471 edges, already loaded eagerly at 2.14 MB — and stops there.
-const AMBIENT_EDGE_MAX_LEVEL = 4;
+export const AMBIENT_EDGE_MAX_LEVEL = 4;
 
 export function usePointsLayer({
   ds,

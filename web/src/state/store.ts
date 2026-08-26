@@ -279,6 +279,15 @@ export const useStore = create<AppState>((set) => ({
     set((st) => ({
       selectedNode: id,
       focusedLabel: null,
+      // Opening a paper CLEARS the org/author facets. Those facets hide every non-matching
+      // paper, so with an author filter still active a selected paper's references and citers
+      // were culled down to that author's own work — the network looked far smaller than it
+      // is, and the papers it pointed at simply were not drawn. A selection is a request to
+      // look at one paper and everything around it, which is incompatible with a filter whose
+      // job is to hide everything else.
+      filters: id === null
+        ? st.filters
+        : { ...st.filters, orgKeys: [], authorIds: [] },
       // Open the relevance filter far enough to show a READABLE slice of the network, not all
       // of it. Selecting "Attention Is All You Need" reveals its 69,262 citers as points, which
       // covers the entire map in one colour and hides the very structure the selection was meant

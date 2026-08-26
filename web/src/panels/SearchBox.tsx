@@ -8,7 +8,7 @@
 
 import { useMemo, useState } from "react";
 import type { AuthorRow, Dataset } from "../data/types";
-import { useAuthorSearch } from "../data/useAuthorLookup";
+import { useAuthorSearchState } from "../data/useAuthorLookup";
 import { addAuthorToSelection } from "../data/authorIdentity";
 import { usePapersReady } from "../data/usePapersReady";
 import { useTitleSearch } from "../data/useTitleSearch";
@@ -60,7 +60,8 @@ export function SearchBox({ ds }: { ds: Dataset }) {
   const setAuthors = useStore((s) => s.setAuthors);
 
   // Triggers the lazy authors.arrow fetch the moment the query is long enough to search.
-  const authors = useAuthorSearch(query.trim(), query.trim().length >= MIN_QUERY);
+  const authorSearch = useAuthorSearchState(query.trim(), query.trim().length >= MIN_QUERY);
+  const authors = authorSearch.rows;
   // Papers, from the token index rather than a scan over whatever titles have downloaded.
   const titleSearch = useTitleSearch(query.trim(), query.trim().length >= MIN_QUERY);
   const titleHits = titleSearch.nodes;
@@ -214,13 +215,15 @@ export function SearchBox({ ds }: { ds: Dataset }) {
           </li>
         </ul>
       )}
-      {/* An empty author section is indistinguishable from "no such author", so say which it
-          is while the 55.9 MB author index is still streaming in. */}
-      {query.trim().length >= MIN_QUERY && !titleSearch.pending && authors.length === 0 && (
+      {/* This used to read "loading author index…" whenever no author matched, which was left
+          over from when the whole index streamed in (D59). Nothing streams now, so for a query
+          with no author it announced a load that would never finish — the "useless loading
+          text that never loads". It appears only while a lookup is genuinely in flight. */}
+      {query.trim().length >= MIN_QUERY && authorSearch.pending && matches.length === 0 && (
         <ul className="autocomplete" role="listbox" aria-live="polite">
           <li role="option" aria-selected={false}>
             <button type="button" disabled>
-              <span className="subtle">loading author index…</span>
+              <span className="subtle">searching…</span>
             </button>
           </li>
         </ul>
