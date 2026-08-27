@@ -103,17 +103,16 @@ export function CompareSetup({ ds }: { ds: Dataset }) {
   const active = compare.a !== null && compare.b !== null;
 
   return (
-    <div className="filter-section">
-      <div className="section-head">
-        <h4>Compare</h4>
-        {(compare.a || compare.b) && (
+    <div className="filter-block">
+      {/* Heading and hint live in the CollapsibleSection wrapper now; repeating them here gave
+          the block two titles and three lines of explanation before its first control. */}
+      {(compare.a || compare.b) && (
+        <div className="section-head">
+          <span className="subtle small">Comparing</span>
           <button type="button" className="text-btn" onClick={clearCompare}>Clear</button>
-        )}
-      </div>
-      <p className="org-hint subtle">
-        Two authors or organizations, side by side on the same map. Papers belonging to both
-        appear in each pane.
-      </p>
+        </div>
+      )}
+      <p className="org-hint subtle">Two authors or organizations, side by side on one map.</p>
       {(["a", "b"] as const).map((slot) => {
         const side = compare[slot];
         return (

@@ -330,6 +330,8 @@ test.describe("Organization drill-down", () => {
     const filtersToggle = page.getByRole("button", { name: "Filters", exact: true });
     if (await filtersToggle.isVisible()) await filtersToggle.click();
 
+    // The reading list is a tool, not a corpus facet, so it starts collapsed (D75).
+    await page.getByRole("button", { name: /Reading list/ }).click();
     const panel = page.getByRole("region", { name: "Reading list" });
     await expect(panel).toBeVisible();
     await panel.locator('input[type="file"]').setInputFiles("e2e/fixtures/reading-list.json");

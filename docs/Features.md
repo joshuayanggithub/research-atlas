@@ -6,6 +6,17 @@ test(s) that guard it. **Do not delete a listed test without removing its featur
 saying so in the commit** — the table exists so protection for a shipped feature is never
 silently dropped.
 
+- **Shareable views.** Organizations, arXiv categories, authors, citation range, date range,
+  map regions and the selected paper are encoded in the query string
+  (`?org=anthropic&cmin=50&from=2020-01&to=2024-12&paper=332743`) and restored on load, with a
+  **Copy link** button in the sidebar header. Dates are absolute so links survive a corpus
+  rebuild; a `paper=` id outside the current corpus is dropped rather than selecting the wrong
+  paper. Imported reading lists are deliberately excluded — they are local files, and a link
+  naming them would promise papers the recipient does not have.
+- **Sidebar organisation.** Corpus facets first and expanded (organizations, category, authors,
+  citations, dates); Compare, the reading list and the legend sit below a labelled rule as
+  collapsed blocks that show a badge when active.
+
 ## The map
 
 - **Semantic map of 271,366 recent CS/ML papers** from arXiv (`cs.* OR stat.ML`, 2025 through

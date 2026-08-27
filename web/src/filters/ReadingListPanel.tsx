@@ -8,7 +8,7 @@
 // Matching happens once, at import, against the on-demand arXiv index plus the titles already
 // in the browser — see data/readingList for why it is tried identifier-first.
 
-import { BookOpen, Upload, X } from "lucide-react";
+import { Upload, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Dataset } from "../data/types";
 import { useStore } from "../state/store";
@@ -104,10 +104,6 @@ export function ReadingListPanel({ ds }: { ds: Dataset }) {
 
   return (
     <div className="filter-block reading-list" role="region" aria-label="Reading list">
-      <h4>
-        <BookOpen size={13} aria-hidden="true" /> Reading list
-      </h4>
-
       {!readingList && (
         <p className="subtle small">
           Import your library to see which papers you have read on the map. Zotero, Mendeley and

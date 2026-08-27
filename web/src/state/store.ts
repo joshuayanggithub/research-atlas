@@ -129,6 +129,8 @@ interface AppState {
   setMonthRange: (min: number, max: number) => void;
   toggleOrg: (key: string) => void;
   setAuthors: (ids: number[]) => void;
+  /** Merge a partial facet set, used when opening a shared link (see state/urlState). */
+  applyFilterPatch: (patch: Partial<Filters>) => void;
   setCitationRange: (min: number, max: number | null) => void;
   setSubfieldIds: (ids: number[]) => void;
   setLabelIds: (ids: number[]) => void;
@@ -370,6 +372,13 @@ export const useStore = create<AppState>((set) => ({
       };
     }),
   setAuthors: (ids) => set((s) => ({ filters: { ...s.filters, authorIds: ids } })),
+  applyFilterPatch: (patch) =>
+    set((s) => {
+      const filters = { ...s.filters, ...patch };
+      // yearMin/yearMax mirror the month range for the coarse display and the recency ramp,
+      // so a link that sets months must not leave them describing a different window.
+      return { filters };
+    }),
   setCitationRange: (min, max) =>
     set((s) => ({ filters: { ...s.filters, citeMin: min, citeMax: max } })),
   setSubfieldIds: (ids) => set((s) => ({ filters: { ...s.filters, subfieldIds: ids } })),

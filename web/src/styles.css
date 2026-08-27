@@ -948,3 +948,28 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 @media (prefers-reduced-motion: reduce) {
   .title-skeleton, .year-skeleton, .count-skeleton { animation: none; background: rgba(214, 224, 240, 0.10); }
 }
+
+/* --- Sidebar structure -------------------------------------------------------------- */
+/* Blocks below the filters are tools, not facets, and start collapsed. */
+.collapsible { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 10px; }
+.collapsible-head { margin: 0; }
+.collapsible-head button {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: transparent; border: 0; padding: 3px 0; cursor: pointer;
+  color: var(--text); font: inherit; font-size: 12.5px; text-align: left;
+}
+.collapsible-head button:hover, .collapsible-head button:focus-visible { color: var(--accent); }
+.collapsible-chev { transition: transform .12s ease; flex: none; }
+.collapsible.open .collapsible-chev { transform: rotate(90deg); }
+.collapsible-badge {
+  margin-left: auto; font-size: 10px; line-height: 1; padding: 2px 6px;
+  border-radius: 999px; background: var(--accent-dim); color: var(--accent);
+}
+.collapsible-body { margin-top: 8px; }
+/* Labelled rule separating filters from tools. */
+.sidebar-rule {
+  display: flex; align-items: center; gap: 8px;
+  margin: 16px 0 2px; color: var(--subtle);
+  font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+}
+.sidebar-rule::after { content: ""; flex: 1; height: 1px; background: var(--border); }

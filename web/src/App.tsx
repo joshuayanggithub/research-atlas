@@ -8,6 +8,9 @@ import { CompareResults } from "./panels/CompareResults";
 import { AuthorFilter } from "./filters/AuthorFilter";
 import { CitationFilter } from "./filters/CitationFilter";
 import { ActiveFilters } from "./filters/ActiveFilters";
+import { CollapsibleSection } from "./filters/CollapsibleSection";
+import { useUrlSync } from "./state/useUrlSync";
+import { ShareLinkButton } from "./panels/ShareLinkButton";
 import { ReadingListPanel } from "./filters/ReadingListPanel";
 import { LoadingStatus } from "./panels/LoadingStatus";
 import { TopicFilter } from "./filters/TopicFilter";
@@ -30,12 +33,16 @@ export default function App() {
   const setError = useStore((s) => s.setError);
   const clearFilters = useStore((s) => s.clearFilters);
   const filters = useStore((s) => s.filters);
+  const compare = useStore((s) => s.compare);
   const selectedNode = useStore((s) => s.selectedNode);
   const [filtersOpen, setFiltersOpen] = useState(() =>
     window.matchMedia("(min-width: 721px)").matches,
   );
 
   const [progress, setProgress] = useState<LoadProgress | null>(null);
+
+  // Above every early return: hooks must run in the same order on every render.
+  useUrlSync(dataset);
 
   useEffect(() => {
     loadDataset(setProgress)
@@ -162,6 +169,7 @@ export default function App() {
         <div className="sidebar-head">
           <h3>Filters</h3>
           <div className="sidebar-actions">
+            <ShareLinkButton />
             {filtersActive && (
               <button type="button" className="text-btn" onClick={clearFilters}>
                 Clear
@@ -177,18 +185,34 @@ export default function App() {
             </button>
           </div>
         </div>
-        {/* Corpus filters first. The reading list is a personal feature that is empty until
-            someone imports a library, and it used to sit above Organizations — so the panel
-            opened with a paragraph about Zotero rather than with the filters the map is for.
-            It stays in the sidebar, just after the facets. */}
-        <CompareSetup ds={dataset} />
+        {/* Corpus filters first and expanded — they are what the sidebar is for. Everything
+            below the rule is a tool or a reference, not a filter, and starts collapsed: Compare
+            used to hold the top slot with a three-line explanation above the facets, and the
+            reading list opened the panel with a paragraph about Zotero. */}
         <OrgFilterPanel ds={dataset} />
         <TopicFilter ds={dataset} />
         <AuthorFilter ds={dataset} />
         <CitationFilter ds={dataset} />
         <DateRangeSlider ds={dataset} />
-        <ReadingListPanel ds={dataset} />
-        <Legend ds={dataset} />
+
+        <div className="sidebar-rule" role="separator" aria-hidden="true">
+          <span>Tools</span>
+        </div>
+        <CollapsibleSection
+          title="Compare two"
+          badge={[compare.a, compare.b].filter(Boolean).length || null}
+        >
+          <CompareSetup ds={dataset} />
+        </CollapsibleSection>
+        <CollapsibleSection
+          title="Reading list"
+          badge={filters.readingLists.length || null}
+        >
+          <ReadingListPanel ds={dataset} />
+        </CollapsibleSection>
+        <CollapsibleSection title="Legend & colours">
+          <Legend ds={dataset} />
+        </CollapsibleSection>
       </aside>
 
       <PaperListPanel ds={dataset} />

@@ -2089,3 +2089,55 @@ else is like this that nothing connects it to".
 *Attention Is All You Need* drew *3D Cal*'s tactile-sensor papers as its similar work — verified
 in the DOM before the fix. It now clears on every change of paper: an empty diagram for a moment
 is honest, a confidently wrong one is not. The same placeholder-read-as-fact rule as D39/D65.
+
+## D75. The sidebar is facets first, tools collapsed — ACTIVE
+
+**Decision.** The sidebar order is Organizations, arXiv category, Authors, Citations, Dates —
+all expanded — then a labelled rule, then Compare / Reading list / Legend as collapsed blocks.
+
+**Why.** Every panel rendered expanded at once, and the top slot went to **Compare**: a rare,
+two-input feature introduced by three lines of explanation, sitting above the facets the map is
+actually for. Below it the reading list opened with a paragraph about Zotero exports. Nothing
+could be scanned, which is the "a lot going on and the features may not be very intuitive"
+report. Sorting by what the panel is FOR — filter the corpus, then everything else — costs
+nothing and makes the top of the sidebar answer one question.
+
+**Collapsed means unmounted**, not hidden: the reading list parses an imported library on mount
+and the legend subscribes to edge state, and a closed drawer should not pay for either. Each
+block carries a badge when it is active (a compare side chosen, a list showing), so a collapsed
+section can still say it is doing something.
+
+**Cost of reverting.** Compare and the reading list are one click closer, at the price of a
+sidebar nobody can scan. Note the e2e reading-list test now expands the section first; that is a
+real change to the interaction, not a test workaround.
+
+## D76. A view is a URL — ACTIVE
+
+**Decision.** Facets and the selected paper are encoded into the query string and read back on
+load (`state/urlState`, `state/useUrlSync`), with a Copy link button in the sidebar header.
+
+**What is NOT in the URL, deliberately.** Imported reading lists. They are files on the reader's
+own machine that never leave the browser, so naming them in a shared link would promise papers
+the recipient does not have.
+
+**Stability rules.** Dates are written absolute (`from=2020-01`) rather than as the internal
+month index, so a link survives a change to the corpus start. Node ids are an index into THIS
+build, so `paper=` is range-checked against the corpus count and dropped when it does not fit —
+an old link opens the map rather than selecting an unrelated paper.
+
+**Three bugs found while verifying, each worth keeping:**
+
+1. `numbers(null)` returned `[0]`, because `"".split(",")` is `[""]` and `Number("")` is 0 — a
+   perfectly good id. So an ABSENT parameter decoded as author 0, category 0, topic 0 and region
+   0: every visit to the bare URL silently applied four filters nobody chose and then wrote them
+   into the address bar. Empty segments are now dropped before parsing.
+2. The month origin is **January of the corpus start year**, not the corpus start month. The app
+   derives its range as `(toYear - fromYear) * 12 + (toMonth - 1)`, so reading date_from's month
+   (1991-**03**) shifted every shared range two months earlier: `from=2020-01` came back as
+   "Nov 2019".
+3. Selection must be applied BEFORE the facets. `selectNode` clears the org/author facets by
+   design (D63), so applying filters first threw them away — a link carrying both `?org=` and
+   `?paper=` opened with the paper and no org.
+
+**Cost of reverting.** One less thing to keep in sync on every facet change, and views become
+unshareable again.
