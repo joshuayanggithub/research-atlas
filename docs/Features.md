@@ -17,6 +17,11 @@ silently dropped.
   citations, dates); Compare, the reading list and the legend sit below a labelled rule as
   collapsed blocks that show a badge when active.
 
+- **Split artifact origin.** The nine files needed before first paint (2.67 MB gzipped) ship
+  with the app and are served by Pages' CDN; the remaining ~4,360 on-demand shards come from
+  the object store. Keeps a rate-limited dev endpoint out of the critical path without needing
+  a custom domain (D77).
+
 ## The map
 
 - **Semantic map of 271,366 recent CS/ML papers** from arXiv (`cs.* OR stat.ML`, 2025 through

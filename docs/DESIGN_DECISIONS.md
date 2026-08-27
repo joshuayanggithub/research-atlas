@@ -2141,3 +2141,44 @@ an old link opens the map rather than selecting an unrelated paper.
 
 **Cost of reverting.** One less thing to keep in sync on every facet change, and views become
 unshareable again.
+
+## D77. The first-paint artifacts ship with the app; everything else stays on the object store — ACTIVE
+
+**Decision.** Nine files (2.67 MB gzipped) are downloaded into `dist/data` at build time and
+served by Pages' CDN: `manifest.json`, `labels.json`, `orgs.json`, `topics.json` and point tiers
+L0–L4. The other ~4,360 files stay on R2 and are fetched on demand.
+
+**Why.** The data origin is Cloudflare's `pub-*.r2.dev` **development endpoint**, which is
+rate-limited and documented as unsuitable for production traffic. That failure mode is invisible
+to the owner — artifacts carry `max-age=31536000, immutable`, so a repeat visitor fetches
+nothing at all — and lands entirely on first-time visitors, which is the exact shape of "people
+tell me it's unusable and I don't see it". A custom proxied domain is the better fix; this is
+the one that needs no domain.
+
+**Why only these nine.** They are what blocks first paint. Everything else a visit eventually
+loads arrives after the map is already drawable — `papers-index` (2.49 MB) and the L3/L4 edge
+tiers (2.0 MB) among them — so it keeps the object store's immutable caching instead of costing
+Pages bandwidth.
+
+| set | size | Pages bytes / cold visit | cold visits before the ~100 GB soft limit |
+|---|---|---|---|
+| **first paint only (chosen)** | 2.67 MB | ~3.1 MB | ~32,000 / month |
+| plus papers-index + edge tiers | 7.81 MB | ~8.2 MB | ~12,000 / month |
+
+**Costs, stated plainly.** Pages forces `Cache-Control: max-age=600` and it cannot be overridden,
+so these nine lose the one-year immutable caching and a repeat visitor makes nine conditional
+requests (304s, a few hundred bytes) instead of none. And the two copies must stay in step:
+because the workflow downloads from the SAME prefix `VITE_DATA_BASE` names, **republishing
+artifacts to a new prefix now requires a Pages rebuild as well.**
+
+**Two lists that must not drift.** `PAGES_HOSTED` in `web/src/data/loadArtifacts.ts` and the
+`for` loop in `.github/workflows/pages.yml`. A name in the first that the second does not fetch
+404s on the deployed site. The bundle guard was narrowed from "dist/data must be empty" to "at
+most 12 files / 40 MB" so it still catches an accidental full-bundle copy.
+
+**Verified** against the live prefix: the nine resolve same-origin, `edges-L*`, `regions` and
+`papers-index` resolve to r2.dev, the map draws, no failed requests, console clean. All nine
+confirmed present on the published prefix, since a 404 now fails the build.
+
+**Cost of reverting.** One origin and simpler release steps, at the price of putting a
+rate-limited dev endpoint in front of every new visitor's first paint.

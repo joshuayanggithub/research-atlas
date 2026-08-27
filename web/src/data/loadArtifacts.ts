@@ -23,6 +23,41 @@ import type {
 // Left as a bare relative path when unset, deliberately — a missing VITE_DATA_BASE should
 // 404 visibly rather than silently produce a site that looks fine and has no papers.
 const BASE = import.meta.env.VITE_DATA_BASE ?? "data";
+
+// The handful of files that must arrive before the map can draw ANYTHING are copied into the
+// deploy and served by Pages' CDN; everything else stays on the object store.
+//
+// Why split at all: the object store is reached through Cloudflare's r2.dev development
+// endpoint, which is rate-limited and documented as unsuitable for production traffic. The
+// owner never notices — artifacts are immutable with a one-year TTL, so a repeat visitor
+// fetches nothing — but every first-time visitor pays for it, which is the shape of "it's
+// unusable for them and fine for me".
+//
+// Why only these: measured gzipped, this set is 2.67 MB. The rest of what a visit eventually
+// loads — papers-index (2.49 MB) and the L3/L4 edge tiers (2.0 MB) — arrives AFTER first
+// paint, so it can stay on the object store and keep its immutable caching. At ~3 MB per cold
+// visit, Pages' ~100 GB monthly allowance covers roughly 32,000 of them.
+//
+// KEEP IN SYNC with the download list in .github/workflows/pages.yml. A name here that the
+// workflow does not fetch 404s on the deployed site.
+const PAGES_HOSTED = new Set([
+  "manifest.json",
+  "labels.json",
+  "orgs.json",
+  "topics.json",
+  "points-L0.arrow",
+  "points-L1.arrow",
+  "points-L2.arrow",
+  "points-L3.arrow",
+  "points-L4.arrow",
+]);
+
+/** Origin for one artifact. Same-origin for the first-paint set, object store for the rest. */
+function assetUrl(name: string): string {
+  // import.meta.env.BASE_URL is vite's `base` ("/research-atlas/"), so this resolves correctly
+  // on a project page as well as at a domain root.
+  return PAGES_HOSTED.has(name) ? `${import.meta.env.BASE_URL}data/${name}` : `${BASE}/${name}`;
+}
 const SUPPORTED_SCHEMA_VERSION = 3;
 let datasetPromise: Promise<Dataset> | null = null;
 
@@ -91,7 +126,7 @@ async function fetchArrow(name: string, priority?: "high" | "low"): Promise<Tabl
 }
 
 async function fetchArrowInner(name: string, priority?: "high" | "low"): Promise<Table> {
-  const res = await fetch(`${BASE}/${name}`, priority ? { priority } as RequestInit : undefined);
+  const res = await fetch(assetUrl(name), priority ? { priority } as RequestInit : undefined);
   if (!res.ok) throw new Error(`failed to load ${name}: ${res.status}`);
   const buf = await res.arrayBuffer();
   // tableFromIPC has a sync overload for a materialized byte array.
@@ -105,7 +140,7 @@ async function fetchArrowInner(name: string, priority?: "high" | "low"): Promise
  * measures the thing the user is actually waiting through.
  */
 async function fetchArrowProgress(name: string, onBytes: (n: number) => void): Promise<Table> {
-  const res = await fetch(`${BASE}/${name}`);
+  const res = await fetch(assetUrl(name));
   if (!res.ok) throw new Error(`failed to load ${name}: ${res.status}`);
   if (!res.body) {
     const buf = await res.arrayBuffer();
@@ -132,7 +167,7 @@ async function fetchArrowProgress(name: string, onBytes: (n: number) => void): P
 }
 
 async function fetchJSON<T>(name: string): Promise<T> {
-  const res = await fetch(`${BASE}/${name}`);
+  const res = await fetch(assetUrl(name));
   if (!res.ok) throw new Error(`failed to load ${name}: ${res.status}`);
   return (await res.json()) as T;
 }

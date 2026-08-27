@@ -44,13 +44,42 @@ jobs:
       - run: npx vite build
         env:
           VITE_DATA_BASE: ${{ vars.VITE_DATA_BASE }}
-      - name: Fail if artifacts were bundled by accident
-        # web/public is copied verbatim into dist. If someone un-ignores the bundle, this
-        # catches it before a 0.79 GB upload rather than after.
+      - name: Fetch the first-paint artifacts into the deploy
+        # These nine files (2.67 MB gzipped) must arrive before the map can draw anything, so
+        # Pages' CDN serves them and the object store is left out of the critical path -- its
+        # r2.dev endpoint is rate-limited and not meant for production traffic, which a cached
+        # owner never sees and every first-time visitor does.
+        #
+        # Fetched here rather than committed: web/public/data is gitignored, and downloading
+        # from the SAME prefix the bundle points at keeps the two copies in step. Republishing
+        # artifacts to a new prefix therefore needs a Pages rebuild as well.
+        #
+        # KEEP IN SYNC with PAGES_HOSTED in web/src/data/loadArtifacts.ts.
+        if: vars.VITE_DATA_BASE != ''
+        env:
+          VITE_DATA_BASE: ${{ vars.VITE_DATA_BASE }}
         run: |
-          if [ -d dist/data ] && [ "$(find dist/data -type f | wc -l)" -gt 1 ]; then
-            echo "dist/data contains $(find dist/data -type f | wc -l) files; artifacts must be"
-            echo "published to the object store, not to Pages."
+          set -euo pipefail
+          mkdir -p dist/data
+          for f in manifest.json labels.json orgs.json topics.json \
+                   points-L0.arrow points-L1.arrow points-L2.arrow \
+                   points-L3.arrow points-L4.arrow; do
+            # --compressed: the store keeps these gzipped with Content-Encoding, and Pages
+            # compresses on the fly, so the deploy holds plain bytes.
+            curl -fsS --compressed --retry 3 --retry-delay 2 --max-time 120 \
+              -o "dist/data/$f" "$VITE_DATA_BASE/$f"
+          done
+          echo "first-paint set: $(du -sh dist/data | cut -f1) in $(find dist/data -type f | wc -l) files"
+
+      - name: Fail if the whole bundle was pulled in by accident
+        # web/public is copied verbatim into dist. If someone un-ignores the bundle, or the
+        # fetch above grows unnoticed, this catches it before a multi-hundred-MB upload.
+        run: |
+          count=$(find dist/data -type f 2>/dev/null | wc -l)
+          size=$(du -sm dist/data 2>/dev/null | cut -f1 || echo 0)
+          if [ "$count" -gt 12 ] || [ "${size:-0}" -gt 40 ]; then
+            echo "dist/data has $count files / ${size} MB; only the first-paint set belongs on"
+            echo "Pages. Everything else must be published to the object store."
             exit 1
           fi
       - uses: actions/upload-pages-artifact@v3
