@@ -2002,7 +2002,7 @@ was attached to. Layer data lengths from the running app are authoritative here 
 `ambient=0` while a paper is selected; canvas colour counts cannot separate ambient arrows from
 blue points and should not be used for this again.
 
-## D72. Related works is a tab, and the default tab follows the data — ACTIVE
+## D72. Related works is a tab, and the default tab follows the data — SUPERSEDED by D73
 
 **Decision.** The details panel has three tabs: Citations / Similar / Paper. Related works lives
 in Similar. A paper with `citedByCount === 0` and `referencesAvailable === false` opens on
@@ -2025,3 +2025,30 @@ uncited (the placeholder-read-as-fact rule).
 
 **Note.** Two equal grid columns wrapped the third tab onto its own row; the grid is now
 `repeat(3, 1fr)`. Verified one row, no text overflow, on desktop and iPhone 13.
+
+## D73. Related works renders on selection, above the citation network — ACTIVE
+
+**Supersedes D72.** Selecting a paper SHOWS its related works. Not below the references list,
+and not behind a tab.
+
+**Why.** Two placements failed in opposite ways, both reported by the user as "it doesn't show":
+
+- As the last section of the citations panel it sat ~900 px down a 1,704 px panel in an 804 px
+  viewport (D72's measurement) — rendered, scrolled past, never seen.
+- Moved to its own **Similar** tab it left the Citations view entirely, so selecting a paper
+  showed only references unless the reader happened to click a second tab. Strictly worse: the
+  content was now behind an interaction rather than behind a scroll.
+
+It now renders inline, directly after the relevance slider and BEFORE the citation network.
+Measured on *3D Cal* at 1440x900: the heading lands **368 px** into an **806 px** panel — on
+screen with no scrolling and no clicking. The tab count is back to two (Citations / Paper) and
+the tab grid back to `1fr 1fr`.
+
+**The cost, stated plainly.** The citation network and the references list are each pushed down
+by roughly one 8-row block. That is a real price paid on citation-rich papers, and it is the
+right trade: references are what the reader came expecting, so they will scroll for them, while
+similarity links are the thing they do not know is there. For a recent preprint they are also
+the only structural signal that exists at all.
+
+**Cost of reverting.** Citations regain the top of the panel, and related works returns to being
+present but unseen — which is what the last two attempts demonstrated.

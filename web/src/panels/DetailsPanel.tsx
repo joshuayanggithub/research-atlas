@@ -1,9 +1,9 @@
 // Metadata and graph context for the selected paper.
 
-import { ExternalLink, FileText, Network, Sparkles, X } from "lucide-react";
+import { ExternalLink, FileText, Network, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-type DetailView = "citations" | "similar" | "paper";
+type DetailView = "citations" | "paper";
 import type { Dataset, PaperDetail } from "../data/types";
 import { useStore } from "../state/store";
 import { PaperTitle } from "./PaperTitle";
@@ -82,16 +82,7 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
   };
 
   useEffect(() => {
-    // A paper with no citing papers AND no extracted reference list has an empty citation
-    // panel by definition (a 2026 preprint: S2/OpenAlex have not indexed it). Landing on
-    // Citations there shows two "no data" messages; its semantic neighbours always exist, so
-    // open on those instead. Counts come from papers-index, which is authoritative for every
-    // node -- ds.citedBy is empty until the paper's edge shard lands and would misread every
-    // paper as uncited (the placeholder-read-as-fact rule).
-    const paper = selectedNode === null ? null : ds.papers[selectedNode];
-    const noCitationData =
-      !!paper && paper.citedByCount === 0 && paper.referencesAvailable === false;
-    setView(noCitationData ? "similar" : "citations");
+    setView("citations");
     setShowAllAuthors(false); // a new paper starts collapsed
   }, [ds, selectedNode]);
 
@@ -272,9 +263,7 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
           // Arrow keys move between tabs (standard tabs pattern).
           if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
             e.preventDefault();
-            const order: DetailView[] = ["citations", "similar", "paper"];
-            const step = e.key === "ArrowRight" ? 1 : order.length - 1;
-            setView((v) => order[(order.indexOf(v) + step) % order.length]);
+            setView((v) => (v === "citations" ? "paper" : "citations"));
           }
         }}
       >
@@ -290,19 +279,6 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
         >
           <Network size={14} aria-hidden="true" />
           Citations
-        </button>
-        <button
-          type="button"
-          role="tab"
-          id="tab-similar"
-          aria-controls="panel-similar"
-          tabIndex={view === "similar" ? 0 : -1}
-          className={view === "similar" ? "active" : ""}
-          aria-selected={view === "similar"}
-          onClick={() => setView("similar")}
-        >
-          <Sparkles size={14} aria-hidden="true" />
-          Similar
         </button>
         <button
           type="button"
@@ -324,18 +300,16 @@ export function DetailsPanel({ ds }: { ds: Dataset }) {
           <ArxivPreview arxivId={detail?.arxivId ?? null} doi={detail?.doi ?? null} title={p.title} />
         </div>
       )}
-      {/* Its own tab, not the last section of the citations panel. Below the citation network,
-          the "N of M references are in this map" note, the link filter and the whole references
-          list, "Related works" sat ~900 px down a 1700 px panel in an 800 px viewport — present,
-          scrolled past, and reported as not showing at all. */}
-      {view === "similar" && (
-        <div role="tabpanel" id="panel-similar" aria-labelledby="tab-similar">
-          <RelatedWorksPanel ds={ds} node={selectedNode} />
-        </div>
-      )}
       {view === "citations" && (
         <div role="tabpanel" id="panel-citations" aria-labelledby="tab-citations">
           {ds.manifest.corpus.citation_graph_source && <RelevanceSlider />}
+          {/* ABOVE the citation network, not below the references list, and not behind a tab.
+              Selecting a paper must SHOW related works, because for a recent preprint they are
+              the only structural signal there is and for everything else they are the answer
+              the citation graph cannot give: papers on the same subject that never cited each
+              other. Buried at the bottom of a 1,700 px panel it was never seen; moved to its
+              own tab it stopped appearing on selection at all. */}
+          <RelatedWorksPanel ds={ds} node={selectedNode} />
           <CitationExplorer ds={ds} node={selectedNode} referenceCount={detail?.referenceCount ?? -1} />
         </div>
       )}
