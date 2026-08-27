@@ -11,6 +11,7 @@ import type { Dataset } from "../data/types";
 import { useStore, type EdgeMode } from "../state/store";
 import { useNodeEdges } from "../data/useNodeEdges";
 import { useTitles } from "../data/useTitles";
+import { useNeighborList } from "../map/layers/useRelatedLinks";
 import { PaperTitle } from "./PaperTitle";
 import { PaperYear } from "./PaperYear";
 import { importanceWeight } from "../map/importance";
@@ -25,6 +26,9 @@ const LIST_LIMIT = 7;
  * slice is the honest and useful thing to draw, and the button now says "top N of M" rather
  * than claiming to show everything. */
 const EXPANDED_LIMIT = 60;
+/** Similar-but-uncited papers shown in the network diagram. Kept small: they are context, not
+ *  the subject, and the diagram is 320 px wide. */
+const SIMILAR_GRAPH_LIMIT = 5;
 
 interface GraphPaper {
   id: number;
@@ -65,6 +69,14 @@ function ranked(ids: number[], ds: Dataset): number[] {
     });
 }
 
+/** Bottom row for similar papers, below the citing/reference fans. */
+const SIMILAR_ROW_Y = 168;
+
+function similarX(index: number, count: number): number {
+  if (count <= 1) return 160;
+  return 60 + (index * 200) / (count - 1);
+}
+
 function graphY(index: number, count: number): number {
   if (count <= 1) return 78;
   return 27 + (index * 102) / (count - 1);
@@ -79,16 +91,32 @@ function activatePaper(event: KeyboardEvent<SVGGElement>, select: () => void) {
 
 function CitationGraph({
   ds,
+  node,
   incoming,
   outgoing,
   mode,
 }: {
   ds: Dataset;
+  node: number;
   incoming: number[];
   outgoing: number[];
   mode: EdgeMode;
 }) {
   const selectNode = useStore((s) => s.selectNode);
+  // Similar work that is NOT cited either way. A paper with sparse citations has an almost
+  // empty diagram — for a 2026 preprint, literally just "THIS PAPER" — while its nearest
+  // neighbours in embedding space are known for every paper in the corpus. Those are drawn
+  // faintly along the bottom: present and clickable, visibly weaker than a real citation,
+  // because a similarity is not a link the authors made.
+  const neighbors = useNeighborList(ds, node);
+  const similar = useMemo(() => {
+    if (!neighbors) return [] as { id: number; score: number }[];
+    const cited = new Set<number>([...incoming, ...outgoing]);
+    return Array.from(neighbors.ids)
+      .map((id, i) => ({ id, score: neighbors.scores[i] ?? 0 }))
+      .filter((n) => !cited.has(n.id) && n.id >= 0 && n.id < ds.papers.length)
+      .slice(0, SIMILAR_GRAPH_LIMIT);
+  }, [neighbors, incoming, outgoing, ds.papers.length]);
   const shownIn = mode === "out" ? [] : incoming.slice(0, GRAPH_LIMIT);
   const shownOut = mode === "in" ? [] : outgoing.slice(0, GRAPH_LIMIT);
   const nodes: GraphPaper[] = [
@@ -111,9 +139,13 @@ function CitationGraph({
   return (
     <svg
       className="citation-graph"
-      viewBox="0 0 320 156"
+      viewBox={similar.length > 0 ? "0 0 320 196" : "0 0 320 156"}
       role="img"
-      aria-label="Directed citation neighborhood"
+      aria-label={
+        similar.length > 0
+          ? "Citation neighborhood, with similar uncited papers"
+          : "Directed citation neighborhood"
+      }
     >
       <defs>
         <marker
@@ -166,6 +198,25 @@ function CitationGraph({
         );
       })}
 
+      {similar.map((paper, i) => {
+        const x = similarX(i, similar.length);
+        return (
+          <line
+            key={`similar-edge-${paper.id}`}
+            x1="160"
+            y1="90"
+            x2={x}
+            y2={SIMILAR_ROW_Y - 6}
+            className="citation-graph-edge similar"
+          />
+        );
+      })}
+      {similar.length > 0 && (
+        <text x="160" y="192" textAnchor="middle" className="citation-graph-label similar">
+          SIMILAR · NOT CITED
+        </text>
+      )}
+
       <circle cx="160" cy="78" r="12" className="citation-center" />
       <circle cx="160" cy="78" r="3" className="citation-center-dot" />
       <text x="160" y="102" textAnchor="middle" className="citation-center-label">
@@ -188,6 +239,23 @@ function CitationGraph({
           {/* Radius encodes citation importance (4.5..8px) so the most-cited linked papers
               are the largest nodes, in rank order down each side. */}
           <circle cx={paper.x} cy={paper.y} r={4.5 + 3.5 * paper.weight} />
+        </g>
+      ))}
+
+      {similar.map((paper, i) => (
+        <g
+          key={`similar-node-${paper.id}`}
+          className="citation-graph-node similar"
+          role="button"
+          tabIndex={0}
+          aria-label={`Open ${ds.papers[paper.id].title} (similar, not cited)`}
+          onClick={() => selectNode(paper.id)}
+          onKeyDown={(event) => activatePaper(event, () => selectNode(paper.id))}
+        >
+          <title>{`${ds.papers[paper.id].title || "Title loading…"} · similarity ${paper.score.toFixed(2)} · not cited either way`}</title>
+          {/* Fixed small radius: these are ranked by similarity, not citation weight, so
+              varying the size would imply an importance ordering the score does not carry. */}
+          <circle cx={similarX(i, similar.length)} cy={SIMILAR_ROW_Y} r="4" />
         </g>
       ))}
 
@@ -393,6 +461,7 @@ export function CitationExplorer(
 
       <CitationGraph
         ds={ds}
+        node={node}
         incoming={incoming}
         outgoing={outgoing}
         mode={edgeMode}

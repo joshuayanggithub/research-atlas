@@ -364,6 +364,16 @@ button:focus-visible, input:focus-visible, [role="option"]:focus-visible, .switc
 .edge-key-line.outgoing { color: #37d6c7; }
 .edge-key-line.incoming { color: #f4a261; }
 .edge-key-line.similar { color: #a78bfa; }
+
+/* Similar-but-uncited papers in the network diagram. Dashed and dimmer than a citation edge,
+   and with no arrowhead: a similarity is symmetric and is not a link the authors made. */
+.citation-graph-edge.similar { stroke: #a78bfa; stroke-opacity: .45; stroke-width: 1;
+  stroke-dasharray: 3 3; }
+.citation-graph-node.similar circle { fill: #a78bfa; fill-opacity: .55; cursor: pointer; }
+.citation-graph-node.similar:hover circle,
+.citation-graph-node.similar:focus-visible circle { fill-opacity: 1; }
+.citation-graph-label.similar { fill: #a78bfa; fill-opacity: .8; }
+
 /* Similarity links carry no direction, so their swatch carries no arrowhead. */
 .edge-key-line.similar::after { display: none; }
 

@@ -2052,3 +2052,40 @@ the only structural signal that exists at all.
 
 **Cost of reverting.** Citations regain the top of the panel, and related works returns to being
 present but unseen — which is what the last two attempts demonstrated.
+
+## D74. The network diagram carries similar-but-uncited papers — ACTIVE
+
+**Decision.** `CitationGraph` draws up to 5 semantic neighbours that have **no citation link in
+either direction**, on a bottom row, in dashed violet with no arrowhead and a fixed small radius.
+Reverses the "Not done" note under D71.
+
+**Why.** The diagram's whole job is to show a paper's neighbourhood, and for a sparsely cited
+paper it had nothing to draw — a 2026 preprint rendered as the single node "THIS PAPER". Its
+fused-kNN neighbours exist for every paper in the corpus, so the diagram can always say
+something. Measured against the artifacts:
+
+| paper | neighbours | citation-linked | drawn as similar |
+|---|---|---|---|
+| Meshy T2 (2026) | 15 | 0 | **15 → 5 shown** |
+| 3D Cal | 15 | 15 | 0 |
+| Attention Is All You Need | 15 | 15 | 0 |
+
+That distribution is the feature working, not failing: the nodes appear exactly where the
+citation graph is empty, and stay out of the way where it is rich.
+
+**Weaker on purpose.** Dashed, 45% stroke opacity, no arrowhead, fixed radius. A citation is a
+link the authors made; a similarity is an inference from an embedding, and the drawing must not
+claim equal standing. Radius is fixed rather than citation-weighted because these are ranked by
+similarity, and sizing them by citations would imply an ordering the score does not carry.
+
+**Note the deliberate asymmetry with the map.** The map draws similarity links to ALL neighbours
+including cited ones (D71 follow-up), because suppressing them there made the feature invisible
+on well-cited papers. The diagram excludes them, because its bottom row exists to answer "what
+else is like this that nothing connects it to".
+
+### Stale neighbours attributed to the wrong paper
+
+`useNeighborList` held the previous paper's list until the new shard resolved, so selecting
+*Attention Is All You Need* drew *3D Cal*'s tactile-sensor papers as its similar work — verified
+in the DOM before the fix. It now clears on every change of paper: an empty diagram for a moment
+is honest, a confidently wrong one is not. The same placeholder-read-as-fact rule as D39/D65.

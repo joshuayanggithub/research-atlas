@@ -25,31 +25,44 @@ export type RelatedLink = {
 /** Links from the selected paper to its nearest neighbours, or [] when there is nothing to
  *  draw. Honours the same Hide/Show toggle as the Related works panel: hidden means the
  *  neighbour shard is never fetched. */
-export function useRelatedLinks(ds: Dataset, selectedNode: number | null): RelatedLink[] {
+/** The selected paper's fused-kNN neighbours, or null.
+ *
+ *  Shared by the map layer and the panel's network diagram so both read ONE cached shard fetch
+ *  and agree on what "similar" means.
+ *
+ *  Fetches only on a real change of paper. An earlier version also listed tilesEpoch and awaited
+ *  inside the effect, so every tile that landed re-ran it and the cleanup killed the run still
+ *  awaiting — with tiles arriving every few seconds a heavily-linked paper never produced a
+ *  single link. */
+export function useNeighborList(ds: Dataset, selectedNode: number | null): NeighborList | null {
   const showRelated = useStore((s) => s.showRelated);
   const [neighbors, setNeighbors] = useState<NeighborList | null>(null);
-  // Positions arrive per tile/shard, so a neighbour may not be placed on the first pass.
-  const tilesEpoch = usePointTilesEpoch();
-
-  // Fetch ONLY on a real change of paper. An earlier version also listed tilesEpoch here and
-  // awaited inside the effect, so every tile that landed re-ran the effect, and its cleanup
-  // set `live = false` on the run still awaiting — with tiles arriving every few seconds the
-  // list never settled and a heavily-linked paper drew ZERO similarity links. Position
-  // readiness is a render-time question, so it belongs in the memo below, not here.
   useEffect(() => {
-    if (selectedNode === null || !showRelated) {
-      setNeighbors(null);
-      return;
-    }
+    // Clear FIRST, on every change of paper. Holding the previous paper's list until the new
+    // shard resolved meant the diagram attributed one paper's neighbours to another: selecting
+    // Attention Is All You Need drew 3D Cal's tactile-sensor papers as its similar work. A
+    // wrong answer displayed confidently is worse than an empty diagram (the
+    // placeholder-read-as-fact rule).
+    setNeighbors(null);
+    if (selectedNode === null || !showRelated) return;
     let live = true;
     void ds.getNeighbors(selectedNode).then((n) => {
       if (!live) return;
       setNeighbors(n && n.ids.length > 0 ? n : null);
-      // Nudge the shards these neighbours live in; the memo picks them up as they land.
+      // Nudge the shards these neighbours live in; consumers pick them up as they land.
       if (n && n.ids.length > 0) void ensurePositionsFor(Array.from(n.ids));
     });
     return () => { live = false; };
   }, [ds, selectedNode, showRelated]);
+  return neighbors;
+}
+
+export function useRelatedLinks(ds: Dataset, selectedNode: number | null): RelatedLink[] {
+  const showRelated = useStore((s) => s.showRelated);
+  const neighbors = useNeighborList(ds, selectedNode);
+  // Positions arrive per tile/shard, so a neighbour may not be placed on the first pass.
+  // Readiness is a render-time question, so it lives in the memo below.
+  const tilesEpoch = usePointTilesEpoch();
 
   return useMemo(() => {
     if (!neighbors || selectedNode === null || !showRelated) return [];
