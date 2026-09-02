@@ -476,31 +476,43 @@ def _build_planar_graph(
 
     n = len(coords)
     # k+1 because the first hit of a point's own kNN query is itself.
-    _, neighbor_rows = cKDTree(coords).query(coords, k=min(k_spatial + 1, n))
+    _, neighbor_rows = cKDTree(coords).query(coords, k=min(k_spatial + 1, n), workers=-1)
+    neighbor_rows = np.asarray(neighbor_rows, dtype=np.int64)
 
-    sources: list[int] = []
-    targets: list[int] = []
-    seen: set[tuple[int, int]] = set()
-    for source in range(n):
-        for target in neighbor_rows[source][1:]:
-            target = int(target)
-            if target == source:
-                continue
-            pair = (source, target) if source < target else (target, source)
-            if pair in seen:
-                continue
-            seen.add(pair)
-            sources.append(pair[0])
-            targets.append(pair[1])
+    # Vectorised undirected dedup. The previous Python loop built a `set` of ~16M tuples plus
+    # two int lists, which is several GB of object overhead for what is one integer key per
+    # edge. Encoding the ordered pair as lo*n + hi is exact here: n < 2^31, so the key fits in
+    # int64 with room to spare.
+    rows = np.repeat(np.arange(n, dtype=np.int64), neighbor_rows.shape[1] - 1)
+    cols = neighbor_rows[:, 1:].ravel()
+    keep = cols != rows
+    rows, cols = rows[keep], cols[keep]
+    key = np.unique(np.minimum(rows, cols) * n + np.maximum(rows, cols))
+    del rows, cols, keep, neighbor_rows
+    src = key // n
+    dst = key % n
+    del key
+    log.info(f"  planar substrate: {len(src):,} undirected spatial edges")
 
-    src = np.asarray(sources, dtype=np.int64)
-    dst = np.asarray(targets, dtype=np.int64)
-    # Semantic weight per spatial edge. Clipped at 0: Leiden's RB-configuration model
-    # treats weights as edge mass, so a negative cosine must not subtract from it.
-    weights = np.maximum(
-        np.einsum("ij,ij->i", vectors[src], vectors[dst], optimize=True),
-        0.0,
-    )
+    # Semantic weight per spatial edge, computed in CHUNKS.
+    #
+    # `vectors[src]` is fancy indexing, so it COPIES: at 3.13M papers that is a
+    # [15.7M, 768] float32 array — 44.8 GB — and the einsum needs two of them at once. That
+    # allocation OOM-killed this stage (anon-rss 76.3 GB of 78 GB) and is the real source of
+    # the "45.4 GB peak" this pipeline has long attributed to s07: the same expression costs
+    # 13.1 GB per side at 912k papers. Chunking bounds it to ~1.5 GB per side regardless of
+    # corpus size, at no cost to the result.
+    #
+    # Clipped at 0: Leiden's RB-configuration model treats weights as edge mass, so a negative
+    # cosine must not subtract from it.
+    weights = np.empty(len(src), dtype=np.float32)
+    chunk = 500_000
+    for start in range(0, len(src), chunk):
+        stop = start + chunk
+        weights[start:stop] = np.einsum(
+            "ij,ij->i", vectors[src[start:stop]], vectors[dst[start:stop]], optimize=True
+        )
+    np.maximum(weights, 0.0, out=weights)
 
     graph = ig.Graph(n=n, edges=list(zip(src.tolist(), dst.tolist())), directed=False)
     graph.es["weight"] = weights.tolist()

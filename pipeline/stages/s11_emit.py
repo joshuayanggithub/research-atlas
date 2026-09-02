@@ -266,13 +266,36 @@ def _reference_availability(corpus: pl.DataFrame) -> list[bool]:
     Missing file => assume available, so an older interim tree keeps the previous behaviour
     rather than silently claiming every paper lacks references.
     """
+    # Evidence fallback for any paper the flags file does not cover: a reference list is
+    # "available" only if some provider actually gave us one.
+    #
+    # This used to default to True, which was safe while the file covered the whole corpus —
+    # only a stale interim tree could miss rows. After the all-category expansion 2,134,371
+    # papers have no reference data of any kind, and defaulting them to True made the citation
+    # panel say "No references in this corpus" (a claim about the PAPER) instead of "No
+    # reference data available for this paper" (a claim about OUR DATA). Those two sentences
+    # mean opposite things to a reader, which is the whole reason the flag exists.
+    have_refs = pl.Series([bool(v) for v in corpus["referenced_works"].list.len().fill_null(0) > 0])
+    if "s2_reference_count" in corpus.columns:
+        have_refs = have_refs | pl.Series(
+            [bool(v) for v in corpus["s2_reference_count"].fill_null(0) > 0]
+        )
+    evidence = have_refs.to_list()
+
     if not REF_AVAIL_IN.exists():
-        log.warn(f"{REF_AVAIL_IN.name} absent — assuming references available for all papers")
-        return [True] * corpus.height
+        log.warn(f"{REF_AVAIL_IN.name} absent — falling back to per-paper reference evidence")
+        log.info(f"references_available: {sum(evidence):,}/{len(evidence):,} by evidence")
+        return evidence
+
     flags = pl.read_parquet(REF_AVAIL_IN)
     joined = corpus.select("node_id").join(flags, on="node_id", how="left")
-    out = [bool(v) if v is not None else True for v in joined["references_available"].to_list()]
-    log.info(f"references_available: {sum(out):,}/{len(out):,} papers have a reference list")
+    raw = joined["references_available"].to_list()
+    out = [bool(v) if v is not None else evidence[i] for i, v in enumerate(raw)]
+    uncovered = sum(1 for v in raw if v is None)
+    log.info(
+        f"references_available: {sum(out):,}/{len(out):,} papers have a reference list "
+        f"({uncovered:,} not in {REF_AVAIL_IN.name}, resolved from evidence)"
+    )
     return out
 
 

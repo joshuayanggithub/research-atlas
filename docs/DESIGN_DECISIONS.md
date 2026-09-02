@@ -2182,3 +2182,82 @@ confirmed present on the published prefix, since a 404 now fails the build.
 
 **Cost of reverting.** One origin and simpler release steps, at the price of putting a
 rate-limited dev endpoint in front of every new visitor's first paint.
+
+## D78. All-category arXiv corpus: 1,000,490 -> 3,134,861 papers — ACTIVE
+
+**Decision.** The corpus spine is every arXiv archive, 1991-01-01 .. 2026-08-13, not just
+`cs.*` + `stat.ML`.
+
+**Why not the alternative.** The ask was to reach famous brain/psychology work. Measured against
+OpenAlex, arXiv cannot supply it: **0.3%** of psychology and **0.8%** of neuroscience is on
+arXiv, and of highly-cited work (>500 citations) just **0.1%** of psychology (14 of 15,149) and
+**0.4%** of neuroscience. Physics is the opposite — 19.2% overall and **44.3%** of its famous
+work. So expanding arXiv buys physics, maths, astronomy and condensed matter, and buys nothing
+in psychology; that was made explicit before the rebuild rather than discovered after.
+
+**Cost, measured.** Embedding the 2,134,371 new papers took 275 min on the 3090 in the SAME
+specter2 space (verified by re-embedding 24 live papers: cosine 1.0000 against their stored
+vectors). The merge appends, so the first 1,000,490 `node_id`s are unchanged and existing
+shared `?paper=` links still resolve.
+
+**The per-visit budget barely moved**, because reveal tiers cap what the home view draws:
+
+| | 1M papers | 3.13M papers |
+|---|---|---|
+| first paint | 2.67 MB | 3.23 MB |
+| cold visit | 9.66 MB | 10.15 MB |
+| bundle | 1.5 GB | 3.3 GB / 9,867 files |
+
+**What is missing, and must read as missing.** The new papers come from the arXiv snapshot
+alone: no citation counts, no reference lists, no OpenAlex affiliations. So 2.13M papers carry
+`citation_count_available: false`, `references_available: false`, and no org membership. Only
+**10.5%** of the corpus cites within it, and author affiliation coverage is **37.0%** of
+2,680,005 authors. Closing that needs an OpenAlex/S2 enrichment pass over 2.13M papers — a
+separate job.
+
+**Cost of reverting.** `data/interim/_pre_allcats_backup` holds the 1M corpus, its vectors and
+`embed_meta.json`; restoring those three files and re-running s04+ returns the CS-only map.
+
+## D79. Three latent memory bugs that only 3.1M papers exposed — ACTIVE
+
+The rebuild OOM-killed twice on a 78 GB machine. Neither cause was inherent to corpus size;
+both were incidental allocations invisible at 1M. Recording them because the shape recurs.
+
+**1. s06 — fancy indexing copies.** `np.einsum("ij,ij->i", vectors[src], vectors[dst])` over
+27.5M spatial edges materialises two `[27.5M, 768]` float32 arrays: **44.8 GB each**. Computed
+in 500k-edge chunks instead, and the undirected dedup moved from a Python `set` of ~27M tuples
+to an integer key `lo*n + hi` with `np.unique`. Peak **76.3 GB (killed) -> 15.3 GB**.
+
+This also settles a long-standing misattribution: the "45.4 GB peak at 912k, so ~155 GB at
+3.13M" warning carried in `backfill_1991.py` and feared as an s07 limit was measuring THIS
+expression in s06 — the same line costs 13.1 GB per side at 912k.
+
+**2. s07 setup — reading 61 columns to use 6**, then holding `titles`, `abstracts` and `texts`
+(three full Python string lists over 3.1M papers) alive at once alongside the 9.6 GB vector
+array. Now reads only the columns it needs, frees the frame, and drops `abstracts` once `texts`
+exists.
+
+**3. s07 c-TF-IDF — `CountVectorizer` builds the COMPLETE n-gram vocabulary before pruning to
+`max_features`,** so its peak scales with the raw text passed in, not the 60,000 features kept.
+Cells at 3.1M are ~3x larger, so far more of them hit the full 700 representatives. Text per
+community is now capped at 240,000 characters, and `_representative_members` had the same
+fancy-index bug as s06 (a band-0 root cell gathered hundreds of thousands of vectors, upcast to
+float64) so its centroid and similarity passes are chunked too. Peak **72.8 GB (killed) ->
+37.6 GB**.
+
+**The one behavioural trade.** The 240k character cap is not pure hygiene: a community whose 700
+representatives exceed it now mines phrases from its most central subset. Members are sorted by
+similarity to the centroid, so what is dropped is the least representative material, and the
+resulting band-0 labels are specific ("astro-ph: Active Galactic Nuclei", "physics.optics:
+Kerker Effect", "gr-qc: Quasinormal Modes"). If labels ever look thin at the largest cells,
+this constant is the first thing to raise.
+
+## D80. "No reference data" is not "no references" — ACTIVE
+
+`_reference_availability` defaulted to `True` for any paper missing from
+`reference_availability.parquet`. That was safe while the file covered the whole corpus, and
+became a false claim about 2,134,371 papers after the expansion: the citation panel would say
+"No references in this corpus" — a statement about the PAPER — for papers we simply have no
+reference data for. Papers not covered by the flags file now fall back to actual evidence
+(`referenced_works` non-empty or `s2_reference_count > 0`). Verified after re-emit:
+**0 of 2,134,371** new papers claim a reference list, 930,310 of the CS corpus still do.

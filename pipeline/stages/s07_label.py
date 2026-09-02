@@ -146,18 +146,25 @@ def _representative_members(
     members = np.asarray(node_idx, dtype=np.int32)
     if len(members) <= limit:
         return members
-    member_vectors = vectors[members].astype(np.float64)
-    center = member_vectors.mean(axis=0)
+    # Chunked, for the same reason as the planar substrate in s06: `vectors[members]` is fancy
+    # indexing, so it COPIES, and the .astype(float64) doubled it again. A band-0 root cell
+    # holds hundreds of thousands of members at 3.1M papers, so that copy alone ran to
+    # gigabytes per call. Two passes over bounded slices give the identical centroid and
+    # ordering without ever materialising the gather.
+    chunk = 200_000
+    center = np.zeros(vectors.shape[1], dtype=np.float64)
+    for start in range(0, len(members), chunk):
+        center += vectors[members[start:start + chunk]].sum(axis=0, dtype=np.float64)
+    center /= len(members)
     norm = np.linalg.norm(center)
     if norm > 0:
         center = center / norm
-    similarity = np.einsum(
-        "ij,j->i",
-        member_vectors,
-        center,
-        dtype=np.float64,
-        optimize=True,
-    )
+    similarity = np.empty(len(members), dtype=np.float64)
+    for start in range(0, len(members), chunk):
+        stop = start + chunk
+        similarity[start:stop] = np.einsum(
+            "ij,j->i", vectors[members[start:stop]], center, dtype=np.float64, optimize=True
+        )
     return members[np.argsort(-similarity, kind="stable")[:limit]]
 
 
@@ -174,10 +181,29 @@ def _ctfidf_candidates(
     if not tiles:
         return {}
     exclude = exclude or {}
-    docs = [
-        " ".join(texts[i] for i in _representative_members(tile["node_idx"], vectors))
-        for tile in tiles
-    ]
+    # Bounded per-document text.
+    #
+    # CountVectorizer builds the COMPLETE n-gram vocabulary before pruning to max_features, so
+    # its peak scales with the raw text handed to it, not with the 60,000 features kept. At
+    # 3.1M papers the cells are ~3x larger than at 1M, so many more of them hit the full 700
+    # representatives, and this stage was OOM-killed twice (anon-rss 76.3 GB of 78 GB) inside
+    # fit_transform. Capping the characters per community bounds that peak independently of
+    # corpus size.
+    #
+    # Truncation is at the END of the concatenation, and members arrive sorted by similarity to
+    # the community centroid, so what is dropped is always the least representative material.
+    doc_char_cap = 240_000
+    docs = []
+    for tile in tiles:
+        parts: list[str] = []
+        used = 0
+        for i in _representative_members(tile["node_idx"], vectors):
+            part = texts[i]
+            parts.append(part)
+            used += len(part) + 1
+            if used >= doc_char_cap:
+                break
+        docs.append(" ".join(parts))
 
     def score(lo: int, hi: int) -> dict[int, list[str]]:
         vectorizer = CountVectorizer(
@@ -389,7 +415,15 @@ def run(cfg: Config | None = None) -> tuple[str, str]:
     ensure_dirs()
     log.stage("s07_label")
 
-    corpus = pl.read_parquet(CORPUS_IN)
+    # Only the columns this stage reads. The frame has 61, including per-paper author and
+    # referenced_works LISTS, and materialising all of them for 3.1M papers is several GB that
+    # are never touched here. Freed entirely once the columns below are extracted.
+    corpus = pl.read_parquet(
+        CORPUS_IN,
+        columns=["title", "abstract", "topic_name", "topic_id", "cited_by_count",
+                 "subfield_id"],
+    )
+    n_papers = corpus.height
     vectors = read_npy(VECTORS_IN)
     cells = read_json(TILES_IN)["cells"]
 
@@ -413,6 +447,12 @@ def run(cfg: Config | None = None) -> tuple[str, str]:
     cited_counts = corpus["cited_by_count"].to_list()
     global_topic_counts = Counter(name for name in topic_names if name)
     subfield_ids = corpus["subfield_id"].to_list()
+    # Everything needed is now in plain Python lists; the frame and the intermediate abstract
+    # list are dead weight. At 3.1M papers this stage was OOM-killed (anon-rss 76.3 GB of
+    # 78 GB) holding the frame, `abstracts` and `texts` alive simultaneously alongside the
+    # 9.6 GB vector array, before c-TF-IDF had allocated anything.
+    del corpus
+    abstracts = None  # noqa: F841 — `texts` already holds the combined strings
     unique_subfields = sorted(set(subfield_ids))
     subfield_color = {
         subfield: _PALETTE[index % len(_PALETTE)]
@@ -481,7 +521,7 @@ def run(cfg: Config | None = None) -> tuple[str, str]:
                 topic_names,
                 topic_ids,
                 global_topic_counts,
-                corpus.height,
+                n_papers,
             )
             # For small leaf communities, name them by the phrase their titles share.
             leaf_phrase = (
