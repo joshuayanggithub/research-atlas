@@ -2261,3 +2261,64 @@ became a false claim about 2,134,371 papers after the expansion: the citation pa
 reference data for. Papers not covered by the flags file now fall back to actual evidence
 (`referenced_works` non-empty or `s2_reference_count > 0`). Verified after re-emit:
 **0 of 2,134,371** new papers claim a reference list, 930,310 of the CS corpus still do.
+
+## D81. Query-time retrieval: the query adapter trades ANN navigability for recall — ACTIVE
+
+**Decision.** Natural-language queries are encoded with SPECTER2's **`adhoc_query`** adapter and
+searched against the existing document vectors with a persisted hnswlib index at **`ef=800`**.
+
+**Why the adapter, measured not assumed.** Documents were embedded through the *proximity*
+adapter, so it was an open question whether query-adapter vectors land in the same space at all.
+Title→paper retrieval (a paper's own title as the query, its own vector as the answer — free
+ground truth) over all 3,134,861 documents:
+
+| encoder | exact @1 | exact @10 | exact @100 |
+|---|---|---|---|
+| **adhoc_query** | **0.703** | **0.870** | **0.950** |
+| proximity | 0.590 | 0.820 | 0.917 |
+
+**The finding worth keeping.** The query adapter is +11.3 points better at rank 1 but recovers
+*less* of the exact top-10 through the ANN graph, because that graph was built over document
+vectors and query-adapter vectors sit slightly off that manifold:
+
+| ef | adhoc_query agreement | proximity agreement | p50 latency |
+|---|---|---|---|
+| 100 | 0.803 | 0.960 | 0.7 ms |
+| 800 | 0.963 | 0.998 | 4.4 ms |
+
+`ef=800` buys back the recall for 4 ms, which is nothing beside the ~30 ms encode. **Note
+hnswlib silently raises `ef` to `k`** — an early sweep of `ef=50,100` at `k=100` measured the
+same thing twice and looked flat.
+
+**Cost of reverting.** Proximity-encoded queries need no adapter switch and navigate the graph
+better, at 11 points of rank-1 recall.
+
+## D82. Similarity cannot gate refusal in this space; two defences can — ACTIVE
+
+**Decision.** `/ask` refuses below a **0.78** top-1 cosine, AND the prompt instructs the model to
+refuse when the abstracts do not answer. Both, because neither is sufficient.
+
+**Why.** A hand-picked threshold would have been theatre, so it was calibrated
+(`tools/calibrate_refusal.py`). SPECTER2 embeddings are anisotropic — everything scores high:
+
+| query class | min | median | max |
+|---|---|---|---|
+| research questions | 0.796 | 0.832 | 0.876 |
+| **deliberate nonsense** ("best recipe for risotto") | 0.732 | 0.743 | **0.789** |
+
+A separation of **0.007**. The obvious fix — a scale-free margin (top-1 minus the mean of ranks
+50–100) — was tried and is **worse**: in-domain 0.017–0.044 against out-of-domain 0.014–0.042,
+complete overlap. The original placeholder of 0.55 would have refused nothing.
+
+So the gate sits just below the in-domain floor and is explicitly not the only defence.
+Measured over 15 in-domain and 12 out-of-domain questions (`tools/eval_generation.py`):
+
+- **0 of 12** out-of-domain questions answered — gate caught 10, the model caught the other 2
+- **1 of 15** in-domain questions falsely refused (by the model, not the gate)
+- **citation validity 1.000**, zero fabricated citations
+- support cosine mean 0.773 (min 0.722); generate latency median 1159 ms
+
+The gate alone would have leaked 2; the model alone would refuse more real questions. Layering
+them is what gets to zero leakage at one false refusal.
+
+**Cost of reverting.** A single defence is simpler to explain and measurably worse.

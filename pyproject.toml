@@ -33,6 +33,12 @@ local-embed = [
     "sentence-transformers>=3.0",
     "torch>=2.2",
 ]
+# Local query-time retrieval service (tools/query_service.py). Needs local-embed too, for the
+# SPECTER2 query encoder. Install with: uv sync --extra local-embed --extra query-service
+query-service = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
 dev = [
     "pytest>=8.2",
     "ruff>=0.5",
