@@ -55,3 +55,6 @@ web/tsconfig.tsbuildinfo
 
 # Personal reading-list exports (tools/zotero_export.py). Your library, not the project's.
 reading-list*.json
+
+# Isolated env for the local LLM server (vLLM pins torch; see tools/query_service.py)
+.venv-llm/
